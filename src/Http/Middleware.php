@@ -56,6 +56,17 @@ final class Middleware
         if (!empty($_SESSION['admin_id']) && AdminAuth::validateSession()) {
             return true;
         }
+
+        // مهم برای پاسخ‌دهی درست: مسیر محافظت‌شده بدون سشن باید ۳۰۲ بدهد.
+        // وقتی هیچ خروجی هنوز تولید نشده، بافر را پاک می‌کنیم تا هدرها
+        // قابل ارسال بمانند؛ وگرنه redirect بی‌صدا شکست می‌خورد و کاربر
+        // یک صفحهٔ «۲۰۰ خالی» می‌بیند.
+        if (!headers_sent()) {
+            while (ob_get_level() > 0) {
+                @ob_end_clean();
+            }
+        }
+
         if (Request::path() !== '/admin/login') {
             if (Request::isAjax() || str_starts_with(Request::path(), '/admin/api/')) {
                 json_out(['ok' => false, 'error' => 'نیاز به ورود مجدد دارید.', 'redirect' => url('admin/login')], 401);
