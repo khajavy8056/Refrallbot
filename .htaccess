@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────
+#  RefrallBot — محافظت از مسیرهای داخلی در صورت نصب در docroot
+#  اگر دامنه را روی پوشه public/ تنظیم کرده‌اید، این فایل لازم نیست.
+# ─────────────────────────────────────────────────────────────
+
+Options -Indexes
+
+# مسدودسازی کامل پوشه‌های داخلی
+RewriteEngine On
+RewriteRule ^(src|storage|database|config|tests|bin|docs)(/|$) - [F,L,NC]
+
+# مسدودسازی فایل‌های حساس
+<FilesMatch "(^\.env.*|\.(md|json|lock|sql|sqlite|log|pem|key|ini|dist|example)$)">
+    Require all denied
+</FilesMatch>
+
+# جلوگیری از دسترسی به فایل‌های مخفی
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+# هدرهای امنیتی
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+endIfModule>

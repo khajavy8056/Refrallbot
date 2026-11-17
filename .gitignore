@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------- secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------------------------------------------------------- runtime
+storage/logs/*.log
+storage/backups/*
+storage/cache/*
+storage/installed.lock
+storage/app_key.php
+storage/*.sqlite
+storage/*.lock
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/cache/*
+!storage/cache/.gitkeep
+
+# ---------------------------------------------------------------- OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---------------------------------------------------------------- vendor / build
+/vendor/
+/node_modules/
+composer.lock
