@@ -56,6 +56,13 @@ final class T
     {
         echo "\n" . str_repeat('─', 60) . "\n";
         echo "نتیجه: " . self::$passed . " موفق، " . self::$failed . " ناموفق\n";
+        // جزئیات شکست‌ها در انتهای خروجی تا در خلاصهٔ CI دیده شود
+        if (self::$failed > 0 && self::$failures !== []) {
+            echo "— خطاها —\n";
+            foreach (array_slice(self::$failures, 0, 15) as $failure) {
+                echo "✘ " . $failure . "\n";
+            }
+        }
         if (self::$failures) {
             echo "\nشکست‌ها:\n";
             foreach (self::$failures as $failure) {

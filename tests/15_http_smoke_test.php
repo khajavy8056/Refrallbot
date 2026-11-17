@@ -235,6 +235,10 @@ foreach ($cases as $path => $want) {
     T::eq($want, $r['status'], 'مسیر ' . $path . ' پاسخ ' . $want . ' می‌دهد');
     if ($r['status'] !== $want) {
         $body = trim($r['body']);
+        $tail = array_slice(array_values(array_filter(array_map('trim', explode("\n", (string) @file_get_contents($logFile))))), -12);
+        if ($tail) {
+            $ghError("server.log بعد از " . $path . ":\n" . implode("\n", $tail));
+        }
         $ghError(sprintf(
             "%s → HTTP %d (انتظار %d) — بدنه: %s — هدرها: %s",
             $path,
@@ -284,6 +288,12 @@ if ($cron['status'] !== 200 || ($cronJson['ok'] ?? false) !== true) {
 
 // خطای PHP در لاگ سرور
 $serverLog = (string) @file_get_contents($logFile);
+
+// اگر هر تستی شکست خورد، لاگ خام سرور را کامل نشان بده (مهم‌ترین سرنخ)
+if (T::$failed > 0) {
+    $lines = array_slice(array_values(array_filter(array_map('trim', explode("\n", $serverLog)))), -40);
+    $ghError("server.log (last 40 lines):\n" . implode("\n", $lines));
+}
 $hasPhpError = (bool) preg_match('~(PHP (Fatal|Parse) error|Uncaught|PHP Warning|PHP Notice)~', $serverLog);
 T::ok(!$hasPhpError, 'هیچ خطای PHP در لاگ سرور نیست');
 if ($hasPhpError) {
