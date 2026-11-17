@@ -19,10 +19,26 @@ if (\RB\Support\Request::isHttps()) {
 
 $path = \RB\Support\Request::path();
 
+// ---- نصب تک‌فایلی: /install.php همان /install است
+// (روی هاست‌هایی که docroot روی ریشهٔ پروژه است، install.php خودش این فایل را
+//  صدا می‌زند و REQUEST_URI را از قبل تنظیم می‌کند؛ اینجا فقط حالت docroot=public
+//  پوشش داده می‌شود تا به‌جای «سرو شدن فایل توسط وب‌سرور» از مسیر واقعی رد شود.)
+if ($path === '/install.php' || $path === '/index.php') {
+    $path = $path === '/index.php' ? '/' : '/install';
+    $_SERVER['REQUEST_URI'] = $path;
+}
+
 // ---- فایل‌های استاتیک در حالت توسعه (server داخلی PHP)
+// نکته: هرگز برای فایل‌های PHP مقدار false برنمی‌گردانیم؛ سپردن اجرای
+// install.php به سرور داخلی باعث می‌شد پاسخ «۲۰۰ با بدنهٔ خالی» شود،
+// در حالی که مسیر واقعی باید مسیر نصب با پاسخ ۴۰۳ (پس از نصب) باشد.
 if (PHP_SAPI === 'cli-server') {
     $file = __DIR__ . $path;
-    if ($path !== '/' && is_file($file) && !str_starts_with(realpath($file) ?: '', __DIR__ . '/index.php')) {
+    $isPhp = str_ends_with(strtolower($path), '.php');
+    $isStatic = $path !== '/' && !$isPhp
+        && (bool) preg_match('~\.[a-z0-9]{2,5}$~i', $path)
+        && is_file($file);
+    if ($isStatic) {
         return false;
     }
 }
