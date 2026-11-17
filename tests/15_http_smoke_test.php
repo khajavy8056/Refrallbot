@@ -17,15 +17,32 @@ require_once __DIR__ . '/lib.php';
 
 T::suite('دود HTTP روی سرور واقعی PHP');
 
-/** چاپ خطای قابل‌مشاهده در GitHub Actions */
-$ghError = static function (string $text): void {
+/**
+ * چاپ خطای قابل‌مشاهده در GitHub Actions.
+ *
+ * GitHub برای هر استپ حداکثر ۱۰ annotation نمایش می‌دهد؛ اگر هر خط را جدا
+ * منتشر کنیم، پیام اصلی (مسیر ناموفق) بین لاگ‌های سرور گم می‌شود. پس همه را
+ * جمع می‌کنیم و در یک annotation فشرده در پایان منتشر می‌کنیم.
+ */
+$ghErrors = [];
+$ghError = static function (string $text) use (&$ghErrors): void {
     foreach (explode("\n", trim($text)) as $line) {
         $line = trim($line);
         if ($line !== '') {
-            echo '::error::' . mb_substr($line, 0, 900) . "\n";
+            $ghErrors[] = $line;
+            echo $line . "\n";
         }
     }
 };
+$ghFlush = static function () use (&$ghErrors): void {
+    if ($ghErrors === []) {
+        return;
+    }
+    $joined = implode(' ⏎ ', $ghErrors);
+    echo '::error::' . mb_substr($joined, 0, 60000) . "\n";
+    $ghErrors = [];
+};
+register_shutdown_function($ghFlush);
 
 if (!function_exists('proc_open') || !function_exists('stream_socket_client')) {
     echo "⊘ proc_open/stream_socket_client در دسترس نیست — این تست رد شد (کد ۰).\n";
@@ -225,10 +242,6 @@ foreach ($cases as $path => $want) {
     }
     if ($r['status'] !== $want) {
         $body = trim($r['body']);
-        $tail = array_slice(array_values(array_filter(array_map('trim', explode("\n", (string) @file_get_contents($logFile))))), -12);
-        if ($tail) {
-            $ghError("server.log بعد از " . $path . ":\n" . implode("\n", $tail));
-        }
         $ghError(sprintf(
             "%s → HTTP %d (انتظار %d) — بدنه: %s — هدرها: %s",
             $path,
