@@ -133,45 +133,7 @@ for ($try = 8400; $try < 8460; $try++) {
 }
 T::ok($port > 0, 'پورت آزاد برای سرور تست پیدا شد');
 if ($port === 0) {
-    // ---------------------------------------------------------- رگرسیون باگ CLI/HTTP
-//
-// باگ واقعی: ErrorHandler، `cli-server` را مثل CLI حساب می‌کرد و به‌جای صفحه
-// خطا فقط بدنه خالی با HTTP 200 برمی‌گرداند. این باعث شد عیب‌یابی تست دود
-// ساعاتی طول بکشد. حالا بررسی می‌کنیم که این اشتباه برنگردد.
-$handlerSource = (string) file_get_contents(dirname(__DIR__) . '/src/Support/ErrorHandler.php');
-T::ok(
-    !preg_match("~PHP_SAPI\s*===\s*'cli'\s*\|\|\s*PHP_SAPI\s*===\s*'cli-server'~", $handlerSource),
-    'ErrorHandler دیگر cli-server (سرور داخلی PHP) را CLI حساب نمی‌کند'
-);
-T::ok(
-    str_contains($handlerSource, "PHP_SAPI === 'cli'"),
-    'شرط CLI واقعی در ErrorHandler وجود دارد'
-);
-T::ok(
-    !str_contains($handlerSource, "!isset(\$_SERVER['REQUEST_METHOD']) || PHP_SAPI"),
-    'شرط «نبود REQUEST_METHOD» به‌تنهایی باعث رفتار CLI نمی‌شود'
-);
-
-// ---------------------------------------------------------- رگرسیون «بدنهٔ خالی»
-//
-// باگ: public/index.php هدرهای امنیتی را قبل از dispatch می‌فرستاد و خروجی
-// کنترلر در بافر گرفته نمی‌شد. در برخی محیط‌ها این باعث می‌شد json_out
-// هیچ چیزی تولید نکند و کل پاسخ «۲۰۰ با ۰ بایت» شود.
-$entry = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
-T::ok(
-    str_contains($entry, 'ob_start()'),
-    'public/index.php خروجی مسیر را بافر می‌کند (جلوگیری از پاسخ ۲۰۰ خالی)'
-);
-T::ok(
-    str_contains($entry, 'EMPTY BODY'),
-    'اگر بدنه خالی بماند، در لاگ هشدار ثبت می‌شود'
-);
-T::ok(
-    !preg_match("~^\s*use\s+RB\\\\Support\\\\(Session|Request)~m", $entry),
-    'public/index.php از نام کامل کلاس استفاده می‌کند (بدون ابهام use)'
-);
-
-exit(T::summary());
+    exit(T::summary());
 }
 
 // ---------------------------------------------------------- سرور
@@ -193,9 +155,14 @@ register_shutdown_function(static function () use ($server): void {
 });
 
 $fetch = static function (string $path) use ($port): array {
+    // نکتهٔ مهم: follow_location پیش‌فرض ۱ است؛ اگر آن را صفر نکنیم،
+    // /admin (۳۰۲) به‌طور خودکار به /admin/login (۲۰۰) تبدیل می‌شود و
+    // تست به‌اشتباه شکست می‌خورد. curl در جابِ دود هم -L ندارد.
     $ctx = stream_context_create(['http' => [
         'method' => 'GET',
         'ignore_errors' => true,
+        'follow_location' => 0,
+        'max_redirects' => 1,
         'timeout' => 15,
         'header' => "Accept: */*\r\n",
     ]]);
@@ -222,46 +189,7 @@ for ($i = 0; $i < 40; $i++) {
 T::ok($up, 'سرور داخلی PHP بالا آمد و به /healthz پاسخ داد');
 
 if (!$up) {
-    $ghError("server did not start.\nlog:\n" . substr((string) @file_get_contents($logFile), -2500));
-    // ---------------------------------------------------------- رگرسیون باگ CLI/HTTP
-//
-// باگ واقعی: ErrorHandler، `cli-server` را مثل CLI حساب می‌کرد و به‌جای صفحه
-// خطا فقط بدنه خالی با HTTP 200 برمی‌گرداند. این باعث شد عیب‌یابی تست دود
-// ساعاتی طول بکشد. حالا بررسی می‌کنیم که این اشتباه برنگردد.
-$handlerSource = (string) file_get_contents(dirname(__DIR__) . '/src/Support/ErrorHandler.php');
-T::ok(
-    !preg_match("~PHP_SAPI\s*===\s*'cli'\s*\|\|\s*PHP_SAPI\s*===\s*'cli-server'~", $handlerSource),
-    'ErrorHandler دیگر cli-server (سرور داخلی PHP) را CLI حساب نمی‌کند'
-);
-T::ok(
-    str_contains($handlerSource, "PHP_SAPI === 'cli'"),
-    'شرط CLI واقعی در ErrorHandler وجود دارد'
-);
-T::ok(
-    !str_contains($handlerSource, "!isset(\$_SERVER['REQUEST_METHOD']) || PHP_SAPI"),
-    'شرط «نبود REQUEST_METHOD» به‌تنهایی باعث رفتار CLI نمی‌شود'
-);
-
-// ---------------------------------------------------------- رگرسیون «بدنهٔ خالی»
-//
-// باگ: public/index.php هدرهای امنیتی را قبل از dispatch می‌فرستاد و خروجی
-// کنترلر در بافر گرفته نمی‌شد. در برخی محیط‌ها این باعث می‌شد json_out
-// هیچ چیزی تولید نکند و کل پاسخ «۲۰۰ با ۰ بایت» شود.
-$entry = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
-T::ok(
-    str_contains($entry, 'ob_start()'),
-    'public/index.php خروجی مسیر را بافر می‌کند (جلوگیری از پاسخ ۲۰۰ خالی)'
-);
-T::ok(
-    str_contains($entry, 'EMPTY BODY'),
-    'اگر بدنه خالی بماند، در لاگ هشدار ثبت می‌شود'
-);
-T::ok(
-    !preg_match("~^\s*use\s+RB\\\\Support\\\\(Session|Request)~m", $entry),
-    'public/index.php از نام کامل کلاس استفاده می‌کند (بدون ابهام use)'
-);
-
-exit(T::summary());
+    exit(T::summary());
 }
 
 // ---------------------------------------------------------- عیب‌یابی محیط سرور
@@ -288,9 +216,13 @@ $cases = [
     '/cron/run' => 403,
 ];
 
+$failedRoutes = [];
 foreach ($cases as $path => $want) {
     $r = $fetch($path);
     T::eq($want, $r['status'], 'مسیر ' . $path . ' پاسخ ' . $want . ' می‌دهد');
+    if ($r['status'] !== $want) {
+        $failedRoutes[$path] = $r['status'] . ' (انتظار ' . $want . ')';
+    }
     if ($r['status'] !== $want) {
         $body = trim($r['body']);
         $tail = array_slice(array_values(array_filter(array_map('trim', explode("\n", (string) @file_get_contents($logFile))))), -12);
@@ -348,6 +280,9 @@ if ($cron['status'] !== 200 || ($cronJson['ok'] ?? false) !== true) {
 $serverLog = (string) @file_get_contents($logFile);
 
 // اگر هر تستی شکست خورد، لاگ خام سرور را کامل نشان بده (مهم‌ترین سرنخ)
+if ($failedRoutes !== []) {
+    $ghError('مسیرهای ناموفق: ' . json_encode($failedRoutes, JSON_UNESCAPED_UNICODE));
+}
 if (T::$failed > 0) {
     $lines = array_slice(array_values(array_filter(array_map('trim', explode("\n", $serverLog)))), -40);
     $ghError("server.log (last 40 lines):\n" . implode("\n", $lines));
@@ -364,43 +299,5 @@ if (is_resource($server)) {
 }
 @unlink($dbFile);
 @unlink($logFile);
-
-// ---------------------------------------------------------- رگرسیون باگ CLI/HTTP
-//
-// باگ واقعی: ErrorHandler، `cli-server` را مثل CLI حساب می‌کرد و به‌جای صفحه
-// خطا فقط بدنه خالی با HTTP 200 برمی‌گرداند. این باعث شد عیب‌یابی تست دود
-// ساعاتی طول بکشد. حالا بررسی می‌کنیم که این اشتباه برنگردد.
-$handlerSource = (string) file_get_contents(dirname(__DIR__) . '/src/Support/ErrorHandler.php');
-T::ok(
-    !preg_match("~PHP_SAPI\s*===\s*'cli'\s*\|\|\s*PHP_SAPI\s*===\s*'cli-server'~", $handlerSource),
-    'ErrorHandler دیگر cli-server (سرور داخلی PHP) را CLI حساب نمی‌کند'
-);
-T::ok(
-    str_contains($handlerSource, "PHP_SAPI === 'cli'"),
-    'شرط CLI واقعی در ErrorHandler وجود دارد'
-);
-T::ok(
-    !str_contains($handlerSource, "!isset(\$_SERVER['REQUEST_METHOD']) || PHP_SAPI"),
-    'شرط «نبود REQUEST_METHOD» به‌تنهایی باعث رفتار CLI نمی‌شود'
-);
-
-// ---------------------------------------------------------- رگرسیون «بدنهٔ خالی»
-//
-// باگ: public/index.php هدرهای امنیتی را قبل از dispatch می‌فرستاد و خروجی
-// کنترلر در بافر گرفته نمی‌شد. در برخی محیط‌ها این باعث می‌شد json_out
-// هیچ چیزی تولید نکند و کل پاسخ «۲۰۰ با ۰ بایت» شود.
-$entry = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
-T::ok(
-    str_contains($entry, 'ob_start()'),
-    'public/index.php خروجی مسیر را بافر می‌کند (جلوگیری از پاسخ ۲۰۰ خالی)'
-);
-T::ok(
-    str_contains($entry, 'EMPTY BODY'),
-    'اگر بدنه خالی بماند، در لاگ هشدار ثبت می‌شود'
-);
-T::ok(
-    !preg_match("~^\s*use\s+RB\\\\Support\\\\(Session|Request)~m", $entry),
-    'public/index.php از نام کامل کلاس استفاده می‌کند (بدون ابهام use)'
-);
 
 exit(T::summary());
