@@ -1,1 +1,0 @@
-{"path":"\/healthz","method":"GET","status":200,"headers_sent":false,"ob_level":0,"routes_class":"RB\\Http\\Router"}
