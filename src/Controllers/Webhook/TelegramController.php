@@ -9,6 +9,7 @@ use RB\Services\SecurityService;
 use RB\Services\TelegramService;
 use RB\Support\Config;
 use RB\Support\Database;
+use RB\Support\ErrorHandler;
 use RB\Support\Request;
 
 /**
@@ -75,17 +76,41 @@ final class TelegramController extends Controller
         ]);
     }
 
+    /**
+     * بررسی سلامت — همیشه JSON برمی‌گرداند.
+     *
+     * اگر جزئیات داخلی خطا بدهد، به‌جای بدنهٔ خالی یک JSON با ok:false
+     * برمی‌گردانیم تا مانیتور/CI هرگز «۲۰۰ خالی» نبیند.
+     */
     public function health(): void
     {
-        $checks = ['app' => 'ok', 'db' => 'fail', 'installed' => \RB\Http\Middleware::isInstalled(), 'php' => PHP_VERSION];
         try {
-            Database::instance()->value('SELECT 1');
-            $checks['db'] = 'ok';
+            $checks = [
+                'app' => 'ok',
+                'db' => 'fail',
+                'installed' => \RB\Http\Middleware::isInstalled(),
+                'php' => PHP_VERSION,
+            ];
+            try {
+                Database::instance()->value('SELECT 1');
+                $checks['db'] = 'ok';
+            } catch (\Throwable $e) {
+                $checks['db_error'] = ErrorHandler::redact($e->getMessage());
+            }
+            $healthy = $checks['db'] === 'ok';
+            $this->json(['ok' => $healthy, 'checks' => $checks, 'time' => date('c')], $healthy ? 200 : 503);
         } catch (\Throwable $e) {
-            $checks['db_error'] = $e->getMessage();
+            // حتی اگر ساخت JSON ممکن نبود، خروجی خالی نده
+            if (!headers_sent()) {
+                http_response_code(503);
+                header('Content-Type: application/json; charset=utf-8');
+            }
+            echo json_encode([
+                'ok' => false,
+                'error' => ErrorHandler::redact($e->getMessage()),
+                'time' => date('c'),
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         }
-        $healthy = $checks['db'] === 'ok';
-        $this->json(['ok' => $healthy, 'checks' => $checks, 'time' => date('c')], $healthy ? 200 : 503);
     }
 
     public function notFound(): void

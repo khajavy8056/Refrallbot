@@ -162,12 +162,13 @@ $fetch = static function (string $path) use ($port): array {
     ]]);
     $body = @file_get_contents('http://127.0.0.1:' . $port . $path, false, $ctx);
     $status = 0;
-    foreach ($http_response_header ?? [] as $h) {
+    $headers = $http_response_header ?? [];
+    foreach ($headers as $h) {
         if (preg_match('~^HTTP/\d\.\d\s+(\d{3})~', $h, $m)) {
             $status = (int) $m[1];
         }
     }
-    return ['status' => $status, 'body' => (string) $body];
+    return ['status' => $status, 'body' => (string) $body, 'headers' => $headers];
 };
 
 // انتظار برای بالا آمدن
@@ -205,6 +206,16 @@ T::ok(
 exit(T::summary());
 }
 
+// ---------------------------------------------------------- عیب‌یابی محیط سرور
+$diag = $fetch('/healthz');
+echo "── servers ──\n";
+echo 'php: ' . PHP_BINARY . ' / ' . PHP_VERSION . '\n';
+echo 'cwd: ' . $root . '\n';
+echo 'docroot: ' . $root . '/public\n';
+echo 'server log: ' . $logFile . '\n';
+echo 'healthz headers: ' . json_encode($diag['headers'], JSON_UNESCAPED_UNICODE) . '\n';
+T::ok($diag['status'] === 200, '/healthz با HTTP 200 پاسخ می‌دهد');
+
 // ---------------------------------------------------------- بررسی مسیرها
 $cases = [
     '/healthz' => 200,
@@ -225,11 +236,12 @@ foreach ($cases as $path => $want) {
     if ($r['status'] !== $want) {
         $body = trim($r['body']);
         $ghError(sprintf(
-            "%s → HTTP %d (انتظار %d) — بدنه: %s",
+            "%s → HTTP %d (انتظار %d) — بدنه: %s — هدرها: %s",
             $path,
             $r['status'],
             $want,
-            $body === '' ? '(خالی)' : mb_substr($body, 0, 700)
+            $body === '' ? '(خالی)' : mb_substr($body, 0, 400),
+            implode(' | ', array_slice($r['headers'], 0, 6))
         ));
     }
 }

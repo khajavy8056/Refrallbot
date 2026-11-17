@@ -46,7 +46,18 @@ foreach ($files as $file) {
     }
     $totalPassed += $passed;
     $totalFailed += $failed;
-    $results[] = ['name' => $name, 'passed' => $passed, 'failed' => $failed, 'exit' => $exitCode];
+    // خطوط شکست برای گزارش نهایی (در CI فقط «exit 1» دیده می‌شد، نه علت)
+    $failedLines = [];
+    foreach (explode("\n", $text) as $line) {
+        if (str_contains($line, '✘') || str_starts_with(trim($line), '::error::')) {
+            $failedLines[] = trim($line);
+        }
+    }
+    if ($exitCode !== 0 && $failedLines === []) {
+        // تست‌هایی که خروجی T:: ندارند: انتهای خروجی معمولاً علت را دارد
+        $failedLines = array_slice(array_values(array_filter(array_map('trim', explode("\n", $text)))), -8);
+    }
+    $results[] = ['name' => $name, 'passed' => $passed, 'failed' => $failed, 'exit' => $exitCode, 'failedLines' => $failedLines];
     $output = [];
 }
 
@@ -58,5 +69,20 @@ foreach ($results as $r) {
 }
 echo str_repeat('-', 62) . "\n";
 printf("  مجموع: %d موفق، %d ناموفق  (%.1f ثانیه)\n", $totalPassed, $totalFailed, microtime(true) - $started);
+
+// ---- جزئیات شکست‌ها (مهم برای CI: به‌جای «exit code 1» علت را نشان می‌دهد)
+if ($totalFailed > 0) {
+    echo "\n" . str_repeat('=', 62) . "\nخطاها:\n" . str_repeat('-', 62) . "\n";
+    foreach ($results as $r) {
+        if ($r['exit'] === 0 && $r['failed'] === 0) {
+            continue;
+        }
+        printf("✘ %s (خروج: %d، ناموفق: %d)\n", $r['name'], $r['exit'], $r['failed']);
+        foreach (array_slice($r['failedLines'], 0, 12) as $line) {
+            echo '    ' . $line . "\n";
+        }
+    }
+    echo str_repeat('-', 62) . "\n";
+}
 echo $totalFailed === 0 ? "\n✅ همه تست‌ها موفق\n" : "\n❌ برخی تست‌ها ناموفق بودند\n";
 exit($totalFailed === 0 ? 0 : 1);
