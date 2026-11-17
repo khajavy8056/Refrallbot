@@ -22,4 +22,4 @@ RewriteRule ^(src|storage|database|config|tests|bin|docs)(/|$) - [F,L,NC]
 # هدرهای امنیتی
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
-endIfModule>
+</IfModule>

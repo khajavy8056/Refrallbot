@@ -18,6 +18,7 @@ final class SettingsController extends AdminController
         $this->render('admin/settings/index', [
             'title' => 'تنظیمات سیستم',
             'settings' => SettingsService::all(),
+            'miniappActive' => SettingsService::miniappActive(),
             'commission' => CommissionSettings::current(db(), true),
             'metrics' => RankingService::METRICS,
         ]);
@@ -84,6 +85,21 @@ final class SettingsController extends AdminController
     {
         SettingsService::set('force_channel_membership', !empty($_POST['force_channel_membership']) ? '1' : '0', 'telegram');
         SettingsService::set('contact_required', !empty($_POST['contact_required']) ? '1' : '0', 'telegram');
+
+        // پنل کاربری (Mini App): به‌صورت پیش‌فرض خاموش، چون به HTTPS معتبر نیاز دارد.
+        // حالت‌ها: auto (خودکار بر اساس https)، on (اجباری)، off
+        $mode = (string) ($_POST['miniapp_mode'] ?? 'auto');
+        if (!in_array($mode, ['auto', 'on', 'off'], true)) {
+            $mode = 'auto';
+        }
+        SettingsService::set('miniapp_mode', $mode, 'telegram');
+        $miniappUrl = trim((string) ($_POST['miniapp_url'] ?? ''));
+        if ($miniappUrl !== '') {
+            if (!preg_match('~^https?://~i', $miniappUrl)) {
+                $miniappUrl = 'https://' . $miniappUrl;
+            }
+            SettingsService::set('miniapp_url', mb_substr(rtrim($miniappUrl, '/'), 0, 255), 'telegram');
+        }
         if (isset($_POST['contact_request_message'])) {
             SettingsService::set('contact_request_message', mb_substr((string) $_POST['contact_request_message'], 0, 600), 'telegram');
         }

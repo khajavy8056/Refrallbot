@@ -54,6 +54,10 @@ $cases = [
     ['/app', false],
     ['/webhook/telegram', false],
     ['/nope-404', false],
+    // کرون وب بدون توکن باید رد شود (۴۰۳/۴۰۰) و هرگز خطای PHP ندهد
+    ['/cron/run', false],
+    // نقاط ورود تک‌فایلی نصب: درخواست باید به همان ویزارد برسد
+    ['/install.php', false],
     ['/admin', true],
     ['/admin/users', true],
     ['/admin/network', true],
@@ -84,6 +88,13 @@ foreach ($cases as [$path, $needsAdmin]) {
         continue;
     }
 
+    // برای آزمودن ویزارد نصب، قفل نصب را موقتاً برمی‌داریم
+    $isInstallCase = in_array($path, ['/install', '/install.php'], true);
+    if ($isInstallCase) {
+        $db->delete('system_settings', "`key` = :k", ['k' => 'installed_at']);
+        @unlink(RB_STORAGE . '/installed.lock');
+    }
+
     // ---- محیط درخواست
     $_SERVER['REQUEST_METHOD'] = 'GET';
     $_SERVER['REQUEST_URI'] = $path;
@@ -91,6 +102,10 @@ foreach ($cases as [$path, $needsAdmin]) {
     $_SERVER['HTTPS'] = 'on';
     $_SERVER['REMOTE_ADDR'] = '203.0.113.7';
     $_SERVER['HTTP_ACCEPT'] = str_contains($path, '/api/') ? 'application/json' : 'text/html';
+    // install.php خودش درخواست را به /install هدایت می‌کند
+    if ($path === '/install.php') {
+        $_SERVER['REQUEST_URI'] = '/install';
+    }
     $_GET = [];
     $_POST = [];
     $_SESSION = [];
@@ -113,6 +128,11 @@ foreach ($cases as [$path, $needsAdmin]) {
         $error = get_class($e) . ': ' . $e->getMessage() . ' @' . basename($e->getFile()) . ':' . $e->getLine();
     }
     $out = (string) ob_get_clean();
+
+    if ($isInstallCase) {
+        RB\Services\SettingsService::set('installed_at', now(), 'system');
+        @file_put_contents(RB_STORAGE . '/installed.lock', json_encode(['installed_at' => now()]));
+    }
 
     // هدرها در CLI قابل خواندن نیستند؛ از طریق Response ثبت‌شده یا http_response_code
     $code = http_response_code() ?: 200;

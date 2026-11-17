@@ -36,6 +36,17 @@ final class HomeController extends Controller
     /** Mini App اصلی */
     public function index(): void
     {
+        if (!SettingsService::miniappActive()) {
+            if (!headers_sent()) {
+                http_response_code(403);
+            }
+            echo View::render('miniapp/disabled', [
+                'title' => 'پنل کاربری',
+                'appName' => (string) SettingsService::get('app_name', 'رفرال‌بات'),
+                'botUsername' => (string) (TelegramService::settings()['bot_username'] ?? ''),
+            ], 'miniapp');
+            return;
+        }
         echo View::render('miniapp/home', [
             'title' => 'پنل کاربری',
             'appName' => (string) SettingsService::get('app_name', 'رفرال‌بات'),

@@ -110,8 +110,15 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
                         <input type="password" class="form-control ltr" name="db_pass" autocomplete="new-password">
                     </div>
                 </div>
+                <label class="checkbox" style="margin-bottom:10px">
+                    <input type="checkbox" name="create_db" value="1" checked>
+                    <span class="checkbox-text">اگر پایگاه داده وجود نداشت، خودش بسازد (نیازمند دسترسی CREATE)</span>
+                </label>
                 <div id="db-result"></div>
-                <button type="submit" class="btn btn-lg">تست اتصال و ادامه ←</button>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button type="submit" class="btn btn-lg">تست اتصال و ادامه ←</button>
+                    <button type="button" class="btn btn-secondary" id="btn-test-db">🔌 فقط آزمایش اتصال</button>
+                </div>
             </form>
         </div>
     </div>
@@ -184,7 +191,47 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
                     <input type="text" class="form-control ltr" name="base_url" value="<?= e($origin) ?>">
                     <div class="form-hint">
                         اگر دامنه دارید آدرس دامنه را وارد کنید (مثلاً <code>https://ref.example.com</code>).
-                        این آدرس برای ساخت لینک Webhook و Mini App استفاده می‌شود.
+                        اگر روی IP بدون دامنه نصب می‌کنید، همین مقدار فعلی را بگذارید — پنل مدیریت
+                        و ربات بدون تغییر کار می‌کنند.
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">📁 زیرپوشه نصب</label>
+                    <input type="text" class="form-control ltr" name="base_path" value="<?= e($basePath ?? '') ?>" placeholder="خالی = ریشه دامنه">
+                    <div class="form-hint">
+                        اگر سامانه را در ریشه دامنه نصب می‌کنید خالی بگذارید. اگر داخل پوشه‌ای مثل
+                        <code>public_html/bot</code> است، مقدار <code>/bot</code> را وارد کنید (به‌طور خودکار تشخیص داده شد).
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">💰 پاداش هر معرفی موفق (تومان)</label>
+                        <input type="text" class="form-control ltr" name="direct_reward" value="5000" inputmode="numeric">
+                        <div class="form-hint">مبلغی که با هر دعوت موفق به معرف پرداخت می‌شود. بعداً از پنل → پورسانت قابل تغییر است.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">حداقل مبلغ برداشت (تومان)</label>
+                        <input type="text" class="form-control ltr" name="min_withdraw_amount" value="30000" inputmode="numeric">
+                        <div class="form-hint">کاربر تا رسیدن به این مبلغ نمی‌تواند درخواست برداشت ثبت کند.</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">🌐 پنل وب کاربران (Mini App)</label>
+                    <select class="form-select" name="miniapp_mode" id="miniapp-mode">
+                        <option value="auto" selected>خودکار — فقط اگر HTTPS فعال باشد</option>
+                        <option value="off">خاموش — همه‌چیز با دکمه‌های ربات</option>
+                        <option value="on">فعال — نیازمند HTTPS معتبر</option>
+                    </select>
+                    <div class="form-hint" id="miniapp-hint">
+                        <?php if (!empty($isHttps)): ?>
+                            HTTPS فعال است؛ حالت «خودکار» پنل وب را روشن می‌کند.
+                        <?php else: ?>
+                            شما روی HTTP/IP نصب می‌کنید. پنل وب (Mini App) <b>خودکار خاموش</b> می‌شود و
+                            کاربران همه‌کارها را با دکمه‌های داخل ربات انجام می‌دهند — هیچ قابلیتی از دست نمی‌رود.
+                        <?php endif; ?>
                     </div>
                 </div>
                 <div id="settings-result"></div>
@@ -243,6 +290,30 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
 
   document.getElementById('btn-step-1').addEventListener('click', () => show(2));
 
+  // دکمه «فقط آزمایش اتصال» — چیزی ذخیره نمی‌کند
+  const testDbBtn = document.getElementById('btn-test-db');
+  if (testDbBtn) {
+    testDbBtn.addEventListener('click', async function () {
+      const form = document.getElementById('form-db');
+      const payload = {};
+      new FormData(form).forEach((v, k) => payload[k] = v);
+      busy(this, true);
+      const result = await RB.post('<?= url('install/test-database') ?>', payload);
+      busy(this, false);
+      if (result.ok) {
+        box('db-result', true, result.message);
+        if (result.need_create) {
+          document.getElementById('db-result').insertAdjacentHTML('beforeend',
+            '<div class="alert alert-warning"><span class="alert-icon">⚠️</span><div>' +
+            'پایگاه داده وجود ندارد. گزینه «اگر پایگاه داده وجود نداشت، خودش بسازد» را تیک بزنید ' +
+            'یا از cPanel آن را بسازید.</div></div>');
+        }
+      } else {
+        box('db-result', false, (result.error || 'اتصال ناموفق') + (result.hint ? '\n' + result.hint : ''));
+      }
+    });
+  }
+
   document.getElementById('form-db').addEventListener('submit', async function (e) {
     e.preventDefault();
     const btn = this.querySelector('[type=submit]');
@@ -251,7 +322,7 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
     new FormData(this).forEach((v, k) => payload[k] = v);
     const result = await RB.post('<?= url('install/database') ?>', payload);
     busy(btn, false);
-    box('db-result', result.ok, result.ok ? result.message : result.error);
+    box('db-result', result.ok, result.ok ? result.message : (result.error || 'اتصال ناموفق'));
     if (result.ok) setTimeout(() => show(3), 700);
   });
 

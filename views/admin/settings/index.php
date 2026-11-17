@@ -131,6 +131,42 @@ $flag = static fn(string $key, bool $default = false) => (int) ($settings[$key] 
                     <label class="form-label">پیام درخواست شماره تماس</label>
                     <textarea name="contact_request_message" class="form-control" rows="3" maxlength="600"><?= e($s('contact_request_message')) ?></textarea>
                 </div>
+
+                <div class="divider"></div>
+                <div class="form-group">
+                    <label class="form-label">🌐 پنل وب کاربران (Mini App)</label>
+                    <?php
+                    $miniappMode = (string) ($s('miniapp_mode') ?: 'auto');
+                    $miniappUrlNow = (string) ($s('miniapp_url') ?: '');
+                    ?>
+                    <select name="miniapp_mode" class="form-select" id="miniapp-mode">
+                        <option value="off" <?= $miniappMode === 'off' ? 'selected' : '' ?>>خاموش — همه‌چیز فقط با دکمه‌های ربات</option>
+                        <option value="auto" <?= $miniappMode === 'auto' ? 'selected' : '' ?>>خودکار — فقط اگر آدرس HTTPS باشد فعال شود</option>
+                        <option value="on" <?= $miniappMode === 'on' ? 'selected' : '' ?>>فعال — نیازمند HTTPS معتبر</option>
+                    </select>
+                    <div class="form-hint">
+                        <b>پیشنهاد برای هاست بدون SSL:</b> گزینه «خاموش» را انتخاب کنید. کاربران همه‌ی
+                        کارها (لینک دعوت، کیف پول، درآمد، برداشت، جشنواره‌ها) را با دکمه‌های داخل خود ربات
+                        انجام می‌دهند و نیازی به بازکردن هیچ صفحه‌ی وبی نیست.
+                    </div>
+                </div>
+                <div class="form-group" id="miniapp-url-group">
+                    <label class="form-label">آدرس پنل کاربری (اختیاری)</label>
+                    <input type="text" name="miniapp_url" class="form-control ltr" maxlength="255"
+                           value="<?= e($miniappUrlNow) ?>" placeholder="https://example.com/app">
+                    <div class="form-hint">
+                        فقط با <span class="ltr mono">https://</span> معتبر کار می‌کند.
+                        <?php if ($miniappUrlNow !== '' && !str_starts_with($miniappUrlNow, 'https://')): ?>
+                            <span style="color:var(--danger,#dc2626)">آدرس فعلی HTTPS نیست، بنابراین دکمه Mini App در ربات غیرفعال می‌ماند.</span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php if (!$miniappActive): ?>
+                    <div class="alert alert-info" style="margin-top:4px">
+                        <span class="alert-icon">ℹ️</span>
+                        <div>در حال حاضر پنل وب <b>غیرفعال</b> است. صفحه <span class="ltr mono">/app</span> پیام «از دکمه‌های ربات استفاده کنید» نشان می‌دهد و ربات هم دکمه‌ی Mini App نمی‌فرستد.</div>
+                    </div>
+                <?php endif; ?>
             </div>
             <div class="card-footer"><button class="btn" type="submit">💾 ذخیره</button></div>
         </form>

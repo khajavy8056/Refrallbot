@@ -25,5 +25,44 @@ foreach ($files as $file) {
         echo '✘ ' . str_replace($root . '/', '', $file) . ' — ' . $e->getMessage() . ' (خط ' . $e->getLine() . ')' . PHP_EOL;
     }
 }
-printf("%s %d فایل بررسی شد، %d خطا\n", $errors === 0 ? '✔' : '✘', count($files), $errors);
-exit($errors === 0 ? 0 : 1);
+// ---------------------------------------------------------------------------
+// بررسی ارجاع‌های کلاس با نام کاملاً-کیفی داخل نام‌فضا (namespace)
+//
+// در PHP، نوشتن `Foo\Bar::baz()` داخل فایلِ دارای namespace به `CurrentNs\Foo\Bar`
+// تفسیر می‌شود. این کلاس وجود ندارد و فقط در زمان اجرا خطا می‌دهد. چنین باگ‌هایی
+// در «صفحه نصب» باعث کرش کامل صفحه می‌شوند، پس اینجا ایستا تشخیص داده می‌شوند.
+// ---------------------------------------------------------------------------
+$nsErrors = 0;
+foreach ($files as $file) {
+    if (!str_contains($file, '/src/')) {
+        continue;
+    }
+    $src = (string) file_get_contents($file);
+    if (!preg_match('~^namespace\s+([A-Za-z0-9_\\\\]+);~m', $src, $nsMatch)) {
+        continue;
+    }
+    $namespace = trim($nsMatch[1], '\\');
+    $lines = explode("\n", $src);
+    foreach ($lines as $i => $line) {
+        $trimmed = ltrim($line);
+        if (str_starts_with($trimmed, 'use ') || str_starts_with($trimmed, 'namespace ')
+            || str_starts_with($trimmed, '*') || str_starts_with($trimmed, '//')) {
+            continue;
+        }
+        // ارجاع بدون بک‌اسلش ابتدایی به کلاسی با پیشوند RB\
+        if (preg_match_all('~(?<![\\\\A-Za-z0-9_$])(RB\\\\[A-Za-z0-9_\\\\]+)~', $line, $m)) {
+            foreach ($m[1] as $ref) {
+                $nsErrors++;
+                echo '✘ ' . str_replace($root . '/', '', $file) . ':' . ($i + 1)
+                    . ' — ارجاع نسبی «' . $ref . '» در namespace ' . $namespace . ' (باید \\' . $ref . ' باشد)' . PHP_EOL;
+            }
+        }
+    }
+}
+if ($nsErrors === 0) {
+    echo '✔ ارجاع کلاس‌ها با نام کامل بررسی شد، 0 خطا' . PHP_EOL;
+}
+
+$total = $errors + $nsErrors;
+printf("%s %d فایل بررسی شد، %d خطا\n", $total === 0 ? '✔' : '✘', count($files), $total);
+exit($total === 0 ? 0 : 1);

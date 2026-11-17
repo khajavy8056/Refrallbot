@@ -16,8 +16,8 @@ $views = [
   'admin/network/index' => ['title'=>'شبکه','roots'=>[],'topInviters'=>[],'q'=>'','depth'=>8,'stats'=>['total_relations'=>0,'with_refs'=>0,'max_depth'=>0,'orphans'=>0]],
   'admin/withdrawals/index' => ['title'=>'برداشت','result'=>['rows'=>[],'total'=>0,'sum'=>0,'page'=>1,'per_page'=>20],'filters'=>[],'stats'=>['counts'=>[],'sums'=>[],'pending_amount'=>0,'paid_amount'=>0,'paid_count'=>0],'fromRaw'=>'','toRaw'=>''],
   'admin/commissions/index' => ['title'=>'پورسانت','settings'=>RB\Services\CommissionSettings::defaults(),'versions'=>[],'stats'=>['total_commissions'=>0,'by_level'=>[],'events'=>0]],
-  'admin/settings/index' => ['title'=>'تنظیمات','settings'=>RB\Services\SettingsService::all(),'commission'=>RB\Services\CommissionSettings::defaults(),'metrics'=>RB\Services\RankingService::METRICS],
-  'admin/telegram/index' => ['title'=>'ربات','settings'=>[],'maskedToken'=>null,'suggestedWebhook'=>'https://x/webhook','webhookInfo'=>null,'menus'=>[],'counts'=>['messages_sent'=>0,'messages_failed'=>0,'updates'=>0],'lastMessages'=>[]],
+  'admin/settings/index' => ['title'=>'تنظیمات','settings'=>RB\Services\SettingsService::all(),'commission'=>RB\Services\CommissionSettings::defaults(),'metrics'=>RB\Services\RankingService::METRICS,'miniappActive'=>RB\Services\SettingsService::miniappActive()],
+  'admin/telegram/index' => ['title'=>'ربات','settings'=>[],'maskedToken'=>null,'suggestedWebhook'=>'https://x/webhook','webhookInfo'=>null,'menus'=>[],'counts'=>['messages_sent'=>0,'messages_failed'=>0,'updates'=>0],'lastMessages'=>[],'cronToken'=>'abc123'],
   'admin/channels/index' => ['title'=>'کانال','channels'=>[],'enforcement'=>false,'health'=>[],'contactRequired'=>false],
   'admin/broadcast/index' => ['title'=>'ارسال','campaigns'=>[],'segments'=>RB\Services\BroadcastService::SEGMENTS,'counts'=>['all'=>0,'active'=>0,'with_phone'=>0,'with_refs'=>0,'no_refs'=>0,'with_balance'=>0,'suspicious'=>0]],
   'admin/campaigns/index' => ['title'=>'کمپین','campaigns'=>[],'stats'=>[],'types'=>RB\Services\CampaignService::TYPES],
@@ -29,6 +29,10 @@ $views = [
   'admin/admins/index' => ['title'=>'مدیران','admins'=>[]],
   'admin/backup/index' => ['title'=>'پشتیبان','files'=>[],'driver'=>'sqlite','tables'=>30,'stats'=>['users'=>0,'transactions'=>0,'withdrawals'=>0]],
   'miniapp/landing' => ['title'=>'پنل','appName'=>'تست','miniappUrl'=>''],
+  'miniapp/disabled' => ['title'=>'پنل','appName'=>'تست','botUsername'=>'refrallbot_test_bot'],
+  // صفحه نصب — عمداً کامل رندر می‌شود تا کل ویزارد (۶ مرحله) بررسی شود
+  'install/index' => ['title'=>'نصب سامانه','step'=>1,'requirements'=>[],'fatal'=>false,
+      'isHttps'=>false,'origin'=>'http://localhost','csrf'=>'test-token'],
 ];
 $_SESSION['admin_id'] = $adminId;
 $_SESSION['admin_last_seen'] = time();
@@ -39,7 +43,8 @@ foreach ($views as $view => $data) {
     View::share('navBadges', []);
     View::share('currentPath', '/admin');
     try {
-        $layout = str_starts_with($view, 'miniapp/') ? 'miniapp' : 'app';
+        $layout = str_starts_with($view, 'miniapp/') ? 'miniapp'
+            : ($view === 'install/index' ? 'none' : 'app');
         $html = View::render($view, $data, $layout);
         $len = strlen($html);
         $bad = str_contains($html, 'Warning:') || str_contains($html, 'Notice:') || str_contains($html, 'Fatal error');

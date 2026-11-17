@@ -51,6 +51,8 @@ final class TelegramController extends AdminController
                 'updates' => (int) ($settings['updates_count'] ?? 0),
             ],
             'lastMessages' => $db->all('SELECT * FROM telegram_messages ORDER BY id DESC LIMIT 12'),
+            // کرون وب برای هاست‌هایی که crontab نمی‌دهند (توکن در اولین بازدید ساخته می‌شود)
+            'cronToken' => \RB\Services\CronService::webToken(true),
         ]);
     }
 
@@ -84,7 +86,10 @@ final class TelegramController extends AdminController
                 }
                 SettingsService::set('webhook_base_url', $base, 'telegram');
                 SettingsService::set('panel_url', $base, 'telegram');
-                SettingsService::set('miniapp_url', $base . url('app'), 'telegram');
+                // تلگرام Mini App را فقط روی https می‌پذیرد
+                if (str_starts_with($base, 'https://')) {
+                    SettingsService::set('miniapp_url', $base . url('app'), 'telegram');
+                }
             }
 
             $db = db();
@@ -203,13 +208,22 @@ final class TelegramController extends AdminController
         ], 'id = :id', ['id' => (int) ($settings['id'] ?? 0)]);
         TelegramService::forgetSettingsCache();
 
-        // ذخیره دامنه برای ساخت لینک Mini App
+        // ذخیره دامنه برای ساخت لینک‌ها
         $parts = parse_url($url);
         if (!empty($parts['scheme']) && !empty($parts['host'])) {
             $origin = $parts['scheme'] . '://' . $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : '');
             SettingsService::set('webhook_base_url', $origin, 'telegram');
             SettingsService::set('panel_url', $origin, 'telegram');
-            SettingsService::set('miniapp_url', $origin . url('app'), 'telegram');
+
+            // آدرس پنل کاربری فقط وقتی نوشته می‌شود که HTTPS باشد؛
+            // تلگرام web_app را روی http رد می‌کند.
+            if (str_starts_with($origin, 'https://')) {
+                if ((string) (SettingsService::get('miniapp_url', '') ?: '') === '') {
+                    SettingsService::set('miniapp_url', $origin . url('app'), 'telegram');
+                }
+            } elseif ((string) (SettingsService::get('miniapp_url', '') ?: '') !== '') {
+                SettingsService::set('miniapp_url', '', 'telegram');
+            }
         }
 
         AuditService::log('telegram.webhook_set', 'telegram', (int) ($settings['id'] ?? 0), ['url' => $url], current_admin_id());
@@ -249,10 +263,20 @@ final class TelegramController extends AdminController
         ];
         $commandsResult = $tg->setMyCommands($commands);
 
-        // دکمه منوی Mini App
+        // دکمه منوی Mini App — فقط اگر فعال باشد و آدرسش HTTPS معتبر باشد.
+        // تلگرام web_app را روی http نمی‌پذیرد و setChatMenuButton خطا می‌دهد.
         $miniappUrl = (string) SettingsService::get('miniapp_url', '');
-        $menuButtonResult = ['ok' => true];
-        if ($miniappUrl !== '' && str_starts_with($miniappUrl, 'https://')) {
+        $miniappMode = (string) (SettingsService::get('miniapp_mode', 'auto') ?? 'auto');
+        $miniappEnabled = SettingsService::miniappActive();
+        $menuButtonResult = ['ok' => true, 'skipped' => true];
+        $menuButtonNote = '';
+        if ($miniappMode === 'off') {
+            $menuButtonNote = 'پنل وب (Mini App) خاموش است؛ دکمه منو تغییر نکرد.';
+        } elseif ($miniappUrl === '') {
+            $menuButtonNote = 'آدرس پنل کاربری ثبت نشده است.';
+        } elseif (!str_starts_with($miniappUrl, 'https://')) {
+            $menuButtonNote = 'دکمه Mini App فقط با آدرس https کار می‌کند؛ فعلاً ست نشد.';
+        } else {
             $menuButtonResult = $tg->setChatMenuButton([
                 'menu_button' => [
                     'type' => 'web_app',
@@ -273,21 +297,30 @@ final class TelegramController extends AdminController
         AuditService::log('telegram.menu_synced', 'telegram', null, [
             'commands_ok' => $commandsResult['ok'] ?? false,
             'menu_button_ok' => $menuButtonResult['ok'] ?? false,
+            'menu_button_skipped' => !empty($menuButtonResult['skipped']),
+            'miniapp_enabled' => $miniappEnabled,
         ], current_admin_id());
 
         $warnings = [];
+        $notes = [];
         if (!($commandsResult['ok'] ?? false)) {
             $warnings[] = 'ثبت دستورات: ' . ($commandsResult['description'] ?? 'خطا');
         }
-        if (!($menuButtonResult['ok'] ?? false)) {
+        if (!empty($menuButtonResult['skipped'])) {
+            $notes[] = $menuButtonNote;
+        } elseif (!($menuButtonResult['ok'] ?? false)) {
             $warnings[] = 'دکمه Mini App: ' . ($menuButtonResult['description'] ?? 'خطا (آدرس HTTPS لازم است)');
         }
 
-        $this->ok(
-            $warnings ? 'منوها همگام شدند اما برخی موارد خطا داشت: ' . implode(' | ', $warnings)
-                      : 'منوها، دستورات و دکمه Mini App با موفقیت همگام شدند.',
-            ['reload' => true, 'warnings' => $warnings]
-        );
+        $message = 'دستورات ربات با موفقیت همگام شد.';
+        if ($notes) {
+            $message .= ' ' . implode(' ', $notes);
+        }
+        if ($warnings) {
+            $message = 'همگام‌سازی انجام شد اما برخی موارد خطا داشت: ' . implode(' | ', $warnings);
+        }
+
+        $this->ok($message, ['reload' => true, 'warnings' => $warnings, 'notes' => $notes]);
     }
 
     public function menus(): void

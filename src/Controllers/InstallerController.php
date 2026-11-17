@@ -6,12 +6,14 @@ namespace RB\Controllers;
 use RB\Http\Middleware;
 use RB\Services\AdminAuth;
 use RB\Services\AuditService;
+use RB\Services\CommissionSettings;
 use RB\Services\SettingsService;
 use RB\Support\Database;
 use RB\Support\Env;
 use RB\Support\ErrorHandler;
 use RB\Support\HttpException;
 use RB\Support\Migrator;
+use RB\Support\Money;
 use RB\Support\Request;
 use RB\Support\Session;
 
@@ -23,8 +25,10 @@ final class InstallerController
     private function guard(): void
     {
         if (Middleware::isInstalled()) {
-            http_response_code(403);
-            echo RB\Support\View::render('errors/installed', [], 'none');
+            if (!headers_sent()) {
+                http_response_code(403);
+            }
+            echo \RB\Support\View::render('errors/installed', [], 'none');
             exit;
         }
         Session::start();
@@ -32,11 +36,33 @@ final class InstallerController
         $key = '_install_attempts';
         $attempts = (int) ($_SESSION[$key] ?? 0);
         if ($attempts > 40) {
-            http_response_code(429);
+            if (!headers_sent()) {
+                http_response_code(429);
+            }
             echo 'تعداد درخواست‌های نصب بیش از حد مجاز است.';
             exit;
         }
         $_SESSION[$key] = $attempts + 1;
+    }
+
+    /**
+     * تشخیص خودکار زیرپوشه نصب.
+     * اگر پروژه در ریشه دامنه باشد مقدار '' و اگر در /bot باشد '/bot' برمی‌گردد.
+     * این مقدار در .env به‌عنوان APP_BASE_PATH ذخیره می‌شود تا همه لینک‌ها درست ساخته شوند.
+     */
+    public static function detectBasePath(): string
+    {
+        $script = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+        $dir = rtrim(dirname($script), '/');
+        // اگر docroot روی public/ تنظیم شده باشد: SCRIPT_NAME = /index.php
+        if ($dir === '' || $dir === '.' || $dir === '/') {
+            return '';
+        }
+        // اگر ریشه پروژه docroot است: SCRIPT_NAME = /public/index.php
+        if (str_ends_with($dir, '/public')) {
+            $dir = substr($dir, 0, -7);
+        }
+        return $dir === '' || $dir === '/' ? '' : '/' . trim($dir, '/');
     }
 
     private function step(): int
@@ -80,42 +106,126 @@ final class InstallerController
                 $fatal = true;
             }
         }
-        echo RB\Support\View::render('install/index', [
+        echo \RB\Support\View::render('install/index', [
             'title' => 'نصب سامانه',
             'step' => $this->step(),
             'requirements' => $requirements,
             'fatal' => $fatal,
             'isHttps' => Request::isHttps(),
             'origin' => Request::origin(),
+            'basePath' => self::detectBasePath(),
             'csrf' => \RB\Support\Csrf::token(),
         ], 'none');
+    }
+
+    /** اطلاعات اتصال از POST (با مقادیر امن پیش‌فرض) */
+    private function dbInput(): array
+    {
+        return [
+            'host' => trim((string) ($_POST['db_host'] ?? 'localhost')) ?: 'localhost',
+            'port' => trim((string) ($_POST['db_port'] ?? '3306')) ?: '3306',
+            'name' => trim((string) ($_POST['db_name'] ?? '')),
+            'user' => trim((string) ($_POST['db_user'] ?? '')),
+            'pass' => (string) ($_POST['db_pass'] ?? ''),
+        ];
+    }
+
+    /**
+     * تست اتصال بدون ذخیره‌سازی — برای دکمه «آزمایش اتصال»
+     * اگر دیتابیس وجود نداشته باشد، تلاش می‌کند آن را بسازد.
+     */
+    public function testDatabase(): void
+    {
+        $this->guard();
+        \RB\Support\Csrf::verify();
+        $in = $this->dbInput();
+
+        if ($in['name'] === '' || $in['user'] === '') {
+            json_out(['ok' => false, 'error' => 'نام پایگاه داده و نام کاربری الزامی است.'], 422);
+        }
+
+        try {
+            // اول بدون نام دیتابیس وصل می‌شویم تا بتوانیم وجود آن را بررسی/ایجاد کنیم
+            $root = new Database([
+                'driver' => 'mysql', 'host' => $in['host'], 'port' => $in['port'],
+                'database' => '', 'username' => $in['user'], 'password' => $in['pass'],
+            ]);
+            $pdo = $root->pdo();
+            $version = (string) $root->value('SELECT VERSION()');
+            $exists = (bool) $root->value(
+                'SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = :n',
+                ['n' => $in['name']]
+            );
+
+            $created = false;
+            if (!$exists && !empty($_POST['create_db'])) {
+                $safe = str_replace('`', '', $in['name']);
+                $pdo->exec('CREATE DATABASE `' . $safe . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
+                $created = true;
+                $exists = true;
+            }
+
+            $connect = new Database([
+                'driver' => 'mysql', 'host' => $in['host'], 'port' => $in['port'],
+                'database' => $in['name'], 'username' => $in['user'], 'password' => $in['pass'],
+            ]);
+            $connect->pdo();
+
+            json_out([
+                'ok' => true,
+                'version' => $version,
+                'exists' => $exists,
+                'created' => $created,
+                'message' => 'اتصال موفق بود. نسخه MySQL: ' . $version
+                    . ($created ? ' — دیتابیس ساخته شد.' : ($exists ? '' : ' — دیتابیس وجود ندارد.')),
+                'need_create' => !$exists,
+            ]);
+        } catch (\Throwable $e) {
+            json_out([
+                'ok' => false,
+                'error' => 'اتصال ناموفق: ' . ErrorHandler::redact($e->getMessage()),
+                'hint' => 'مقادیر را از cPanel → MySQL Databases بردارید. کاربر دیتابیس باید به آن دسترسی کامل داشته باشد.',
+            ], 422);
+        }
     }
 
     public function database(): void
     {
         $this->guard();
         \RB\Support\Csrf::verify();
+        $in = $this->dbInput();
 
-        $host = trim((string) ($_POST['db_host'] ?? 'localhost'));
-        $port = trim((string) ($_POST['db_port'] ?? '3306'));
-        $name = trim((string) ($_POST['db_name'] ?? ''));
-        $user = trim((string) ($_POST['db_user'] ?? ''));
-        $pass = (string) ($_POST['db_pass'] ?? '');
-
-        if ($name === '' || $user === '') {
+        if ($in['name'] === '' || $in['user'] === '') {
             json_out(['ok' => false, 'error' => 'نام پایگاه داده و نام کاربری الزامی است.'], 422);
         }
 
         try {
             $db = new Database([
-                'driver' => 'mysql', 'host' => $host, 'port' => $port,
-                'database' => $name, 'username' => $user, 'password' => $pass,
+                'driver' => 'mysql', 'host' => $in['host'], 'port' => $in['port'],
+                'database' => $in['name'], 'username' => $in['user'], 'password' => $in['pass'],
             ]);
             $db->pdo();
             $version = (string) $db->value('SELECT VERSION()');
+
+            // بررسی اینکه این دیتابیس قبلاً نصب نشده باشد
+            $alreadyInstalled = false;
+            try {
+                $alreadyInstalled = (bool) $db->value(
+                    "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'system_settings'"
+                );
+            } catch (\Throwable) {
+            }
+            if ($alreadyInstalled && (int) $db->value("SELECT COUNT(*) FROM system_settings WHERE `key` = 'installed_at'")) {
+                json_out([
+                    'ok' => false,
+                    'error' => 'این دیتابیس قبلاً نصب شده است. برای نصب مجدد، جدول‌ها را پاک کنید یا دیتابیس دیگری بسازید.',
+                    'already_installed' => true,
+                ], 409);
+            }
+
             Database::setInstance($db);
             Session::start();
-            $_SESSION['_install_db'] = compact('host', 'port', 'name', 'user', 'pass');
+            $_SESSION['_install_db'] = $in;
             $this->setStep(3);
             json_out(['ok' => true, 'message' => 'اتصال موفق بود (نسخه MySQL: ' . $version . ')', 'version' => $version]);
         } catch (\Throwable $e) {
@@ -142,7 +252,7 @@ final class InstallerController
                 }
             }
 
-            RB\Services\MenuService::syncDefaults($db);
+            \RB\Services\MenuService::syncDefaults($db);
 
             // نقش مدیر کل
             if (!$db->value('SELECT id FROM admin_roles WHERE slug = :s', ['s' => 'superadmin'])) {
@@ -156,8 +266,8 @@ final class InstallerController
                 ]);
             }
             // نسخه اولیه تنظیمات پورسانت
-            if (!RB\Support\Database::instance()->value('SELECT id FROM commission_setting_versions LIMIT 1')) {
-                RB\Services\CommissionSettings::saveVersion([
+            if (!\RB\Support\Database::instance()->value('SELECT id FROM commission_setting_versions LIMIT 1')) {
+                CommissionSettings::saveVersion([
                     'direct_reward' => 5000,
                     'direct_enabled' => 1,
                     'multi_level_enabled' => 1,
@@ -255,18 +365,78 @@ final class InstallerController
         try {
             $this->resolveDatabase();
             $appName = trim((string) ($_POST['app_name'] ?? 'رفرال‌بات'));
-            SettingsService::set('app_name', $appName !== '' ? $appName : 'رفرال‌بات', 'general');
+            SettingsService::set('app_name', $appName !== '' ? mb_substr($appName, 0, 60) : 'رفرال‌بات', 'general');
 
+            // آدرس پایه: اگر خالی بماند از آدرس فعلی مرورگر استفاده می‌شود،
+            // تا نصب روی IP بدون دامنه هم بدون هیچ ورودی اضافه‌ای کار کند.
             $baseUrl = trim((string) ($_POST['base_url'] ?? ''));
-            if ($baseUrl !== '' && !preg_match('~^https?://~i', $baseUrl)) {
-                $baseUrl = 'https://' . $baseUrl;
+            if ($baseUrl === '') {
+                $baseUrl = Request::origin();
             }
-            SettingsService::set('webhook_base_url', rtrim($baseUrl, '/'), 'telegram');
-            SettingsService::set('panel_url', rtrim($baseUrl, '/'), 'telegram');
-            SettingsService::set('miniapp_url', rtrim($baseUrl, '/') . url('app'), 'telegram');
+            if (!preg_match('~^https?://~i', $baseUrl)) {
+                $baseUrl = (Request::isHttps() ? 'https://' : 'http://') . $baseUrl;
+            }
+            $baseUrl = rtrim($baseUrl, '/');
+            $isHttps = str_starts_with($baseUrl, 'https://');
+
+            // زیرپوشه نصب (اگر در ریشه باشد خالی است)
+            $basePath = trim((string) ($_POST['base_path'] ?? ''));
+            if ($basePath !== '' && $basePath !== '/') {
+                $basePath = '/' . trim($basePath, '/');
+            } else {
+                $basePath = '';
+            }
+            SettingsService::set('app_base_path', $basePath, 'system');
+
+            SettingsService::set('webhook_base_url', $baseUrl, 'telegram');
+            SettingsService::set('panel_url', $baseUrl, 'telegram');
+
+            // پنل وب کاربران (Mini App) فقط با HTTPS معتبر کار می‌کند.
+            // روی IP/HTTP این ماژول خاموش می‌ماند و کاربران همه‌چیز را با دکمه‌های ربات انجام می‌دهند.
+            $mode = (string) ($_POST['miniapp_mode'] ?? 'auto');
+            if (!in_array($mode, ['auto', 'on', 'off'], true)) {
+                $mode = 'auto';
+            }
+            if (!$isHttps) {
+                $mode = 'off';
+            }
+            SettingsService::set('miniapp_mode', $mode, 'telegram');
+            $appRoute = $basePath . '/app';
+            SettingsService::set('miniapp_url', ($mode !== 'off' && $isHttps) ? $baseUrl . $appRoute : '', 'telegram');
+
+            // پاداش پیش‌فرض معرفی (قابل تغییر بعدی از پنل → پورسانت)
+            $reward = Money::parseToman($_POST['direct_reward'] ?? null);
+            if ($reward !== null && $reward >= 0) {
+                $current = CommissionSettings::current(db(), true);
+                CommissionSettings::saveVersion([
+                    'direct_reward' => $reward,
+                    'direct_enabled' => 1,
+                    'multi_level_enabled' => $current->multiLevelEnabled ? 1 : 0,
+                    'max_levels' => $current->maxLevels,
+                    'levels' => $current->levels,
+                    'percent_base' => $current->percentBase,
+                    'fixed_base_amount' => $current->fixedBaseAmount,
+                    'max_payout_per_event' => $current->maxPayoutPerEvent,
+                    'daily_payout_cap' => $current->dailyPayoutCap,
+                    'qualify_conditions' => $current->qualifyConditions ?: ['joined'],
+                    'blocked_users_no_commission' => 1,
+                ]);
+            }
+
+            // حداقل برداشت
+            $minWithdraw = Money::parseToman($_POST['min_withdraw_amount'] ?? null);
+            if ($minWithdraw !== null && $minWithdraw >= 1000) {
+                SettingsService::set('min_withdraw_amount', (string) $minWithdraw, 'withdrawal');
+            }
 
             $this->setStep(6);
-            json_out(['ok' => true, 'message' => 'تنظیمات پایه ذخیره شد.']);
+            json_out([
+                'ok' => true,
+                'message' => 'تنظیمات پایه ذخیره شد.',
+                'base_url' => $baseUrl,
+                'https' => $isHttps,
+                'miniapp' => $mode !== 'off' && $isHttps,
+            ]);
         } catch (\Throwable $e) {
             json_out(['ok' => false, 'error' => ErrorHandler::redact($e->getMessage())], 500);
         }
@@ -352,6 +522,7 @@ final class InstallerController
             'APP_DEBUG' => 'false',
             'APP_TIMEZONE' => 'Asia/Tehran',
             'APP_KEY' => $appKey,
+            'APP_BASE_PATH' => (string) SettingsService::get('app_base_path', ''),
             'RB_INSTALLED' => $installed ? 'true' : 'false',
         ];
         if ($db !== null) {
@@ -416,6 +587,11 @@ final class InstallerController
             'risk_mark_threshold' => '45',
             'qualify_min_activity_messages' => '0',
             'broadcast_batch_size' => '25',
+            // پنل وب (Mini App): پیش‌فرض auto یعنی فقط اگر آدرس https باشد فعال می‌شود.
+            // روی هاست بدون SSL، همه‌چیز از دکمه‌های خود ربات انجام می‌شود.
+            'miniapp_mode' => 'auto',
+            'miniapp_url' => '',
+            'panel_url' => '',
         ];
     }
 }

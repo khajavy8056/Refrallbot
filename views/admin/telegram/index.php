@@ -188,6 +188,34 @@ $webhookActive = !empty($settings['webhook_active']);
     </div>
 </div>
 
+<div class="card">
+    <div class="card-header"><h2 class="card-title">⏱ کرون وب (برای هاست اشتراکی بدون crontab)</h2></div>
+    <div class="card-body">
+        <div class="alert alert-info">
+            <span class="alert-icon">ℹ️</span>
+            <div>
+                اگر کنترل پنل هاست به شما اجازه‌ی ساخت Cron نمی‌دهد، این آدرس را در بخش
+                «Cron Jobs» هاست یا هر سرویس زمان‌بندی رایگان (مثلاً cron-job.org) هر ۵ دقیقه صدا بزنید.
+                آدرس شامل توکن است؛ آن را در اختیار کسی قرار ندهید.
+            </div>
+        </div>
+        <?php $cronUrl = url('cron/run') . '?token=' . ($cronToken ?? '') . '&task=all'; ?>
+        <label class="form-label">آدرس اجرای کامل وظایف</label>
+        <div class="copy-field">
+            <span class="ltr text-xs"><?= e($cronUrl) ?></span>
+            <button class="btn btn-ghost btn-sm" type="button" data-copy="<?= e($cronUrl) ?>">کپی</button>
+        </div>
+        <div class="form-hint">
+            وظیفه‌های اجراشده: ارسال همگانی در صف، جوایز کمپین‌ها، نگهداری و پاکسازی، پشتیبان روزانه، بازبینی امنیتی.
+            می‌توانید با <code>&amp;task=broadcast</code> فقط بخش ارسال را اجرا کنید.
+        </div>
+        <div class="form-hint">
+            اگر به خط فرمان دسترسی دارید، همین کارها با
+            <code class="ltr">php bin/cron.php all</code> هم اجرا می‌شوند.
+        </div>
+    </div>
+</div>
+
 <?php if ($connected && !empty($settings['bot_username'])): ?>
 <div class="card">
     <div class="card-header"><h2 class="card-title">لینک‌های عمومی</h2></div>

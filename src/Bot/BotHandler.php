@@ -575,15 +575,33 @@ final class BotHandler
         ]);
     }
 
+    /**
+     * دکمه «پنل کاربری».
+     *
+     * ⚠️ تلگرام دکمه‌ی web_app را فقط با https می‌پذیرد؛ اگر آدرس Mini App روی http
+     * باشد (نصب روی هاست بدون SSL)، فرستادن چنین دکمه‌ای باعث می‌شود تلگرام کل پیام
+     * را با خطای 400 رد کند و کاربر هیچ پاسخی نمی‌گیرد. پس در این حالت دکمه‌ی
+     * معمولی url فرستاده می‌شود که هم روی http کار می‌کند و هم پیام را خراب نمی‌کند.
+     */
     private function panelButton(): array
     {
+        $mode = (string) (SettingsService::get('miniapp_mode', 'auto') ?? 'auto');
+        if ($mode === 'off') {
+            return TelegramService::inlineKeyboard([]);
+        }
         $base = (string) (SettingsService::get('miniapp_url', '') ?: '');
         if ($base === '') {
             return TelegramService::inlineKeyboard([]);
         }
-        return TelegramService::inlineKeyboard([
-            [['text' => '📱 باز کردن پنل کاربری', 'web_app' => ['url' => $base]]],
-        ]);
+        // web_app فقط با https؛ روی http دکمه‌ی url معمولی تا پیام رد نشود
+        $isHttps = str_starts_with($base, 'https://');
+        $button = ['text' => $isHttps ? '📱 باز کردن پنل کاربری' : '🌐 باز کردن پنل در مرورگر'];
+        if ($isHttps) {
+            $button['web_app'] = ['url' => $base];
+        } else {
+            $button['url'] = $base;
+        }
+        return TelegramService::inlineKeyboard([[$button]]);
     }
 
     // ------------------------------------------------------------------ کال‌بک‌ها

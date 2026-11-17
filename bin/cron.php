@@ -1,11 +1,17 @@
 #!/usr/bin/env php
 <?php
 /**
- * اجرای وظایف زمان‌بندی‌شده — برای Cron روی هاست اشتراکی
+ * اجرای وظایف زمان‌بندی‌شده — برای Cron خط فرمان روی هاست اشتراکی
  *
  * نمونه تنظیمات Crontab (ارسال همگانی هر ۲ دقیقه + وظایف اصلی هر ۱۰ دقیقه):
  *   *\/2 * * * * /usr/local/bin/php /home/USER/public_html/bin/cron.php broadcast >/dev/null 2>&1
  *   0,10,20,30,40,50 * * * * /usr/local/bin/php /home/USER/public_html/bin/cron.php all >/dev/null 2>&1
+ *
+ * اگر هاست به شما crontab نمی‌دهد، از Cron وب استفاده کنید
+ * (آدرس و توکن آن در پنل مدیریت → اتصال به ربات → «کرون وب» نمایش داده می‌شود):
+ *   https://YOUR-DOMAIN/cron/run?token=TOKEN&task=all
+ *
+ * منطق کارها در RB\Services\CronService است تا هر دو مسیر یک رفتار داشته باشند.
  */
 declare(strict_types=1);
 
@@ -16,15 +22,13 @@ if (PHP_SAPI !== 'cli') {
 
 require dirname(__DIR__) . '/src/bootstrap.php';
 
-use RB\Services\BroadcastService;
-use RB\Services\CampaignService;
-use RB\Services\SecurityService;
-use RB\Services\UserService;
+use RB\Services\CronService;
+use RB\Services\SettingsService;
+use RB\Services\TelegramService;
 use RB\Support\Database;
 
 $task = $argv[1] ?? 'all';
 $quiet = in_array('--quiet', $argv, true) || in_array('-q', $argv, true);
-$startedAt = microtime(true);
 
 $log = static function (string $message) use ($quiet): void {
     if (!$quiet) {
@@ -37,83 +41,42 @@ $log('شروع وظیفه: ' . $task);
 try {
     $db = Database::instance();
 
-    if (in_array($task, ['broadcast', 'all'], true)) {
-        $service = new BroadcastService($db);
-        $sent = $service->processQueue(25);
-        $log('ارسال همگانی: ' . $sent . ' پیام پردازش شد.');
-
-        // تلاش مجدد یک‌باره برای پیام‌های ناموفق کمپین‌های فعال
-        $failedCampaigns = $db->all(
-            "SELECT id FROM broadcast_campaigns WHERE status IN ('sending','failed') ORDER BY id DESC LIMIT 5"
-        );
-        foreach ($failedCampaigns as $row) {
-            $retried = $service->retryFailed((int) $row['id']);
-            if ($retried > 0) {
-                $db->update('broadcast_campaigns', ['status' => 'queued', 'updated_at' => now()], 'id = :id', ['id' => (int) $row['id']]);
-                $log('تلاش مجدد برای ' . $retried . ' پیام ناموفق کمپین #' . $row['id']);
+    // وظیفه poll تکلیف جداست (نیازمند توکن ربات و نبود Webhook)
+    if ($task === 'poll') {
+        $tg = new TelegramService(null, $db);
+        if (!$tg->isConfigured()) {
+            $log('توکن ربات تنظیم نشده است. عملیات متوقف شد.');
+            exit(1);
+        }
+        if (!empty(TelegramService::settings($db)['webhook_active'])) {
+            $log('Webhook فعال است؛ استفاده هم‌زمان از Polling باعث تعارض می‌شود. ابتدا Webhook را حذف کنید.');
+            exit(1);
+        }
+        $offset = (int) (SettingsService::get('poll_offset', '0') ?? 0);
+        $handler = new RB\Bot\BotHandler($db);
+        $response = $tg->getUpdates($offset, 30, 100);
+        if (!($response['ok'] ?? false)) {
+            $log('خطا در دریافت آپدیت‌ها: ' . ($response['description'] ?? 'نامشخص'));
+            exit(1);
+        }
+        $processed = 0;
+        foreach ((array) ($response['result'] ?? []) as $update) {
+            $updateId = (int) ($update['update_id'] ?? 0);
+            if ($updateId <= 0) {
+                continue;
             }
+            $handler->handle($update);
+            $offset = $updateId + 1;
+            $processed++;
         }
+        SettingsService::set('poll_offset', (string) $offset, 'telegram');
+        $log('پردازش شد: ' . $processed . ' آپدیت. آفست فعلی: ' . $offset);
+        exit(0);
     }
 
-    if (in_array($task, ['campaigns', 'all'], true)) {
-        $granted = (new CampaignService($db))->processRewards();
-        $log('جوایز کمپین‌ها: ' . $granted . ' جایزه پرداخت شد.');
-    }
-
-    if (in_array($task, ['maintenance', 'all'], true)) {
-        // پاکسازی نشست‌های منقضی ربات
-        $db->run('DELETE FROM bot_sessions WHERE expires_at < :now', ['now' => now()]);
-        // پاکسازی توکن‌های ورود یک‌بارمصرف منقضی
-        $stmt = $db->all("SELECT id, `value` FROM system_settings WHERE `key` LIKE 'magic_login:%'");
-        foreach ($stmt as $row) {
-            $payload = json_decode((string) $row['value'], true) ?: [];
-            if ((int) ($payload['expires'] ?? 0) < time()) {
-                $db->delete('system_settings', 'id = :id', ['id' => (int) $row['id']]);
-            }
-        }
-        // بازسازی شمارنده‌های شبکه در صورت ناسازگاری
-        $users = new UserService($db);
-        $users->refreshNetworkCounters();
-        $log('نگهداری: پاکسازی و بازسازی شمارنده‌ها انجام شد.');
-    }
-
-    if (in_array($task, ['backup', 'all'], true)) {
-        $dir = RB_STORAGE . '/backups';
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0775, true);
-        }
-        $file = $dir . '/refrallbot-db-' . date('Ymd') . '.sql';
-        if (!is_file($file)) {
-            $handle = fopen($file, 'wb');
-            if ($handle !== false) {
-                fwrite($handle, "-- RefrallBot automatic backup " . date('c') . "\n");
-                foreach ($db->all("SELECT name FROM sqlite_master WHERE type='table'") as $row) {
-                    fwrite($handle, '-- table ' . $row['name'] . "\n");
-                }
-                fclose($handle);
-                $log('پشتیبان روزانه ساخته شد: ' . basename($file));
-            }
-        }
-        // نگه‌داشتن فقط ۱۴ فایل آخر
-        $files = glob($dir . '/refrallbot-db-*.sql') ?: [];
-        sort($files);
-        while (count($files) > 14) {
-            @unlink((string) array_shift($files));
-        }
-    }
-
-    if (in_array($task, ['security', 'all'], true)) {
-        // ارزیابی مجدد کاربران با ریسک بالا
-        $rows = $db->all("SELECT id FROM users WHERE (status = 'suspicious' OR risk_score >= 20) AND status <> 'blocked' LIMIT 200");
-        foreach ($rows as $row) {
-            SecurityService::evaluateUser((int) $row['id']);
-        }
-        $log('امنیت: ' . count($rows) . ' کاربر ارزیابی شد.');
-    }
-
-    $duration = round((microtime(true) - $startedAt) * 1000);
-    $log('پایان موفق در ' . $duration . ' میلی‌ثانیه.');
-    exit(0);
+    $result = (new CronService($db, $log))->run($task);
+    $log('پایان ' . ($result['ok'] ? 'موفق' : 'ناموفق') . ' در ' . $result['ms'] . ' میلی‌ثانیه.');
+    exit($result['ok'] ? 0 : 1);
 } catch (\Throwable $e) {
     fwrite(STDERR, '[' . date('Y-m-d H:i:s') . '] خطا: ' . $e->getMessage() . PHP_EOL);
     exit(1);

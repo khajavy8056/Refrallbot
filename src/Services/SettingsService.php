@@ -73,6 +73,12 @@ final class SettingsService
         self::$cache = null;
     }
 
+    /** پاک‌کردن کش درون‌حافظه (پس از تغییر مستقیم دیتابیس) */
+    public static function flush(): void
+    {
+        self::$cache = null;
+    }
+
     public static function setMany(array $values, string $group = 'general'): void
     {
         foreach ($values as $key => $value) {
@@ -98,4 +104,25 @@ final class SettingsService
     {
         self::$cache = null;
     }
+
+    /**
+     * آیا پنل وب (Mini App) باید فعال باشد؟
+     *
+     * تلگرام برای Mini App فقط https معتبر می‌پذیرد. بنابراین:
+     *   miniapp_mode=off  → همیشه خاموش
+     *   miniapp_mode=on   → فقط اگر آدرس https باشد
+     *   miniapp_mode=auto → (پیش‌فرض) فقط اگر آدرس https باشد
+     *
+     * روی هاست بدون SSL همه‌چیز از دکمه‌های خود ربات کار می‌کند.
+     */
+    public static function miniappActive(): bool
+    {
+        $mode = (string) (self::get('miniapp_mode', 'auto') ?? 'auto');
+        if ($mode === 'off') {
+            return false;
+        }
+        $url = (string) (self::get('miniapp_url', '') ?: '');
+        return $url !== '' && str_starts_with($url, 'https://');
+    }
+
 }

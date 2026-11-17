@@ -15,6 +15,7 @@ return static function (Router $router): void {
 
     // ------------------------------------------------ نصب اولیه
     $router->get('/install', [InstallerController::class, 'index']);
+    $router->post('/install/test-database', [InstallerController::class, 'testDatabase']);
     $router->post('/install/database', [InstallerController::class, 'database']);
     $router->post('/install/migrate', [InstallerController::class, 'migrate']);
     $router->post('/install/admin', [InstallerController::class, 'createAdmin']);
@@ -119,6 +120,10 @@ return static function (Router $router): void {
     $router->get('/admin/backup', [Admin\BackupController::class, 'index'], ['admin']);
     $router->post('/admin/backup/create', [Admin\BackupController::class, 'create'], ['admin', 'csrf']);
     $router->get('/admin/backup/download/{file}', [Admin\BackupController::class, 'download'], ['admin']);
+
+    // ------------------------------------------------ Cron وب (هاست اشتراکی بدون crontab)
+    $router->get('/cron/run', [\RB\Controllers\CronController::class, 'run']);
+    $router->post('/cron/run', [\RB\Controllers\CronController::class, 'run']);
 
     // ------------------------------------------------ پنل کاربری (Mini App)
     $router->get('/app', [MiniApp\HomeController::class, 'index']);
