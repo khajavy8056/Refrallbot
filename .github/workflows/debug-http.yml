@@ -1,0 +1,82 @@
+name: Debug HTTP
+
+on:
+  push:
+    branches: ["arena/85ced1ab-refrallbot"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    name: عیب‌یابی تست دود HTTP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, openssl, curl, json
+          coverage: none
+
+      - name: seed
+        env:
+          DB_DRIVER: sqlite
+          DB_DATABASE: /tmp/refrallbot-http.sqlite
+        run: php tests/_seed_http.php
+
+      - name: server + checks (verbose)
+        env:
+          DB_DRIVER: sqlite
+          DB_DATABASE: /tmp/refrallbot-http.sqlite
+          APP_DEBUG: "1"
+        run: |
+          php -S 127.0.0.1:8099 -t public public/index.php > /tmp/server.log 2>&1 &
+          SERVER_PID=$!
+          sleep 3
+
+          echo "=== WARMUP /healthz ==="
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /tmp/b -w '%{http_code}' http://127.0.0.1:8099/healthz || echo 000)
+            echo "attempt $i → $code"
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          echo "--- body ---"; cat /tmp/b; echo
+
+          probe () {
+            local p="$1"
+            local code
+            code=$(curl -s -o /tmp/b -w '%{http_code}' "http://127.0.0.1:8099${p}")
+            echo "PROBE ${p} → HTTP ${code} ($(wc -c < /tmp/b) bytes)"
+            if [ "$code" != "200" ] && [ "$code" != "302" ] && [ "$code" != "403" ] && [ "$code" != "404" ]; then
+              echo "----- body (head 60) -----"; head -60 /tmp/b; echo "----- end -----"
+            fi
+          }
+
+          for p in / /admin/login /app /webhook/telegram /admin /install /install.php /nope-404 /cron/run /healthz; do
+            probe "$p"
+          done
+
+          echo "=== assets ==="
+          for f in assets/css/app.css assets/css/miniapp.css assets/js/app.js assets/js/miniapp.js assets/fonts/Vazirmatn-Regular.woff2; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/${f}")
+            size=$(curl -s "http://127.0.0.1:8099/${f}" | wc -c)
+            echo "ASSET ${f} → ${code} (${size} bytes)"
+          done
+
+          echo "=== sensitive ==="
+          for f in .env src/bootstrap.php config/app.php storage/logs/; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/${f}")
+            echo "SENSITIVE ${f} → ${code}"
+          done
+
+          echo "=== cron with token ==="
+          code=$(curl -s -o /tmp/c -w '%{http_code}' "http://127.0.0.1:8099/cron/run?token=ci-cron-token-0123456789abcdef01234567&task=maintenance")
+          echo "CRON → $code"; cat /tmp/c; echo
+
+          echo "=== SERVER LOG ==="
+          tail -60 /tmp/server.log || true
+          kill $SERVER_PID 2>/dev/null || true
