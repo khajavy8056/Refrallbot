@@ -85,4 +85,18 @@ if ($totalFailed > 0) {
     echo str_repeat('-', 62) . "\n";
 }
 echo $totalFailed === 0 ? "\n✅ همه تست‌ها موفق\n" : "\n❌ برخی تست‌ها ناموفق بودند\n";
+
+// ---- خلاصهٔ فشرده در انتهای خروجی (workflow فقط tail -25 را نشان می‌دهد)
+if ($totalFailed > 0) {
+    echo "\nSHORT-SUMMARY (failed tests):\n";
+    foreach ($results as $r) {
+        if ($r['exit'] === 0 && $r['failed'] === 0) {
+            continue;
+        }
+        echo '  ✘ ' . $r['name'] . ' (exit=' . $r['exit'] . ', failed=' . $r['failed'] . ")\n";
+        foreach (array_slice($r['failedLines'], 0, 3) as $line) {
+            echo '      ' . mb_substr($line, 0, 200) . "\n";
+        }
+    }
+}
 exit($totalFailed === 0 ? 0 : 1);
