@@ -1,16 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  CI: تست‌های خودکار RefrallBot
 #
-#  ⚠️ این فایل عمداً در مسیر .github/workflows/ قرار ندارد.
-#  دلیل: توکن GitHub مورد استفاده در این محیط مجوز «workflows» ندارد و
-#  ایجاد/به‌روزرسانی فایل‌های workflow را رد می‌کند.
+#  ⚠️ این فایل عمداً در مسیر .github/workflows/ قرار ندارد، چون توکن GitHub
+#  مورد استفاده برای ساخت این پروژه مجوز «workflows» نداشت و push رد می‌شد.
 #
-#  برای فعال‌سازی روی GitHub:
-#      mkdir -p .github/workflows
-#      git mv .github/tests-workflow.yml .github/workflows/tests.yml
-#      git commit -m "ci: فعال‌سازی تست‌های خودکار" && git push
-#
-#  (یا از رابط وب GitHub فایل را به .github/workflows/tests.yml منتقل کنید)
+#  فعال‌سازی (یکی را انتخاب کنید):
+#    الف) از رابط وب GitHub: فایل را بسازید/منتقل کنید به
+#         .github/workflows/tests.yml و محتوای همین فایل را جای‌گذاری کنید.
+#    ب) از خط فرمان:
+#         mkdir -p .github/workflows
+#         git mv .github/tests-workflow.yml .github/workflows/tests.yml
+#         git rm -r --cached .github/tests-workflow.yml 2>/dev/null || true
+#         git commit -m "ci: فعال‌سازی تست‌های خودکار" && git push
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Tests
@@ -21,7 +22,16 @@ on:
   pull_request:
   workflow_dispatch:
 
+# اجرای هم‌زمان قبلی همان شاخه لغو می‌شود
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
+  # ──────────────────────────────────────────────────────────────── ۱) تست‌ها
   php-tests:
     name: PHP ${{ matrix.php }} — تست‌های خودکار
     runs-on: ubuntu-latest
@@ -49,16 +59,20 @@ jobs:
           set -e
           count=0
           while IFS= read -r -d '' file; do
-            php -l "$file" > /dev/null || { echo "Syntax error in $file"; php -l "$file"; exit 1; }
+            php -l "$file" > /dev/null || { echo "✘ Syntax error in $file"; php -l "$file"; exit 1; }
             count=$((count + 1))
           done < <(find src views database bin config tests public -name '*.php' -print0)
           echo "✔ سینتکس $count فایل PHP سالم است"
 
-      - name: اجرای تست‌ها (۱۰ سناریو)
+      - name: بررسی سینتکس با تست داخلی (_lint)
+        run: php tests/_lint.php
+
+      - name: اجرای تست‌ها (۱۱ سناریو + تست‌های تکمیلی)
         env:
           RB_TEST_FRESH: "1"
           RB_TEST_RUN_ID: ${{ github.run_id }}-${{ matrix.php }}
         run: |
+          set -o pipefail
           php tests/run_all.php | tee /tmp/test-output.txt
           grep -q "همه تست‌ها موفق" /tmp/test-output.txt
 
@@ -68,21 +82,27 @@ jobs:
           {
             echo "### نتیجه تست‌ها (PHP ${{ matrix.php }})"
             echo '```'
-            tail -20 /tmp/test-output.txt || echo "بدون خروجی"
+            tail -25 /tmp/test-output.txt 2>/dev/null || echo "بدون خروجی"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # ──────────────────────────────────────────────────────────── ۲) دود HTTP
   http-smoke:
     name: تست دود HTTP روی سرور واقعی PHP
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - name: دریافت کد
+        uses: actions/checkout@v4
+
+      - name: نصب PHP
+        uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
           extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, openssl, curl, json
           coverage: none
 
+      # نکته: پروژه پس از نصب «قفل» می‌شود؛ در این تست عمداً همان وضعیت
+      # نصب‌شده شبیه‌سازی می‌شود تا مسیرهای واقعی پنل هم پاسخ دهند.
       - name: آماده‌سازی دیتابیس و داده اولیه
         env:
           DB_DRIVER: sqlite
@@ -96,68 +116,122 @@ jobs:
           APP_DEBUG: "1"
         run: |
           set -euo pipefail
+
           php -S 127.0.0.1:8099 -t public public/index.php > /tmp/server.log 2>&1 &
           SERVER_PID=$!
-          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -s -o /dev/null http://127.0.0.1:8099/healthz; then break; fi
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          # انتظار برای بالا آمدن سرور (حداکثر ۳۰ ثانیه)
+          for _ in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:8099/healthz; then break; fi
             sleep 1
           done
 
           check () {
-            local path="$1" expect="$2"
-            local code
-            code=$(curl -s -o /tmp/body.html -w '%{http_code}' "http://127.0.0.1:8099${path}")
-            echo "${path} → HTTP ${code} ($(wc -c < /tmp/body.html) bytes)"
+            local path="$1" expect="$2" code
+            code=$(curl -s -o /tmp/body.out -w '%{http_code}' "http://127.0.0.1:8099${path}")
+            printf '%-24s → HTTP %s  (%s bytes)\n' "$path" "$code" "$(wc -c < /tmp/body.out)"
             if [ "$code" != "$expect" ]; then
-              echo "✘ انتظار HTTP ${expect} برای ${path}"
-              cat /tmp/body.html | head -40
-              echo "--- لاگ سرور ---"; tail -40 /tmp/server.log
+              echo "✘ انتظار HTTP ${expect} برای ${path} — دریافت ${code}"
+              head -40 /tmp/body.out || true
+              echo "--- لاگ سرور ---"
+              tail -40 /tmp/server.log || true
               return 1
             fi
           }
 
+          # ── سلامت و بررسی پاسخ JSON
           check /healthz 200
-          grep -q '"ok":true' <(curl -s http://127.0.0.1:8099/healthz) || { echo "healthz پاسخ ok نداد"; exit 1; }
+          curl -s http://127.0.0.1:8099/healthz | grep -q '"ok":true' \
+            || { echo "✘ healthz پاسخ ok:true نداد"; curl -s http://127.0.0.1:8099/healthz; exit 1; }
 
+          # ── صفحات عمومی
           check / 200
-          check /install 200
           check /admin/login 200
           check /app 200
           check /webhook/telegram 200
-          check /nope 404
+
+          # ── مسیرهای محافظت‌شده (بدون سشن → ریدایرکت به ورود)
           check /admin 302
 
-          echo "--- استاتیک"
-          CSS=$(curl -s -o /tmp/app.css -w '%{http_code}' http://127.0.0.1:8099/assets/css/app.css)
-          echo "app.css → HTTP ${CSS}, $(wc -c < /tmp/app.css) bytes"
-          [ "$CSS" = "200" ] || exit 1
-          FONT=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8099/assets/fonts/Vazirmatn-Regular.woff2)
-          echo "فونت وزیرمتن → HTTP ${FONT}"
-          [ "$FONT" = "200" ] || exit 1
+          # ── پس از نصب، ویزارد نصب باید قفل باشد
+          check /install 403
 
-          echo "--- بررسی نبود خطای PHP در لاگ"
-          if grep -qE 'PHP (Fatal|Parse) error' /tmp/server.log; then
-            echo "✘ خطای PHP در لاگ سرور"; tail -40 /tmp/server.log; exit 1
+          # ── ۴۰۴ واقعی
+          check /nope-404 404
+
+          # ── فایل‌های استاتیک و فونت فارسی
+          for f in assets/css/app.css assets/css/miniapp.css assets/js/app.js \
+                   assets/js/miniapp.js assets/fonts/Vazirmatn-Regular.woff2; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/${f}")
+            size=$(curl -s "http://127.0.0.1:8099/${f}" | wc -c)
+            printf '%-46s → HTTP %s  (%s bytes)\n' "$f" "$code" "$size"
+            [ "$code" = "200" ] || { echo "✘ فایل استاتیک ${f} سرو نشد"; exit 1; }
+            [ "$size" -gt 500 ] || { echo "✘ فایل استاتیک ${f} خالی است"; exit 1; }
+          done
+
+          # ── دسترسی به فایل‌های حساس باید مسدود باشد
+          for f in .env src/bootstrap.php config/app.php storage/logs/; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/${f}")
+            echo "دسترسی به ${f} → HTTP ${code}"
+            [ "$code" = "404" ] || [ "$code" = "403" ] \
+              || { echo "✘ مسیر حساس ${f} قابل دسترسی است"; exit 1; }
+          done
+
+          # ── هیچ خطای PHP نباید در لاگ باشد
+          if grep -qE 'PHP (Fatal|Parse) error|Uncaught' /tmp/server.log; then
+            echo "✘ خطای PHP در لاگ سرور"; tail -60 /tmp/server.log; exit 1
           fi
-          echo "✔ تست دود HTTP موفق"
+
+          echo "✔ تست دود HTTP موفق بود"
 
       - name: نمایش لاگ سرور در صورت شکست
         if: failure()
-        run: tail -100 /tmp/server.log || true
+        run: tail -120 /tmp/server.log || true
 
+  # ─────────────────────────────────────────────────── ۳) اسکن راز در مخزن
   security-scan:
-    name: بررسی عدم وجود راز در مخزن
+    name: بررسی نبود راز در مخزن
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: جستجوی توکن/کلید واقعی
+      - name: دریافت کد
+        uses: actions/checkout@v4
+
+      - name: فایل .env نباید در مخزن باشد
         run: |
           set -e
-          if [ -f .env ]; then echo "فایل .env نباید در مخزن باشد"; exit 1; fi
-          # الگوی توکن ربات تلگرام: ۹ رقم + ':' + ۳۵ کاراکتر
-          if grep -rEn '[0-9]{8,10}:[A-Za-z0-9_-]{35}' --include='*.php' --include='*.md' --include='*.yml' --include='*.json' . | grep -v 'AAAAAAAAA\|BBBBBBBBB\|XXXXX\|example\|placeholder'; then
-            echo "توکن احتمالی ربات در مخزن یافت شد"
+          if [ -f .env ]; then echo "✘ فایل .env نباید در مخزن باشد"; exit 1; fi
+          echo "✔ فایل .env در مخزن نیست"
+
+      - name: جستجوی توکن واقعی ربات تلگرام
+        run: |
+          set -e
+          # الگوی توکن: ۸ تا ۱۰ رقم + ':' + ۳۵ کاراکتر
+          # مقادیر فیک تست‌ها (که عمداً شکل توکن دارند) مستثنا هستند
+          if grep -rEn '[0-9]{8,10}:[A-Za-z0-9_-]{35}' \
+               --include='*.php' --include='*.md' --include='*.yml' \
+               --include='*.yaml' --include='*.json' --include='*.env*' . \
+             | grep -vE 'AAAAAAAAA|BBBBBBBBB|XXXXX|example|placeholder|ForMiniApp|ForAutomatedTests|TestToken|FakeToken|sample'; then
+            echo "✘ توکن احتمالی ربات در مخزن یافت شد"
             exit 1
           fi
-          echo "✔ هیچ راز واقعی در مخزن یافت نشد"
+          echo "✔ هیچ توکن واقعی در مخزن یافت نشد"
+
+      - name: بررسی نبود کلید خصوصی و فایل‌های حساس
+        run: |
+          set -e
+          if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$|\.p12$|id_rsa'; then
+            echo "✘ فایل حساس در مخزن ردیابی می‌شود"
+            exit 1
+          fi
+          echo "✔ هیچ فایل حساسی ردیابی نمی‌شود"
+
+      - name: بررسی نبود رمز پیش‌فرض در کد
+        run: |
+          set -e
+          if grep -rEn "password\s*=\s*['\"](admin|123456|password|test)['\"]" \
+               --include='*.php' src views database config bin | grep -v 'tests/'; then
+            echo "✘ احتمال وجود رمز پیش‌فرض"
+            exit 1
+          fi
+          echo "✔ هیچ رمز پیش‌فرضی یافت نشد"

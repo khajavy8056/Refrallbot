@@ -186,6 +186,8 @@ GitHub Actions (فایل `.github/tests-workflow.yml`) این تست‌ها را
 > git commit -m "ci: فعال‌سازی تست‌های خودکار" && git push
 > ```
 > تست‌ها بدون CI هم کاملاً قابل اجرا هستند (`php tests/run_all.php`).
+>
+> دو نکته درباره‌ی خودِ workflow: ویزارد نصب پس از نصب قفل می‌شود، پس در تست دود HTTP انتظار `HTTP 403` برای `/install` داریم (نه ۲۰۰)؛ و `grep` مرحله «اجرای تست‌ها» با `set -o pipefail` محافظت شده تا شکستِ `php` در لوله‌ی `| tee` پنهان نشود.
 
 ```bash
 php tests/run_all.php      # همه سناریوها + تکمیلی‌ها
