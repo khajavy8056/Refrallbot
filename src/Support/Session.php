@@ -13,6 +13,16 @@ final class Session
         if (session_status() === PHP_SESSION_ACTIVE) {
             return;
         }
+
+        // اگر هدرها ارسال شده‌اند یا SAPI فاقد session است (مثلاً wasm/CLI بدون
+        // storage)، تلاش برای session_start فقط یک Warning تولید می‌کند که
+        // ErrorHandler آن را به ErrorException تبدیل می‌کند و کل درخواست
+        // می‌میرد — با بدنهٔ خالی. پس قبل از هر کاری محیط را بررسی می‌کنیم.
+        if (PHP_SAPI === 'cli' || !function_exists('session_start')) {
+            $_SESSION = is_array($_SESSION ?? null) ? $_SESSION : [];
+            return;
+        }
+
         $secure = Request::isHttps();
         if (headers_sent()) {
             // در CLI/تست یا پس از ارسال خروجی، فقط نشست موجود را ادامه می‌دهیم

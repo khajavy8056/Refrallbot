@@ -42,6 +42,26 @@ if (in_array('proc_open', $disabled, true)) {
 $root = dirname(__DIR__);
 $fail = 0;
 
+// ---------------------------------------------------------- رگرسیون «بدنهٔ خالی»
+//
+// باگ: public/index.php هدرهای امنیتی را قبل از dispatch می‌فرستاد و خروجی
+// کنترلر در بافر گرفته نمی‌شد. در برخی محیط‌ها این باعث می‌شد json_out
+// هیچ چیزی تولید نکند و کل پاسخ «۲۰۰ با ۰ بایت» شود.
+$entry = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
+T::ok(
+    str_contains($entry, 'ob_start()'),
+    'public/index.php خروجی مسیر را بافر می‌کند (جلوگیری از پاسخ ۲۰۰ خالی)'
+);
+T::ok(
+    str_contains($entry, 'EMPTY BODY'),
+    'اگر بدنه خالی بماند، در لاگ هشدار ثبت می‌شود'
+);
+T::ok(
+    !preg_match("~^\s*use\s+RB\\\\Support\\\\(Session|Request)~m", $entry),
+    'public/index.php از نام کامل کلاس استفاده می‌کند (بدون ابهام use)'
+);
+
+
 // ---------------------------------------------------------- رگرسیون باگ CLI/HTTP — ایستا
 //
 // باگ واقعی: ErrorHandler، `cli-server` را مثل CLI حساب می‌کرد و به‌جای صفحه
@@ -132,6 +152,25 @@ T::ok(
     'شرط «نبود REQUEST_METHOD» به‌تنهایی باعث رفتار CLI نمی‌شود'
 );
 
+// ---------------------------------------------------------- رگرسیون «بدنهٔ خالی»
+//
+// باگ: public/index.php هدرهای امنیتی را قبل از dispatch می‌فرستاد و خروجی
+// کنترلر در بافر گرفته نمی‌شد. در برخی محیط‌ها این باعث می‌شد json_out
+// هیچ چیزی تولید نکند و کل پاسخ «۲۰۰ با ۰ بایت» شود.
+$entry = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
+T::ok(
+    str_contains($entry, 'ob_start()'),
+    'public/index.php خروجی مسیر را بافر می‌کند (جلوگیری از پاسخ ۲۰۰ خالی)'
+);
+T::ok(
+    str_contains($entry, 'EMPTY BODY'),
+    'اگر بدنه خالی بماند، در لاگ هشدار ثبت می‌شود'
+);
+T::ok(
+    !preg_match("~^\s*use\s+RB\\\\Support\\\\(Session|Request)~m", $entry),
+    'public/index.php از نام کامل کلاس استفاده می‌کند (بدون ابهام use)'
+);
+
 exit(T::summary());
 }
 
@@ -201,6 +240,25 @@ T::ok(
 T::ok(
     !str_contains($handlerSource, "!isset(\$_SERVER['REQUEST_METHOD']) || PHP_SAPI"),
     'شرط «نبود REQUEST_METHOD» به‌تنهایی باعث رفتار CLI نمی‌شود'
+);
+
+// ---------------------------------------------------------- رگرسیون «بدنهٔ خالی»
+//
+// باگ: public/index.php هدرهای امنیتی را قبل از dispatch می‌فرستاد و خروجی
+// کنترلر در بافر گرفته نمی‌شد. در برخی محیط‌ها این باعث می‌شد json_out
+// هیچ چیزی تولید نکند و کل پاسخ «۲۰۰ با ۰ بایت» شود.
+$entry = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
+T::ok(
+    str_contains($entry, 'ob_start()'),
+    'public/index.php خروجی مسیر را بافر می‌کند (جلوگیری از پاسخ ۲۰۰ خالی)'
+);
+T::ok(
+    str_contains($entry, 'EMPTY BODY'),
+    'اگر بدنه خالی بماند، در لاگ هشدار ثبت می‌شود'
+);
+T::ok(
+    !preg_match("~^\s*use\s+RB\\\\Support\\\\(Session|Request)~m", $entry),
+    'public/index.php از نام کامل کلاس استفاده می‌کند (بدون ابهام use)'
 );
 
 exit(T::summary());
@@ -324,6 +382,25 @@ T::ok(
 T::ok(
     !str_contains($handlerSource, "!isset(\$_SERVER['REQUEST_METHOD']) || PHP_SAPI"),
     'شرط «نبود REQUEST_METHOD» به‌تنهایی باعث رفتار CLI نمی‌شود'
+);
+
+// ---------------------------------------------------------- رگرسیون «بدنهٔ خالی»
+//
+// باگ: public/index.php هدرهای امنیتی را قبل از dispatch می‌فرستاد و خروجی
+// کنترلر در بافر گرفته نمی‌شد. در برخی محیط‌ها این باعث می‌شد json_out
+// هیچ چیزی تولید نکند و کل پاسخ «۲۰۰ با ۰ بایت» شود.
+$entry = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
+T::ok(
+    str_contains($entry, 'ob_start()'),
+    'public/index.php خروجی مسیر را بافر می‌کند (جلوگیری از پاسخ ۲۰۰ خالی)'
+);
+T::ok(
+    str_contains($entry, 'EMPTY BODY'),
+    'اگر بدنه خالی بماند، در لاگ هشدار ثبت می‌شود'
+);
+T::ok(
+    !preg_match("~^\s*use\s+RB\\\\Support\\\\(Session|Request)~m", $entry),
+    'public/index.php از نام کامل کلاس استفاده می‌کند (بدون ابهام use)'
 );
 
 exit(T::summary());

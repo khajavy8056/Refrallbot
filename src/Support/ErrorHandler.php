@@ -49,6 +49,9 @@ final class ErrorHandler
                 echo '\n[خطا] ' . ($debug ? $e->getMessage() : 'خطای داخلی') . "\n";
                 return;
             }
+            // ⚠️ اگر تا اینجا هیچ خروجی تولید نشده باشد، پاسخ «۲۰۰ با بدنهٔ خالی»
+            // می‌شود و عیب‌یابی عملاً غیرممکن است. پس وضعیت را حتماً ۵۰۰ می‌کنیم
+            // و همیشه بدنه تولید می‌کنیم.
             $isJson = str_contains($_SERVER['HTTP_ACCEPT'] ?? '', 'json')
                 || str_contains($_SERVER['CONTENT_TYPE'] ?? '', 'json')
                 || str_starts_with((string) ($_SERVER['REQUEST_URI'] ?? ''), '/api/');
@@ -58,7 +61,7 @@ final class ErrorHandler
                 echo json_encode([
                     'ok' => false,
                     'error' => $debug ? $e->getMessage() : 'خطای داخلی سرور رخ داد. لطفاً بعداً تلاش کنید.',
-                ], JSON_UNESCAPED_UNICODE);
+                ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 return;
             }
             $message = $debug ? $e->getMessage() : 'خطای داخلی سرور';
@@ -67,6 +70,9 @@ final class ErrorHandler
                 include RB_VIEWS . '/errors/500.php';
             } else {
                 echo '<h1>500</h1><pre>' . htmlspecialchars($message) . '</pre>';
+            }
+            if ($debug) {
+                echo '\n<!-- ' . htmlspecialchars($e->getFile() . ':' . $e->getLine()) . ' -->';
             }
         });
 

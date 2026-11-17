@@ -52,11 +52,19 @@ final class Router
             $path = '/';
         }
 
+        $trace = \RB\Support\Env::bool('APP_DEBUG', false);
+        if ($trace) {
+            error_log('[router] dispatch ' . $method . ' ' . $path . ' routes=' . count($this->routes));
+        }
+
         foreach ($this->routes as $route) {
             if ($route['method'] !== 'ANY' && $route['method'] !== $method) {
                 continue;
             }
             if (preg_match($route['pattern'], $path, $matches)) {
+                if ($trace) {
+                    error_log('[router] matched ' . $route['pattern'] . ' mw=' . json_encode($route['middleware']));
+                }
                 $params = array_filter($matches, 'is_string', ARRAY_FILTER_USE_KEY);
                 foreach ($route['middleware'] as $middleware) {
                     $result = Middleware::run($middleware);
@@ -67,6 +75,10 @@ final class Router
                 [$class, $action] = $route['handler'];
                 $controller = new $class();
                 $controller->{$action}($params);
+                if ($trace) {
+                    error_log('[router] handled by ' . $class . '::' . $action
+                        . ' ob=' . ob_get_level() . ' sent=' . var_export(headers_sent(), true));
+                }
                 return;
             }
         }
