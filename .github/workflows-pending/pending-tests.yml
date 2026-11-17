@@ -109,108 +109,23 @@ jobs:
           DB_DATABASE: /tmp/refrallbot-http.sqlite
         run: php tests/_seed_http.php
 
-      - name: راه‌اندازی سرور و بررسی مسیرها
+      # تست دود به‌صورت PHP-native انجام می‌شود تا در صورت شکست، بدنهٔ واقعی
+      # پاسخ و خطاهای PHP با ::error:: در تب Actions دیده شوند
+      # (نسخهٔ curl فقط «exit code 1» می‌داد و عیب‌یابی را غیرممکن می‌کرد).
+      - name: تست دود HTTP (PHP-native، با جزئیات خطا)
         env:
           DB_DRIVER: sqlite
           DB_DATABASE: /tmp/refrallbot-http.sqlite
           APP_DEBUG: "1"
-        run: |
-          set -euo pipefail
+        run: php tests/15_http_smoke_test.php
 
-          php -S 127.0.0.1:8099 -t public public/index.php > /tmp/server.log 2>&1 &
-          SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
-
-          # انتظار برای بالا آمدن سرور (حداکثر ۳۰ ثانیه)
-          for _ in $(seq 1 30); do
-            if curl -sf -o /dev/null http://127.0.0.1:8099/healthz; then break; fi
-            sleep 1
-          done
-
-          check () {
-            local path="$1" expect="$2" code
-            code=$(curl -s -o /tmp/body.out -w '%{http_code}' "http://127.0.0.1:8099${path}")
-            printf '%-24s → HTTP %s  (%s bytes)\n' "$path" "$code" "$(wc -c < /tmp/body.out)"
-            if [ "$code" != "$expect" ]; then
-              echo "✘ انتظار HTTP ${expect} برای ${path} — دریافت ${code}"
-              head -40 /tmp/body.out || true
-              echo "--- لاگ سرور ---"
-              tail -40 /tmp/server.log || true
-              return 1
-            fi
-          }
-
-          # ── سلامت و بررسی پاسخ JSON
-          check /healthz 200
-          curl -s http://127.0.0.1:8099/healthz | grep -q '"ok":true' \
-            || { echo "✘ healthz پاسخ ok:true نداد"; curl -s http://127.0.0.1:8099/healthz; exit 1; }
-
-          # ── صفحات عمومی
-          check / 200
-          check /admin/login 200
-          check /app 200
-          check /webhook/telegram 200
-
-          # ── مسیرهای محافظت‌شده (بدون سشن → ریدایرکت به ورود)
-          check /admin 302
-
-          # ── پس از نصب، ویزارد نصب باید قفل باشد
-          check /install 403
-
-          # ── تک‌فایل نصب هم باید به همان ویزارد برسد و قفل باشد
-          check /install.php 403
-
-          # ── کرون وب: بدون توکن رد می‌شود
-          code=$(curl -s -o /tmp/cron.out -w '%{http_code}' "http://127.0.0.1:8099/cron/run?task=all")
-          echo "/cron/run (بدون توکن) → HTTP ${code}"
-          [ "$code" = "403" ] || { echo "✘ کرون وب بدون توکن باید ۴۰۳ بدهد"; cat /tmp/cron.out; exit 1; }
-          grep -q '"ok":false' /tmp/cron.out || { echo "✘ پاسخ کرون باید ok:false باشد"; cat /tmp/cron.out; exit 1; }
-
-          # ── کرون وب با توکن درست اجرا می‌شود
-          code=$(curl -s -o /tmp/cron2.out -w '%{http_code}' \
-                 "http://127.0.0.1:8099/cron/run?token=ci-cron-token-0123456789abcdef01234567&task=maintenance")
-          echo "/cron/run (با توکن) → HTTP ${code}"
-          [ "$code" = "200" ] || { echo "✘ کرون وب با توکن معتبر باید ۲۰۰ بدهد"; cat /tmp/cron2.out; tail -30 /tmp/server.log; exit 1; }
-          grep -q '"ok":true' /tmp/cron2.out || { echo "✘ اجرای کرون موفق نبود"; cat /tmp/cron2.out; exit 1; }
-          grep -q '"task":"maintenance"' /tmp/cron2.out || { echo "✘ نام وظیفه در پاسخ نیست"; cat /tmp/cron2.out; exit 1; }
-          if grep -q 'ci-cron-token' /tmp/cron2.out; then echo "✘ توکن کرون در پاسخ نشت کرده"; exit 1; fi
-
-          # ── پنل وب باید فعال باشد (در seed روشن شده)
-          if curl -s http://127.0.0.1:8099/app | grep -q 'پنل وب غیرفعال'; then
-            echo "✘ پنل وب باید فعال باشد ولی پیام غیرفعالی برگشت"; exit 1
-          fi
-
-          # ── ۴۰۴ واقعی
-          check /nope-404 404
-
-          # ── فایل‌های استاتیک و فونت فارسی
-          for f in assets/css/app.css assets/css/miniapp.css assets/js/app.js \
-                   assets/js/miniapp.js assets/fonts/Vazirmatn-Regular.woff2; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/${f}")
-            size=$(curl -s "http://127.0.0.1:8099/${f}" | wc -c)
-            printf '%-46s → HTTP %s  (%s bytes)\n' "$f" "$code" "$size"
-            [ "$code" = "200" ] || { echo "✘ فایل استاتیک ${f} سرو نشد"; exit 1; }
-            [ "$size" -gt 500 ] || { echo "✘ فایل استاتیک ${f} خالی است"; exit 1; }
-          done
-
-          # ── دسترسی به فایل‌های حساس باید مسدود باشد
-          for f in .env src/bootstrap.php config/app.php storage/logs/; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/${f}")
-            echo "دسترسی به ${f} → HTTP ${code}"
-            [ "$code" = "404" ] || [ "$code" = "403" ] \
-              || { echo "✘ مسیر حساس ${f} قابل دسترسی است"; exit 1; }
-          done
-
-          # ── هیچ خطای PHP نباید در لاگ باشد
-          if grep -qE 'PHP (Fatal|Parse) error|Uncaught' /tmp/server.log; then
-            echo "✘ خطای PHP در لاگ سرور"; tail -60 /tmp/server.log; exit 1
-          fi
-
-          echo "✔ تست دود HTTP موفق بود"
-
-      - name: نمایش لاگ سرور در صورت شکست
+      - name: لاگ خطاهای PHP برنامه در صورت شکست
         if: failure()
-        run: tail -120 /tmp/server.log || true
+        run: |
+          echo "=== storage/logs ==="
+          tail -120 storage/logs/app-*.log 2>/dev/null || echo "(لاگی نیست)"
+          echo "=== /tmp ==="
+          ls -la /tmp/rb-hs-* 2>/dev/null || true
 
   # ─────────────────────────────────────────────────── ۳) اسکن راز در مخزن
   security-scan:

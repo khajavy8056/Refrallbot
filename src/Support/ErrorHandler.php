@@ -32,7 +32,16 @@ final class ErrorHandler
 
         set_exception_handler(static function (\Throwable $e) use ($debug): void {
             self::logException($e);
-            if (PHP_SAPI === 'cli' || PHP_SAPI === 'cli-server' || !isset($_SERVER['REQUEST_METHOD'])) {
+
+            // فقط CLI واقعی (خط فرمان / cron) باید به STDERR بنویسد.
+            //
+            // ⚠️ `cli-server` عمداً اینجا نیست: سرور داخلی PHP (`php -S`) و
+            // بسیاری از محیط‌های اجرایی، SAPI آن‌ها «cli-server» است ولی
+            // درخواست واقعی HTTP را سرو می‌کنند. اگر آن‌ها را CLI حساب کنیم،
+            // به‌جای صفحه خطا فقط یک بدنه خالی با HTTP 200 برمی‌گردد
+            // (چون exit(1) بدون هیچ خروجی انجام می‌شود) و عیب‌یابی بی‌نهایت سخت می‌شود.
+            $isCli = PHP_SAPI === 'cli' || (!isset($_SERVER['REQUEST_METHOD']) && PHP_SAPI !== 'cli-server');
+            if ($isCli) {
                 fwrite(STDERR, '[' . date('c') . '] ' . $e->getMessage() . "\n" . ($debug ? $e->getTraceAsString() : '') . "\n");
                 exit(1);
             }
