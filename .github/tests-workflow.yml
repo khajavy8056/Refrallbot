@@ -1,3 +1,18 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  CI: تست‌های خودکار RefrallBot
+#
+#  ⚠️ این فایل عمداً در مسیر .github/workflows/ قرار ندارد.
+#  دلیل: توکن GitHub مورد استفاده در این محیط مجوز «workflows» ندارد و
+#  ایجاد/به‌روزرسانی فایل‌های workflow را رد می‌کند.
+#
+#  برای فعال‌سازی روی GitHub:
+#      mkdir -p .github/workflows
+#      git mv .github/tests-workflow.yml .github/workflows/tests.yml
+#      git commit -m "ci: فعال‌سازی تست‌های خودکار" && git push
+#
+#  (یا از رابط وب GitHub فایل را به .github/workflows/tests.yml منتقل کنید)
+# ─────────────────────────────────────────────────────────────────────────────
+
 name: Tests
 
 on:

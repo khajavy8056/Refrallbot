@@ -177,7 +177,15 @@ php tests/run_all.php
 
 جمع: **۳۶۵ بررسی در ۱۱ سناریو + ۸۰ بررسی تکمیلی (مسیرها و عملیات) = ۴۴۵ بررسی** به‌همراه رندر ۱۷ قالب، **۰ شکست** (آخرین اجرا: PHP 8.3).
 
-GitHub Actions (`.github/workflows/tests.yml`) این تست‌ها را روی PHP 8.1/8.2/8.3 اجرا می‌کند، سینتکس همه فایل‌ها را بررسی می‌کند (`_lint.php`)، یک تست دود روی سرور واقعی PHP می‌زند و مخزن را برای وجود راز اسکن می‌کند.
+GitHub Actions (فایل `.github/tests-workflow.yml`) این تست‌ها را روی PHP 8.1/8.2/8.3 اجرا می‌کند، سینتکس همه فایل‌ها را بررسی می‌کند (`_lint.php`)، یک تست دود روی سرور واقعی PHP می‌زند و مخزن را برای وجود راز اسکن می‌کند.
+
+> **فعال‌سازی CI:** توکن گیت‌هاب این محیط مجوز ساخت فایل‌های `.github/workflows/` را ندارد، بنابراین فایل CI با نام `.github/tests-workflow.yml` ذخیره شده است. برای فعال‌سازی:
+> ```bash
+> mkdir -p .github/workflows
+> git mv .github/tests-workflow.yml .github/workflows/tests.yml
+> git commit -m "ci: فعال‌سازی تست‌های خودکار" && git push
+> ```
+> تست‌ها بدون CI هم کاملاً قابل اجرا هستند (`php tests/run_all.php`).
 
 ```bash
 php tests/run_all.php      # همه سناریوها + تکمیلی‌ها
