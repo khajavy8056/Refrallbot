@@ -1,20 +1,42 @@
 # ─────────────────────────────────────────────────────────────
-#  RefrallBot — محافظت از مسیرهای داخلی در صورت نصب در docroot
-#  اگر دامنه را روی پوشه public/ تنظیم کرده‌اید، این فایل لازم نیست.
+#  RefrallBot — front controller برای حالت «کل پروژه در docroot»
+#
+#  این فایل برای وقتی است که کاربر کل پروژه را داخل public_html آپلود
+#  می‌کند و نمی‌تواند docroot را روی پوشه public/ تنظیم کند.
+#  درخواست‌ها بی‌صدا به پوشه public/ منتقل می‌شوند تا آدرس‌ها تمیز بمانند
+#  (https://site.com/admin/login به‌جای https://site.com/public/admin/login).
+#
+#  اگر docroot را روی public/ تنظیم کرده‌اید، این فایل اثری ندارد.
 # ─────────────────────────────────────────────────────────────
 
-Options -Indexes
+Options -Indexes -MultiViews
+DirectoryIndex public/index.php index.php
 
-# مسدودسازی کامل پوشه‌های داخلی
-RewriteEngine On
-RewriteRule ^(src|storage|database|config|tests|bin|docs)(/|$) - [F,L,NC]
+<IfModule mod_rewrite.c>
+    RewriteEngine On
 
-# مسدودسازی فایل‌های حساس
+    # اگر پروژه در زیرپوشه است، این خط را مطابق آن تنظیم کنید (مثال: /bot)
+    # RewriteBase /bot/
+
+    # ۱) مسدودسازی کامل پوشه‌های داخلی (هیچ‌وقت به public/ منتقل نمی‌شوند)
+    RewriteRule ^(src|storage|database|config|tests|bin|docs)(/|$) - [F,L,NC]
+
+    # ۲) هر چیزی که در ریشه docroot وجود ندارد، به public/ منتقل می‌شود
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteCond %{REQUEST_URI} !^/install\.php
+    RewriteRule ^(.*)$ public/$1 [L,QSA]
+
+    # ۳) اگر فایل مقصد وجود نداشت، همه‌چیز به front controller
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ public/index.php [L,QSA]
+</IfModule>
+
+# مسدودسازی فایل‌های حساس (در هر حالتی)
 <FilesMatch "(^\.env.*|\.(md|json|lock|sql|sqlite|log|pem|key|ini|dist|example)$)">
     Require all denied
 </FilesMatch>
 
-# جلوگیری از دسترسی به فایل‌های مخفی
 <FilesMatch "^\.">
     Require all denied
 </FilesMatch>

@@ -15,93 +15,79 @@ php -m | grep -E 'pdo|mbstring|openssl|curl'
 
 ## ۲. آپلود فایل‌ها
 
-ساختار پیشنهادی روی هاست اشتراکی:
+**حالت ساده (توصیه‌شده):** کل پوشه‌ی پروژه را در `public_html` آپلود کنید.
+فایل `.htaccess` ریشه همه‌ی درخواست‌ها را بی‌صدا به `public/index.php` می‌فرستد،
+پس آدرس‌ها تمیز می‌مانند (`https://site.com/admin/login`) و دسترسی مستقیم به
+`src/`, `storage/`, `database/`, `config/`, `tests/`, `bin/`, `.env`, `*.md`, `*.json`
+با ۴۰۳ مسدود است.
 
 ```
-/home/USER/refrallbot/          ← کل پروژه
-/home/USER/public_html/         ← محتویات پوشه public/
+/home/USER/public_html/
+├── .htaccess          ← آماده است
+├── install.php        ← نقطه ورود نصب
+├── public/            ← front controller + assets
+├── src/  views/  config/  database/  storage/  bin/
 ```
 
-سپس در `.env` مقدار `APP_BASE_PATH` را خالی بگذارید (اگر روی دامنه اصلی است).
+**حالت حرفه‌ای (docroot = public/):** کل پروژه بیرون از `public_html` و دامنه روی `public/`.
+در این حالت `public/install.php` همان ویزارد را باز می‌کند و `.htaccess` ریشه اثری ندارد.
 
-اگر فقط FTP دارید و نمی‌توانید `public` را جدا کنید، کل پروژه را در `public_html` بگذارید. فایل `.htaccess` ریشه‌ی پروژه (که همین حالا موجود است) دسترسی مستقیم به `src/`, `storage/`, `database/`, `config/`, `tests/`, `bin/` و فایل‌های `.env`/`.md`/`.json` را با ۴۰۳ مسدود می‌کند. برای اطمینان، این را هم بررسی کنید:
+## ۳. اجرای ویزارد نصب — تک‌فایل `install.php`
+
+```
+https://YOUR-DOMAIN/install.php
+```
+
+هیچ کار دستی لازم نیست — نه `.env` بسازید، نه `APP_KEY` تولید کنید، نه چمد بدهید.
+ویزارد خودش این کارها را می‌کند:
+
+| مرحله | جزئیات |
+|---|---|
+| ۱ | بررسی PHP ≥ 8.1، `pdo_mysql`، `mbstring`، `openssl`، `curl`، `json`، دسترسی نوشتن `storage/` |
+| ۲ | اتصال به MySQL: دکمه‌ی **«فقط آزمایش اتصال»** بدون ذخیره‌سازی، گزینه‌ی **ساخت خودکار دیتابیس** (`CREATE DATABASE`)، و هشدار اگر دیتابیس از قبل نصب شده باشد |
+| ۳ | ساخت ۲۵+ جدول — قابل تکرار و بدون حذف داده |
+| ۴ | ساخت **اولین مدیر کل**: نام، نام کاربری، رمز (حداقل ۱۰ کاراکتر با حرف بزرگ/کوچک/عدد؛ رمزهای رایج رد می‌شوند) |
+| ۵ | نام سامانه، آدرس پایه، **زیرپوشه (خودکار تشخیص داده می‌شود)**، **پاداش هر معرفی**، **حداقل برداشت**، حالت پنل وب |
+| ۶ | نوشتن `.env` (با `APP_KEY` تصادفی و `APP_BASE_PATH`)، قفل دائمی ویزارد، هدایت به `/admin/login` |
+
+> **بدون دامنه هم کار می‌کند:** کافی است آدرس `http://SERVER-IP:PORT/install.php` را باز کنید.
+> در این حالت پنل وب کاربران (Mini App) خودکار خاموش می‌شود، چون تلگرام برای Web App
+> الزاماً HTTPS می‌خواهد؛ همه‌ی قابلیت‌ها از طریق دکمه‌های ربات در دسترس‌اند.
+
+## ۴. Cron — دو راه
+
+**راه اول (بدون crontab):** پنل مدیریت → اتصال به ربات → بخش «کرون وب» → آدرس آماده را کپی و
+در Cron Jobs هاست یا هر سرویس زمان‌بندی رایگان هر ۵ دقیقه صدا بزنید:
+
+```
+https://YOUR-DOMAIN/cron/run?token=TOKEN&task=all
+```
+
+بدون توکن صحیح پاسخ `403` برمی‌گردد و هیچ کاری اجرا نمی‌شود.
+
+**راه دوم (با crontab):**
 
 ```bash
-curl -I https://YOUR-DOMAIN/.env          # باید 403 باشد
-curl -I https://YOUR-DOMAIN/storage/logs/ # باید 403 باشد
+php bin/install-cron.php     # نمایش دستور دقیق با مسیر صحیح
 ```
 
-## ۳. ساخت دیتابیس
-
-در cPanel → MySQL Databases یک دیتابیس و یک کاربر بسازید و به آن دسترسی کامل بدهید. مشخصات را در `.env` وارد کنید.
-
-## ۴. فایل محیطی
-
-```bash
-cp .env.example .env
-php -r "echo bin2hex(random_bytes(32));"    # APP_KEY
+```
+*/2 * * * * /usr/local/bin/php /home/USER/public_html/bin/cron.php broadcast --quiet
+0,10,20,30,40,50 * * * * /usr/local/bin/php /home/USER/public_html/bin/cron.php all --quiet
 ```
 
-مقادیر مهم:
+## ۵. بررسی نهایی
 
-```ini
-APP_ENV=production
-APP_DEBUG=false
-APP_URL=https://example.com
-APP_KEY=<۶۴ کاراکتر هگز>
-DB_DRIVER=mysql
-DB_HOST=localhost
-DB_DATABASE=cpaneluser_refrallbot
-DB_USERNAME=cpaneluser_rb
-DB_PASSWORD=...
-```
+- `https://YOUR-DOMAIN/healthz` → JSON با `"ok": true`
+- `https://YOUR-DOMAIN/install.php` → پیام «سامانه قبلاً نصب شده است» (قفل فعال)
+- `https://YOUR-DOMAIN/.env` و `.../storage/logs/` → ۴۰۳
+- ورود به `/admin/login` با همان نام کاربری/رمزی که در ویزارد ساختید
+- ثبت توکن ربات و تنظیم Webhook (راهنما: [`BOT-SETUP.md`](BOT-SETUP.md))
+- ارسال `/start` به ربات از یک حساب تلگرام واقعی و مشاهده کاربر جدید در «کاربران»
 
-> `APP_DEBUG=false` در محیط عملیاتی الزامی است؛ در حالت debug پیام خطای کامل نمایش داده می‌شود.
-
-## ۵. دسترسی نوشتن
-
-```bash
-chmod -R 775 storage
-chmod 640 .env
-```
-
-## ۶. اجرای ویزارد نصب
-
-`http://YOUR-HOST/install` را باز کنید:
-
-1. **بررسی نیازمندی‌ها** — نسخه PHP، افزونه‌ها، دسترسی نوشتن
-2. **اتصال دیتابیس** — تست اتصال با همان مقادیر `.env`
-3. **Migration** — ساخت ۲۵+ جدول (بدون حذف داده موجود)
-4. **اولین مدیر** — نام کاربری و رمز قوی (حداقل ۱۰ کاراکتر، حرف بزرگ/کوچک/عدد)
-5. **تنظیمات اولیه** — نام سامانه، حداقل برداشت، آدرس پایه
-6. **پایان** — فایل `storage/installed.lock` ساخته و `RB_INSTALLED=true` می‌شود؛ ویزارد قفل می‌شود
-
-پس از نصب: `http://YOUR-HOST/admin`
-
-## ۷. فعال‌سازی Cron
-
-```bash
-php bin/install-cron.php     # نمایش دستور دقیق
-```
-
-در cPanel → Cron Jobs دو خط اضافه کنید:
-
-```
-*/2 * * * * /usr/local/bin/php /home/USER/refrallbot/bin/cron.php broadcast --quiet
-0,10,20,30,40,50 * * * * /usr/local/bin/php /home/USER/refrallbot/bin/cron.php all --quiet
-```
-
-## ۸. اتصال ربات
+## ۶. اتصال ربات
 
 به [`BOT-SETUP.md`](BOT-SETUP.md) مراجعه کنید.
-
-## ۹. بررسی نهایی
-
-- `https://YOUR-HOST/healthz` → پاسخ JSON با `"ok": true`
-- ورود به پنل مدیریت
-- ثبت توکن ربات و تنظیم Webhook
-- ارسال `/start` به ربات از یک حساب تلگرام واقعی
-- مشاهده کاربر جدید در «کاربران»
 
 ## ارتقا و بازنصب
 

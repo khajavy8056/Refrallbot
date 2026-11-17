@@ -223,17 +223,13 @@ php tests/run_all.php
 
 جمع: **۴۸۶ بررسی در ۱۴ سناریو + ۸۲ بررسی تکمیلی (مسیرها و عملیات) = ۵۶۸ بررسی** به‌همراه رندر ۱۹ قالب، **۰ شکست** (آخرین اجرا: PHP 8.3).
 
-GitHub Actions (فایل `.github/tests-workflow.yml`) این تست‌ها را روی PHP 8.1/8.2/8.3 اجرا می‌کند، سینتکس همه فایل‌ها را بررسی می‌کند (`_lint.php` (سینتکس + ارجاع نسبی کلاس‌ها))، یک تست دود روی سرور واقعی PHP می‌زند و مخزن را برای وجود راز اسکن می‌کند.
+GitHub Actions (فایل **`.github/workflows/tests.yml`** — فعال) این تست‌ها را روی PHP 8.1/8.2/8.3 اجرا می‌کند،
+سینتکس همه فایل‌ها و ارجاع کلاس‌ها را بررسی می‌کند (`_lint.php`)، یک تست دود روی سرور واقعی PHP می‌زند
+(`/healthz`, `/admin` → 302، `/install` و `/install.php` → 403، کرون وب بدون توکن → 403 و با توکن → 200،
+assets، مسدود بودن `.env` و `src/`) و مخزن را برای وجود راز اسکن می‌کند.
 
-> **فعال‌سازی CI:** توکن گیت‌هاب این محیط مجوز ساخت فایل‌های `.github/workflows/` را ندارد، بنابراین فایل CI با نام `.github/tests-workflow.yml` ذخیره شده است. برای فعال‌سازی:
-> ```bash
-> mkdir -p .github/workflows
-> git mv .github/tests-workflow.yml .github/workflows/tests.yml
-> git commit -m "ci: فعال‌سازی تست‌های خودکار" && git push
-> ```
-> تست‌ها بدون CI هم کاملاً قابل اجرا هستند (`php tests/run_all.php`).
->
-> دو نکته درباره‌ی خودِ workflow: ویزارد نصب پس از نصب قفل می‌شود، پس در تست دود HTTP انتظار `HTTP 403` برای `/install` داریم (نه ۲۰۰)؛ و `grep` مرحله «اجرای تست‌ها» با `set -o pipefail` محافظت شده تا شکستِ `php` در لوله‌ی `| tee` پنهان نشود.
+> سه Job: `php-tests` (ماتریس ۸.۱/۸.۲/۸.۳)، `http-smoke`، و `security-scan`.
+> جزئیات در [`docs/CI-SETUP.md`](docs/CI-SETUP.md). تست‌ها بدون CI هم کاملاً قابل اجرا هستند.
 
 ```bash
 php tests/run_all.php      # همه سناریوها + تکمیلی‌ها

@@ -216,6 +216,11 @@ T::ok(str_contains($rootHtaccess, 'FilesMatch'), 'فایل .htaccess محافظ 
 T::ok(preg_match('~\\\\.env~', $rootHtaccess) === 1, 'دسترسی به .env در .htaccess مسدود شده');
 T::ok(str_contains($rootHtaccess, 'src|storage|database|config'), 'پوشه‌های داخلی در .htaccess مسدود شده‌اند');
 T::ok(str_contains($rootHtaccess, 'Options -Indexes'), 'لیست شدن پوشه‌ها غیرفعال است');
+T::ok(str_contains($rootHtaccess, 'RewriteRule ^(.*)$ public/$1'), 'درخواست‌ها به public/ منتقل می‌شوند (نصب کل پروژه در public_html)');
+T::ok(str_contains($rootHtaccess, 'DirectoryIndex public/index.php'), 'فایل پیش‌فرض public/index.php است');
+T::ok(str_contains($rootHtaccess, 'install\\.php'), 'install.php از انتقال به public/ مستثنا است');
+T::ok(!str_contains($rootHtaccess, 'endIfModule'), 'تگ‌های .htaccess درست بسته شده‌اند (بدون تایپو)');
+
 $publicHtaccess = (string) file_get_contents(RB_ROOT . '/public/.htaccess');
 T::ok(str_contains($publicHtaccess, 'RewriteRule ^ index.php'), 'public/.htaccess همه مسیرها را به index.php می‌فرستد');
 

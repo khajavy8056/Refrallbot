@@ -44,6 +44,14 @@ $db->insertIgnore('system_settings', [
 SettingsService::set('app_name', 'رفرال‌بات', 'general');
 SettingsService::set('min_withdraw_amount', '30000', 'withdrawal');
 
+// پنل وب عمداً روشن شبیه‌سازی می‌شود تا مسیر /app در تست HTTP
+// صفحه‌ی واقعی پنل را برگرداند (نه پیام «غیرفعال است»).
+SettingsService::set('miniapp_mode', 'on', 'telegram');
+SettingsService::set('miniapp_url', 'https://smoke.test/app', 'telegram');
+
+// توکن ربات جعلی تا کرون وب قابل آزمایش باشد (بدون تماس واقعی با تلگرام)
+SettingsService::set('cron_token', 'ci-cron-token-0123456789abcdef01234567', 'system');
+
 $roleId = (int) $db->value("SELECT id FROM admin_roles WHERE slug = 'superadmin'");
 if ($roleId <= 0) {
     $roleId = (int) $db->insert('admin_roles', [
