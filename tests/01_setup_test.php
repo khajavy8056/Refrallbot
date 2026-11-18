@@ -20,7 +20,10 @@ $tables = $db->column("SELECT name FROM sqlite_master WHERE type='table'");
 T::ok(count($tables) >= 25, 'حداقل ۲۵ جدول ایجاد شده (تعداد: ' . count($tables) . ')');
 
 $applied = (new RB\Support\Migrator($db))->applied();
-T::eq(1, count($applied), 'یک Migration ثبت شده است');
+// با افزودن Migrationهای جدید (مثل 002_telegram_idempotency) تعداد بالا می‌رود؛
+// مهم این است که حداقل یکی ثبت شده و همهٔ فایل‌ها اعمال شده باشند.
+T::ok(count($applied) >= 1, 'Migrationها ثبت شده‌اند (تعداد: ' . count($applied) . ')');
+T::ok((bool) array_filter($applied, static fn ($m) => str_starts_with((string) $m, '001_initial_schema')), 'Migration اصلی ساخته‌ی جداول اعمال شد');
 
 // اجرای مجدد نباید خطا بدهد
 $second = (new RB\Support\Migrator($db))->run();

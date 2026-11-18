@@ -41,7 +41,8 @@ final class TelegramController extends AdminController
         $this->render('admin/telegram/index', [
             'title' => 'اتصال به ربات تلگرام',
             'settings' => $settings,
-            'maskedToken' => $tg->isConfigured() ? Crypto::maskSecret($tg->tokenForDisplay()) : null,
+            // فقط نسخهٔ ماسک‌شده در دسترس View قرار می‌گیرد (توکن کامل هرگز به خروجی نمی‌رود)
+            'maskedToken' => $tg->isConfigured() ? $tg->maskedToken() : null,
             'suggestedWebhook' => $tg->suggestedWebhookUrl(),
             'webhookInfo' => $webhookInfo,
             'menus' => $db->all('SELECT * FROM bot_menus ORDER BY sort_order, id'),
@@ -147,10 +148,18 @@ final class TelegramController extends AdminController
     {
         $db = db();
         $settings = TelegramService::settings($db);
+        $webhookNote = '';
+        $webhookDeleted = true;
         if (!empty($settings['bot_token_enc'])) {
             try {
-                (new TelegramService())->deleteWebhook();
-            } catch (\Throwable) {
+                $del = (new TelegramService())->deleteWebhook();
+                $webhookDeleted = (bool) ($del['ok'] ?? false);
+                if (!$webhookDeleted) {
+                    $webhookNote = ' تلگرام حذف Webhook را تأیید نکرد: ' . (string) ($del['description'] ?? 'خطای نامشخص');
+                }
+            } catch (\Throwable $e) {
+                $webhookDeleted = false;
+                $webhookNote = ' حذف Webhook ممکن نشد: ' . $e->getMessage();
             }
         }
         $db->update('telegram_settings', [
@@ -166,7 +175,18 @@ final class TelegramController extends AdminController
             'updated_at' => now(),
         ], 'id = :id', ['id' => (int) ($settings['id'] ?? 0)]);
         TelegramService::forgetSettingsCache();
-        AuditService::log('telegram.token_removed', 'telegram', (int) ($settings['id'] ?? 0), [], current_admin_id());
+        AuditService::log('telegram.token_removed', 'telegram', (int) ($settings['id'] ?? 0), [
+            'webhook_deleted' => $webhookDeleted,
+        ], current_admin_id());
+        if (!$webhookDeleted) {
+            // توکن پاک شده اما Webhook در تلگرام ممکن است هنوز فعال باشد.
+            $this->ok(
+                'توکن ربات از پنل حذف شد اما حذف Webhook تأیید نشد.' . $webhookNote
+                    . ' تا زمانی که در BotFather توکن را باطل نکنید، تلگرام به آدرس قبلی آپدیت می‌فرستد.',
+                ['reload' => true, 'warnings' => ['حذف Webhook تأیید نشد']]
+            );
+            return;
+        }
         $this->ok('اتصال ربات قطع و توکن حذف شد.', ['reload' => true]);
     }
 
@@ -181,8 +201,26 @@ final class TelegramController extends AdminController
         if ($url === '') {
             $url = $tg->suggestedWebhookUrl();
         }
+        if (filter_var($url, FILTER_VALIDATE_URL) === false) {
+            $this->fail('آدرس Webhook معتبر نیست.');
+            return;
+        }
         if (!str_starts_with($url, 'https://')) {
             $this->fail('آدرس Webhook باید با HTTPS شروع شود. تلگرام آدرس‌های HTTP را نمی‌پذیرد.');
+            return;
+        }
+        $host = (string) (parse_url($url, PHP_URL_HOST) ?: '');
+        if ($host === '' || !str_contains($host, '.')) {
+            $this->fail('دامنهٔ Webhook معتبر نیست.');
+            return;
+        }
+        // آدرس‌های محلی/خصوصی برای تلگرام قابل دسترسی نیستند
+        $isPrivate = (bool) preg_match(
+            '~^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?)~i',
+            $host
+        );
+        if ($isPrivate) {
+            $this->fail('آدرس محلی/خصوصی برای تلگرام قابل دسترسی نیست؛ از دامنهٔ عمومی با HTTPS استفاده کنید.');
             return;
         }
 
@@ -194,7 +232,34 @@ final class TelegramController extends AdminController
 
         $result = $tg->setWebhook($url, ['secret_token' => $secret]);
         if (!($result['ok'] ?? false)) {
-            $this->fail('تلگرام درخواست را نپذیرفت: ' . ($result['description'] ?? 'خطای نامشخص'));
+            $description = (string) ($result['description'] ?? 'خطای نامشخص');
+            $dbErr = db();
+            $dbErr->update('telegram_settings', [
+                'last_error' => mb_substr('تنظیم Webhook ناموفق: ' . $description, 0, 900),
+                'updated_at' => now(),
+            ], 'id = :id', ['id' => (int) ($settings['id'] ?? 0)]);
+            TelegramService::forgetSettingsCache();
+            AuditService::log('telegram.webhook_failed', 'telegram', (int) ($settings['id'] ?? 0), ['error' => $description], current_admin_id());
+            $this->fail('تلگرام درخواست را نپذیرفت: ' . $description, 502);
+            return;
+        }
+
+        // تأیید واقعی: getWebhookInfo باید همان آدرس را برگرداند
+        $verify = $tg->getWebhookInfo();
+        $actualUrl = (string) ($verify['result']['url'] ?? '');
+        if (!($verify['ok'] ?? false) || $actualUrl !== $url) {
+            $dbV = db();
+            $dbV->update('telegram_settings', [
+                'webhook_info' => ($verify['ok'] ?? false) ? json_encode($verify['result'], JSON_UNESCAPED_UNICODE) : null,
+                'last_error' => mb_substr('Webhook تنظیم شد اما تأیید نشد (آدرس فعلی تلگرام: ' . ($actualUrl !== '' ? $actualUrl : 'خالی') . ')', 0, 900),
+                'updated_at' => now(),
+            ], 'id = :id', ['id' => (int) ($settings['id'] ?? 0)]);
+            TelegramService::forgetSettingsCache();
+            $this->fail(
+                'تلگرام تنظیم Webhook را تأیید نکرد. آدرس فعلی در تلگرام: ' . ($actualUrl !== '' ? $actualUrl : 'خالی')
+                    . ' — لطفاً دسترسی عمومی دامنه و گواهی HTTPS را بررسی کنید.',
+                502
+            );
             return;
         }
 
@@ -233,18 +298,41 @@ final class TelegramController extends AdminController
     public function deleteWebhook(): void
     {
         $tg = new TelegramService();
-        $result = $tg->deleteWebhook();
+        if (!$tg->isConfigured()) {
+            $this->fail('ابتدا توکن ربات را ذخیره کنید.');
+            return;
+        }
+
         $db = db();
         $settings = TelegramService::settings($db);
+        $settingsId = (int) ($settings['id'] ?? 0);
+        $result = $tg->deleteWebhook();
+
+        if (!($result['ok'] ?? false)) {
+            // حذف واقعی انجام نشده است؛ وضعیت قبلی نباید دست بخورد.
+            $description = (string) ($result['description'] ?? 'خطای نامشخص');
+            $db->update('telegram_settings', [
+                'last_error' => mb_substr('حذف Webhook ناموفق: ' . $description, 0, 900),
+                'updated_at' => now(),
+            ], 'id = :id', ['id' => $settingsId]);
+            TelegramService::forgetSettingsCache();
+            AuditService::log('telegram.webhook_delete_failed', 'telegram', $settingsId, ['error' => $description], current_admin_id());
+            $this->fail('حذف Webhook ناموفق بود: ' . $description . ' — وضعیت قبلی حفظ شد.', 502);
+            return;
+        }
+
+        // فقط پس از تأیید تلگرام، وضعیت محلی را پاک می‌کنیم.
         $db->update('telegram_settings', [
             'webhook_active' => 0,
             'webhook_url' => null,
             'webhook_info' => null,
+            'webhook_set_at' => null,
+            'last_error' => null,
             'updated_at' => now(),
-        ], 'id = :id', ['id' => (int) ($settings['id'] ?? 0)]);
+        ], 'id = :id', ['id' => $settingsId]);
         TelegramService::forgetSettingsCache();
-        AuditService::log('telegram.webhook_deleted', 'telegram', (int) ($settings['id'] ?? 0), [], current_admin_id());
-        $this->ok(($result['ok'] ?? false) ? 'Webhook حذف شد.' : 'دستور حذف ارسال شد.', ['reload' => true]);
+        AuditService::log('telegram.webhook_deleted', 'telegram', $settingsId, [], current_admin_id());
+        $this->ok('Webhook در تلگرام حذف شد. اکنون می‌توانید Polling را فعال کنید.', ['reload' => true]);
     }
 
     public function syncMenu(): void
@@ -286,10 +374,19 @@ final class TelegramController extends AdminController
             ]);
         }
 
+        $commandsOk = (bool) ($commandsResult['ok'] ?? false);
+        $menuButtonOk = !empty($menuButtonResult['skipped']) || (bool) ($menuButtonResult['ok'] ?? false);
+        $allOk = $commandsOk && $menuButtonOk;
+
         $db = db();
+        // «همگام‌شده» فقط وقتی ثبت می‌شود که همهٔ بخش‌ها واقعاً موفق بوده باشند.
         $db->update('telegram_settings', [
-            'menu_synced' => 1,
-            'menu_synced_at' => now(),
+            'menu_synced' => $allOk ? 1 : 0,
+            'menu_synced_at' => $allOk ? now() : null,
+            'last_error' => $allOk ? null : mb_substr(implode(' | ', array_filter([
+                !$commandsOk ? 'setMyCommands: ' . (string) ($commandsResult['description'] ?? 'خطا') : '',
+                (!$menuButtonOk && empty($menuButtonResult['skipped'])) ? 'setChatMenuButton: ' . (string) ($menuButtonResult['description'] ?? 'خطا') : '',
+            ])), 0, 900),
             'updated_at' => now(),
         ], 'id = :id', ['id' => (int) (TelegramService::settings()['id'] ?? 0)]);
         TelegramService::forgetSettingsCache();
@@ -312,15 +409,35 @@ final class TelegramController extends AdminController
             $warnings[] = 'دکمه Mini App: ' . ($menuButtonResult['description'] ?? 'خطا (آدرس HTTPS لازم است)');
         }
 
+        if ($warnings !== []) {
+            // موفقیت جزئی هرگز نباید «کامل» گزارش شود.
+            $partial = 'همگام‌سازی کامل نشد — ' . implode(' | ', $warnings);
+            if ($notes !== []) {
+                $partial .= ' (' . implode(' ', $notes) . ')';
+            }
+            $this->fail($partial, 502, [
+                'partial' => true,
+                'reload' => true,
+                'warnings' => $warnings,
+                'notes' => $notes,
+                'commands_ok' => $commandsOk,
+                'menu_button_ok' => $menuButtonOk,
+            ]);
+            return;
+        }
+
         $message = 'دستورات ربات با موفقیت همگام شد.';
         if ($notes) {
             $message .= ' ' . implode(' ', $notes);
         }
-        if ($warnings) {
-            $message = 'همگام‌سازی انجام شد اما برخی موارد خطا داشت: ' . implode(' | ', $warnings);
-        }
 
-        $this->ok($message, ['reload' => true, 'warnings' => $warnings, 'notes' => $notes]);
+        $this->ok($message, [
+            'reload' => true,
+            'warnings' => [],
+            'notes' => $notes,
+            'commands_ok' => $commandsOk,
+            'menu_button_ok' => $menuButtonOk,
+        ]);
     }
 
     public function menus(): void

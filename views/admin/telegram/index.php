@@ -16,6 +16,17 @@ $webhookActive = !empty($settings['webhook_active']);
     <a href="?refresh=1" class="btn btn-secondary btn-sm">🔄 به‌روزرسانی وضعیت از تلگرام</a>
 </div>
 
+<?php if (!empty($settings['last_error'])): ?>
+    <div class="alert alert-error mb-3">
+        <strong>آخرین خطای ثبت‌شده:</strong>
+        <div class="text-sm mt-1"><?= e((string) $settings['last_error']) ?></div>
+        <?php if (!empty($settings['updated_at'])): ?>
+            <div class="text-xs text-muted mt-1">زمان: <?= fa_date($settings['updated_at']) ?></div>
+        <?php endif; ?>
+        <div class="text-xs mt-1">پس از رفع مشکل، «تست اتصال» را بزنید تا این پیام پاک شود.</div>
+    </div>
+<?php endif; ?>
+
 <div class="stats-grid mb-3" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
     <div class="stat <?= $connected ? 'success' : 'danger' ?>">
         <div class="stat-head"><div class="stat-icon">🤖</div><div class="stat-label">وضعیت ربات</div></div>

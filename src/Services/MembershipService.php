@@ -66,7 +66,7 @@ final class MembershipService
         foreach ($channels as $channel) {
             $check = $tg->checkMembership($channel, (int) $user['telegram_id']);
             if (!$check['ok']) {
-                // خطای فنی — کاربر را مسدود نمی‌کنیم
+                // خطای فنی/دسترسی — هرگز «عدم عضویت» تلقی نمی‌شود و کاربر را مسدود نمی‌کند
                 $apiErrors[] = $channel['title'] . ': ' . ($check['error'] ?? 'خطای نامشخص');
                 continue;
             }
@@ -77,10 +77,14 @@ final class MembershipService
 
         if ($apiErrors) {
             SecurityService::log('membership_api_error', 'low', ['errors' => $apiErrors], (int) $user['id']);
+            // آخرین خطای بررسی برای نمایش در پنل مدیریت
+            SettingsService::set('membership_last_error', mb_substr(implode(' | ', $apiErrors), 0, 900));
+            SettingsService::set('membership_last_error_at', now());
         }
 
         if ($notJoined === []) {
-            if (empty($user['channels_verified'])) {
+            // فقط وقتی همهٔ کانال‌ها با موفقیت بررسی شدند «تأییدشده» علامت می‌خورد
+            if ($apiErrors === [] && empty($user['channels_verified'])) {
                 $this->db->update('users', ['channels_verified' => 1, 'updated_at' => now()], 'id = :id', ['id' => (int) $user['id']]);
             }
             return ['passed' => true, 'reason' => null, 'channels' => [], 'errors' => $apiErrors];
@@ -112,11 +116,12 @@ final class MembershipService
                 ];
                 continue;
             }
+            $access = $tg->checkBotAccess($channel);
             $out[] = [
                 'id' => (int) $channel['id'],
                 'title' => $channel['title'],
-                'ok' => true,
-                'message' => 'دسترسی ربات به کانال برقرار است.',
+                'ok' => $access['admin'],
+                'message' => $access['message'],
             ];
         }
         return $out;
