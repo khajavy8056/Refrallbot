@@ -52,7 +52,7 @@ return static function (SchemaBuilder $schema): void {
         $t->text('details');           // JSON
         $t->string('ip', 45, true);
         $t->string('user_agent', 255, true);
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->index('admin_id');
         $t->index('action');
         $t->index('created_at');
@@ -118,7 +118,7 @@ return static function (SchemaBuilder $schema): void {
         $t->bigint('ancestor_id')->foreign('ancestor_id', 'users', 'CASCADE');
         $t->bigint('descendant_id')->foreign('descendant_id', 'users', 'CASCADE');
         $t->int('depth');                             // ۱ تا ۸
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->unique(['ancestor_id', 'descendant_id']);
         $t->index('descendant_id');
         $t->index(['ancestor_id', 'depth']);
@@ -134,7 +134,7 @@ return static function (SchemaBuilder $schema): void {
         $t->bigint('base_amount', false, '0');         // مبلغ پایه رویداد (تومان)
         $t->string('status', 20, false, "'processed'");// processed|reverted|pending
         $t->text('payload');                            // JSON
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->unique('event_key');
         $t->index('type');
         $t->index('user_id');
@@ -182,7 +182,7 @@ return static function (SchemaBuilder $schema): void {
         $t->bigint('settings_version_id', true);
         $t->string('status', 20, false, "'approved'"); // approved|reverted|pending
         $t->text('meta');
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->unique(['event_id', 'beneficiary_id', 'level', 'type']);
         $t->index('beneficiary_id');
         $t->index('source_user_id');
@@ -221,7 +221,7 @@ return static function (SchemaBuilder $schema): void {
         $t->text('meta');                               // JSON تنظیمات معتبر زمان تراکنش
         $t->bigint('created_by_admin_id', true);
         $t->bigint('reversal_of_id', true);
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->unique('tx_code');
         $t->unique('idempotency_key');
         $t->index('user_id');
@@ -302,7 +302,7 @@ return static function (SchemaBuilder $schema): void {
         $t->string('invite_link', 255, true);
         $t->bool('is_active', true);
         $t->int('sort_order', false, '0');
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->index('is_active');
     });
 
@@ -316,7 +316,7 @@ return static function (SchemaBuilder $schema): void {
         $t->string('chat_id', 64, true);
         $t->string('message_id', 64, true);
         $t->string('status', 20, true);
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->index('user_id');
         $t->index('created_at');
     });
@@ -434,7 +434,7 @@ return static function (SchemaBuilder $schema): void {
         $t->text('body');
         $t->string('link', 255, true);
         $t->datetime('read_at', true);
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->index('user_id');
         $t->index('created_at');
     });
@@ -464,7 +464,7 @@ return static function (SchemaBuilder $schema): void {
         $t->string('status', 20, false, "'open'");     // open|reviewed|dismissed|confirmed
         $t->bigint('reviewed_by', true);
         $t->datetime('reviewed_at', true);
-        $t->datetime('created_at', false);
+        $t->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $t->index('user_id');
         $t->index('type');
         $t->index('status');

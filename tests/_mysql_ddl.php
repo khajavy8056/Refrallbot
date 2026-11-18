@@ -148,4 +148,15 @@ foreach ($sqlFiles as $file) {
 }
 T::eq([], $unquoted, 'ستون‌های هم‌نام با کلمات رزروشدهٔ MySQL با backtick نوشته می‌شوند');
 
+// ---- هشت: created_at باید DEFAULT داشته باشد (خطای 1364 در STRICT mode)
+$noDefault = [];
+foreach ($order as $sql) {
+    preg_match('~CREATE TABLE(?: IF NOT EXISTS)? `([^`]+)`~i', $sql, $m);
+    $table = $m[1] ?? '?';
+    if (preg_match('~`created_at`\s+DATETIME\s+NOT NULL(?!\s+DEFAULT)~i', $sql)) {
+        $noDefault[] = $table;
+    }
+}
+T::eq([], $noDefault, 'همهٔ ستون‌های created_at مقدار DEFAULT دارند (جلوگیری از خطای 1364)');
+
 exit(T::summary());

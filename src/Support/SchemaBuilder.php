@@ -149,9 +149,9 @@ final class TableDefinition
         return $this->add($name, 'bigint', [], $nullable, $default, true);
     }
 
-    public function datetime(string $name, bool $nullable = true): self
+    public function datetime(string $name, bool $nullable = true, ?string $default = null): self
     {
-        return $this->add($name, 'datetime', [], $nullable, null, false);
+        return $this->add($name, 'datetime', [], $nullable, $default, false);
     }
 
     public function date(string $name, bool $nullable = true): self
@@ -164,9 +164,17 @@ final class TableDefinition
         return $this->add($name, 'json', [], $nullable, null, false);
     }
 
+    /**
+     * ستون‌های زمانی استاندارد.
+     *
+     * created_at با DEFAULT CURRENT_TIMESTAMP ساخته می‌شود تا در MySQL با
+     * STRICT_TRANS_TABLES هیچ درج/مهاجرتی که این ستون را ست نکند نشکند
+     * (خطای 1364: Field 'created_at' doesn't have a default value).
+     * برنامه همیشه مقدار را صریح می‌فرستد؛ این فقط تور محافظ است.
+     */
     public function timestamps(): self
     {
-        $this->datetime('created_at', false);
+        $this->datetime('created_at', false, 'CURRENT_TIMESTAMP');
         $this->datetime('updated_at', true);
         return $this;
     }
