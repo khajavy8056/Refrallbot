@@ -31,7 +31,7 @@
 | بخش | توضیح |
 |---|---|
 | ربات تلگرام | ثبت توکن از پنل، تست اتصال، تنظیم/حذف Webhook، همگام‌سازی منوها و دکمه Mini App |
-| ثبت‌نام | با `/start` بر اساس **شناسه عددی تلگرام**، لینک اختصاصی `https://t.me/BOT?start=CODE` |
+| ثبت‌نام | با `/start` بر اساس **شناسه عددی تلگرام**، لینک اختصاصی `https://t.me/BOT?start=CODE` و ارسال پیام **«دعوت موفق»** (با نام فرد دعوت‌شده و شمارندهٔ دعوت‌ها) به معرف |
 | معرف | یک معرف **تغییرناپذیر** برای هر کاربر (تغییر فقط توسط مدیر کل با ثبت دلیل) |
 | پورسانت | تا **۸ لایه**، درصد جداگانه هر لایه، فعال/غیرفعال per-level، مبنای محاسبه قابل تنظیم، اعتبارسنجی مجموع درصد |
 | کیف پول | دفتر مالی **فقط-افزودنی**؛ موجودی همیشه از روی تراکنش‌ها قابل بازسازی و کنترل است |
@@ -40,13 +40,14 @@
 | ارتباطات | کانال‌های اجباری، درخواست شماره تماس، پیام همگانی با محدودیت نرخ، جشنواره‌ها |
 | امنیت | هش رمز، محدودیت تلاش ورود، CSRF، کوئری پارامتری، escape خروجی، رمزنگاری AES-256-GCM توکن و شماره کارت، لاگ فعالیت مدیران |
 | نصب | ویزارد نصب با تست دیتابیس، ساخت اولین مدیر، قفل شدن پس از نصب |
+| به‌روزرسانی | بررسی و نصب از GitHub Releases یا آپلود ZIP با تأیید `CHECKSUMS.sha256`، پشتیبان خودکار و بازگردانی (حفظ `.env` و `storage/`) |
 
 ---
 
 ## پیش‌نیازها
 
 - PHP **8.1** یا بالاتر (تست‌شده تا 8.3)
-- افزونه‌های PHP: `pdo`, `pdo_mysql`, `mbstring`, `openssl`, `curl`, `json`
+- افزونه‌های PHP: `pdo`, `pdo_mysql`, `mbstring`, `openssl`, `curl`, `json`, `zip` (افزونه `zip` برای بخش به‌روزرسانی)
 - MySQL 5.7+/MariaDB 10.3+ (یا SQLite فقط برای تست/توسعه)
 - دسترسی به Cron (cPanel یا مشابه)
 - دسترسی به دکمه `Webhook` تلگرام → **نیاز به HTTPS معتبر** (پایین را بخوانید)
@@ -253,8 +254,9 @@ src/
   routes.php     تمام مسیرها
 views/           قالب‌های PHP (layouts + admin + miniapp + install + errors)
 database/        Migration ها
-bin/             cron.php، poll.php، install-cron.php
-tests/           ۱۰ سناریوی تست + runner
+bin/             cron.php، poll.php، install-cron.php، build-update.php
+VERSION          شماره نسخه فعلی سامانه (1.1.0)
+tests/           سناریوهای تست خودکار + runner
 docs/            مستندات فارسی
 storage/         لاگ‌ها، پشتیبان‌ها، فایل قفل نصب
 ```
@@ -281,6 +283,7 @@ storage/         لاگ‌ها، پشتیبان‌ها، فایل قفل نصب
 - [`docs/MYSQL-COMPAT.md`](docs/MYSQL-COMPAT.md) — گزارش بازبینی سازگاری با MySQL
 - [`docs/HOSTING.md`](docs/HOSTING.md) — **چه هاستی بخرم؟** (cPanel یا DirectAdmin، تست روی گوشی)
 - [`docs/INSTALL.md`](docs/INSTALL.md) — نصب گام‌به‌گام
+- [`docs/UPDATE.md`](docs/UPDATE.md) — **به‌روزرسانی امن و بازگردانی (گیت‌هاب / فایل ZIP)**
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — معماری و طراحی دیتابیس
 - [`docs/ADMIN-GUIDE.md`](docs/ADMIN-GUIDE.md) — راهنمای پنل مدیریت
 - [`docs/BOT-SETUP.md`](docs/BOT-SETUP.md) — اتصال ربات و عیب‌یابی
