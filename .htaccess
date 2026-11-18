@@ -19,7 +19,7 @@ DirectoryIndex public/index.php index.php
     # RewriteBase /bot/
 
     # ۱) مسدودسازی کامل پوشه‌های داخلی (هیچ‌وقت به public/ منتقل نمی‌شوند)
-    RewriteRule ^(src|storage|database|config|tests|bin|docs)(/|$) - [F,L,NC]
+    RewriteRule ^(src|storage|database|config|tests|bin|docs|releases)(/|$) - [F,L,NC]
 
     # ۲) هر چیزی که در ریشه docroot وجود ندارد، به public/ منتقل می‌شود
     RewriteCond %{REQUEST_URI} !^/public/

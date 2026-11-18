@@ -412,6 +412,15 @@ final class UpdateService
             }
         }
 
+        $zipballUrl = '';
+        if ($zipAsset === null) {
+            $candidateZipball = trim((string) ($release['zipball_url'] ?? ''));
+            if ($candidateZipball !== '' && self::isAllowedDownloadUrl($candidateZipball)) {
+                $zipballUrl = $candidateZipball;
+            }
+        }
+        $useZipball = ($zipAsset === null && $zipballUrl !== '');
+
         $hasUpdate = self::isNewer($version, $current);
         $info = [
             'repo' => $repo,
@@ -422,9 +431,14 @@ final class UpdateService
             'prerelease' => !empty($release['prerelease']),
             'published_at' => (string) ($release['published_at'] ?? ''),
             'html_url' => (string) ($release['html_url'] ?? ('https://github.com/' . $repo . '/releases')),
-            'has_official_asset' => $zipAsset !== null,
-            'asset_name' => $zipAsset !== null ? (string) ($zipAsset['name'] ?? '') : null,
-            'asset_url' => $zipAsset !== null ? (string) ($zipAsset['browser_download_url'] ?? '') : null,
+            'has_official_asset' => ($zipAsset !== null || $useZipball),
+            'is_zipball' => $useZipball,
+            'asset_name' => $zipAsset !== null
+                ? (string) ($zipAsset['name'] ?? '')
+                : ($useZipball ? ('refrallbot-' . $tag . '.zip') : null),
+            'asset_url' => $zipAsset !== null
+                ? (string) ($zipAsset['browser_download_url'] ?? '')
+                : ($useZipball ? $zipballUrl : null),
             'asset_size' => $zipAsset !== null ? (int) ($zipAsset['size'] ?? 0) : 0,
             'sha256_url' => $shaAsset !== null ? (string) ($shaAsset['browser_download_url'] ?? '') : null,
             'has_update' => $hasUpdate,
@@ -547,6 +561,9 @@ final class UpdateService
 
         $options['expected_version'] = $targetVersion;
         $options['cleanup_zip'] = true;
+        if (!empty($latest['is_zipball'])) {
+            $options['is_zipball'] = true;
+        }
         return $this->applyArchive($downloadPath, 'github', $adminId, $options);
     }
 
@@ -969,6 +986,8 @@ final class UpdateService
         }
 
         // ۳) اسکن همهٔ فایل‌های واقعی داخل بسته: هیچ فایل محافظت‌شده، غیرمجاز یا بدون چک‌سام نباید وجود داشته باشد
+        // (در حالت آرشیو مستقیم GitHub zipball، پوشه‌های مخصوص مخزن مثل tests/ و .github/ نادیده گرفته می‌شوند و هرگز کپی نمی‌گردند)
+        $isZipball = !empty($options['is_zipball']);
         $actualFiles = $this->scanRelativeFiles($root);
         foreach ($actualFiles as $rel) {
             $full = $root . '/' . $rel;
@@ -979,9 +998,15 @@ final class UpdateService
                 continue;
             }
             if (self::isProtectedPath($rel)) {
+                if ($isZipball && (str_starts_with($rel, '.github/') || str_starts_with($rel, '.git') || $rel === '.env.example' || $rel === '.htaccess' || str_starts_with($rel, 'config/') || str_starts_with($rel, 'storage/') && str_ends_with($rel, '.gitkeep') || str_starts_with($rel, 'storage/') && str_ends_with($rel, '.htaccess'))) {
+                    continue;
+                }
                 return ['ok' => false, 'error' => 'بسته شامل فایل محافظت‌شده «' . $rel . '» است (.env و storage هرگز نباید در بسته باشند).'];
             }
             if (!self::isAllowedPath($rel)) {
+                if ($isZipball) {
+                    continue;
+                }
                 return ['ok' => false, 'error' => 'فایل غیرمجاز «' . $rel . '» در بسته یافت شد.'];
             }
             if (!isset($checksums[$rel])) {
@@ -1902,9 +1927,10 @@ final class UpdateService
      */
     private function httpGet(string $url, bool $binary): array
     {
+        $isApiZipball = $binary && str_contains($url, '://api.github.com/') && str_contains($url, '/zipball/');
         $headers = [
             'User-Agent: RefrallBot/' . $this->currentVersion(),
-            'Accept: ' . ($binary ? 'application/octet-stream' : 'application/vnd.github+json'),
+            'Accept: ' . (($binary && !$isApiZipball) ? 'application/octet-stream' : 'application/vnd.github+json'),
             'X-GitHub-Api-Version: 2022-11-28',
         ];
         $token = self::githubToken();
