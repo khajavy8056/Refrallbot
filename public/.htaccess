@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────
+#  RefrallBot — front controller
+# ─────────────────────────────────────────────────────────────
+Options -Indexes -MultiViews
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # اگر در زیرپوشه نصب شده‌اید، این خط را مطابق آن تنظیم کنید
+    # RewriteBase /refrallbot/
+
+    # فایل‌ها و پوشه‌های موجود را مستقیم سرو کن (assets)
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # بقیه به index.php
+    RewriteRule ^ index.php [L,QSA]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+</IfModule>
+
+# فشرده‌سازی
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json image/svg+xml
+</IfModule>
+
+# کش استاتیک
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/css "access plus 7 days"
+    ExpiresByType application/javascript "access plus 7 days"
+    ExpiresByType font/woff2 "access plus 30 days"
+    ExpiresByType image/svg+xml "access plus 7 days"
+</IfModule>

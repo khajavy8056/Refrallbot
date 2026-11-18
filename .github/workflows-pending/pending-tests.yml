@@ -1,0 +1,175 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  CI: تست‌های خودکار RefrallBot
+#
+#  ⚠️ این فایل عمداً در مسیر .github/workflows/ قرار ندارد، چون توکن GitHub
+#  مورد استفاده برای ساخت این پروژه مجوز «workflows» نداشت و push رد می‌شد.
+#
+#  فعال‌سازی (یکی را انتخاب کنید):
+#    الف) از رابط وب GitHub: فایل را بسازید/منتقل کنید به
+#         .github/workflows/tests.yml و محتوای همین فایل را جای‌گذاری کنید.
+#    ب) از خط فرمان:
+#         mkdir -p .github/workflows
+#         git mv .github/tests-workflow.yml .github/workflows/tests.yml
+#         git rm -r --cached .github/tests-workflow.yml 2>/dev/null || true
+#         git commit -m "ci: فعال‌سازی تست‌های خودکار" && git push
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# اجرای هم‌زمان قبلی همان شاخه لغو می‌شود
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ──────────────────────────────────────────────────────────────── ۱) تست‌ها
+  php-tests:
+    name: PHP ${{ matrix.php }} — تست‌های خودکار
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.2", "8.3"]
+
+    steps:
+      - name: دریافت کد
+        uses: actions/checkout@v4
+
+      - name: نصب PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, openssl, curl, json
+          coverage: none
+
+      - name: نمایش نسخه PHP
+        run: php -v
+
+      - name: بررسی سینتکس همه فایل‌های PHP
+        run: |
+          set -e
+          count=0
+          while IFS= read -r -d '' file; do
+            php -l "$file" > /dev/null || { echo "✘ Syntax error in $file"; php -l "$file"; exit 1; }
+            count=$((count + 1))
+          done < <(find src views database bin config tests public -name '*.php' -print0)
+          echo "✔ سینتکس $count فایل PHP سالم است"
+
+      - name: بررسی سینتکس با تست داخلی (_lint)
+        run: php tests/_lint.php
+
+      - name: اجرای تست‌ها (۱۴ سناریو + تست‌های تکمیلی)
+        env:
+          RB_TEST_FRESH: "1"
+          RB_TEST_RUN_ID: ${{ github.run_id }}-${{ matrix.php }}
+        run: |
+          set -o pipefail
+          php tests/run_all.php | tee /tmp/test-output.txt
+          grep -q "همه تست‌ها موفق" /tmp/test-output.txt
+
+      - name: خلاصه نتایج در GitHub
+        if: always()
+        run: |
+          {
+            echo "### نتیجه تست‌ها (PHP ${{ matrix.php }})"
+            echo '```'
+            tail -25 /tmp/test-output.txt 2>/dev/null || echo "بدون خروجی"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ──────────────────────────────────────────────────────────── ۲) دود HTTP
+  http-smoke:
+    name: تست دود HTTP روی سرور واقعی PHP
+    runs-on: ubuntu-latest
+    steps:
+      - name: دریافت کد
+        uses: actions/checkout@v4
+
+      - name: نصب PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pdo, pdo_sqlite, pdo_mysql, mbstring, openssl, curl, json
+          coverage: none
+
+      # نکته: پروژه پس از نصب «قفل» می‌شود؛ در این تست عمداً همان وضعیت
+      # نصب‌شده شبیه‌سازی می‌شود تا مسیرهای واقعی پنل هم پاسخ دهند.
+      - name: آماده‌سازی دیتابیس و داده اولیه
+        env:
+          DB_DRIVER: sqlite
+          DB_DATABASE: /tmp/refrallbot-http.sqlite
+        run: php tests/_seed_http.php
+
+      # تست دود به‌صورت PHP-native انجام می‌شود تا در صورت شکست، بدنهٔ واقعی
+      # پاسخ و خطاهای PHP با ::error:: در تب Actions دیده شوند
+      # (نسخهٔ curl فقط «exit code 1» می‌داد و عیب‌یابی را غیرممکن می‌کرد).
+      - name: تست دود HTTP (PHP-native، با جزئیات خطا)
+        env:
+          DB_DRIVER: sqlite
+          DB_DATABASE: /tmp/refrallbot-http.sqlite
+          APP_DEBUG: "1"
+        run: php tests/15_http_smoke_test.php
+
+      - name: لاگ خطاهای PHP برنامه در صورت شکست
+        if: failure()
+        run: |
+          echo "=== storage/logs ==="
+          tail -120 storage/logs/app-*.log 2>/dev/null || echo "(لاگی نیست)"
+          echo "=== /tmp ==="
+          ls -la /tmp/rb-hs-* 2>/dev/null || true
+
+  # ─────────────────────────────────────────────────── ۳) اسکن راز در مخزن
+  security-scan:
+    name: بررسی نبود راز در مخزن
+    runs-on: ubuntu-latest
+    steps:
+      - name: دریافت کد
+        uses: actions/checkout@v4
+
+      - name: فایل .env نباید در مخزن باشد
+        run: |
+          set -e
+          if [ -f .env ]; then echo "✘ فایل .env نباید در مخزن باشد"; exit 1; fi
+          echo "✔ فایل .env در مخزن نیست"
+
+      - name: جستجوی توکن واقعی ربات تلگرام
+        run: |
+          set -e
+          # الگوی توکن: ۸ تا ۱۰ رقم + ':' + ۳۵ کاراکتر
+          # مقادیر فیک تست‌ها (که عمداً شکل توکن دارند) مستثنا هستند
+          if grep -rEn '[0-9]{8,10}:[A-Za-z0-9_-]{35}' \
+               --include='*.php' --include='*.md' --include='*.yml' \
+               --include='*.yaml' --include='*.json' --include='*.env*' . \
+             | grep -vE 'AAAAAAAAA|BBBBBBBBB|XXXXX|example|placeholder|ForMiniApp|ForAutomatedTests|TestToken|FakeToken|sample'; then
+            echo "✘ توکن احتمالی ربات در مخزن یافت شد"
+            exit 1
+          fi
+          echo "✔ هیچ توکن واقعی در مخزن یافت نشد"
+
+      - name: بررسی نبود کلید خصوصی و فایل‌های حساس
+        run: |
+          set -e
+          if git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$|\.p12$|id_rsa'; then
+            echo "✘ فایل حساس در مخزن ردیابی می‌شود"
+            exit 1
+          fi
+          echo "✔ هیچ فایل حساسی ردیابی نمی‌شود"
+
+      - name: بررسی نبود رمز پیش‌فرض در کد
+        run: |
+          set -e
+          if grep -rEn "password\s*=\s*['\"](admin|123456|password|test)['\"]" \
+               --include='*.php' src views database config bin | grep -v 'tests/'; then
+            echo "✘ احتمال وجود رمز پیش‌فرض"
+            exit 1
+          fi
+          echo "✔ هیچ رمز پیش‌فرضی یافت نشد"
