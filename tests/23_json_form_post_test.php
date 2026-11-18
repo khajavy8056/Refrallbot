@@ -65,8 +65,8 @@ TelegramService::$fakeTransport = static function (string $method, array $payloa
 
 // ابزار ارسال درخواست POST با بدنهٔ JSON و $_POST کاملاً خالی (بازتولید دقیق رفتار مرورگر)
 $dispatchJsonPost = static function (string $uri, array $body) use ($adminId): array {
-    $_SESSION['_admin_id'] = $adminId;
-    $_SESSION['_admin_login_at'] = time();
+    $_SESSION['admin_id'] = $adminId;
+    $_SESSION['admin_last_seen'] = time();
     $csrf = Csrf::token();
 
     $_GET = [];
@@ -116,7 +116,7 @@ T::eq(true, $resGen['ok'] ?? false, 'ذخیرهٔ تنظیمات عمومی با
 T::eq('باشگاه مشتریان آزمایشی', (string) SettingsService::get('app_name', ''), 'نام سامانه در دیتابیس به‌روز شد');
 
 // ۴) ذخیرهٔ تنظیمات پورسانت با کلیدهای براکت‌دار HTML (levels[1][percent] و conditions[])
-$resCom = $dispatchJsonPost('/admin/commission/save', [
+$resCom = $dispatchJsonPost('/admin/commissions', [
     'direct_reward' => '15,000',
     'direct_enabled' => '1',
     'multi_level_enabled' => '1',
@@ -145,16 +145,17 @@ $resMenus = $dispatchJsonPost('/admin/telegram/menus/save', [
 T::eq(true, $resMenus['ok'] ?? false, 'ذخیرهٔ منوهای ربات با کلیدهای براکت‌دار موفق شد');
 T::eq('👤 پروفایل من', (string) $db->value('SELECT title FROM bot_menus WHERE id = :id', ['id' => $menuId]), 'عنوان منو به‌روز شد');
 
-// ۶) ذخیرهٔ پروفایل و تیکت پشتیبانی در Mini App (که miniapp.js همیشه JSON می‌فرستد)
-$user = (new UserService($db))->syncFromTelegram(['id' => 444555666, 'first_name' => 'سارا', 'username' => 'sara_t']);
-$_SESSION['_miniapp_user_id'] = (int) $user['id'];
-$_SESSION['_miniapp_auth_at'] = time();
+// ۶) ذخیرهٔ پروفایل در Mini App (که miniapp.js همیشه JSON می‌فرستد)
+$regUser = (new UserService($db))->registerFromTelegram(['id' => 444555666, 'first_name' => 'سارا', 'username' => 'sara_t']);
+$userId = (int) ($regUser['user']['id'] ?? 0);
+$_SESSION['miniapp_user_id'] = $userId;
+$_SESSION['miniapp_auth_at'] = time();
 $resProfile = $dispatchJsonPost('/app/api/profile', [
     'first_name' => 'سارا جدید',
     'last_name' => 'محمدی',
 ]);
 T::eq(true, $resProfile['ok'] ?? false, 'ویرایش پروفایل Mini App با JSON موفق شد');
-T::eq('سارا جدید', (string) $db->value('SELECT first_name FROM users WHERE id = :id', ['id' => (int) $user['id']]), 'نام کاربر Mini App ذخیره شد');
+T::eq('سارا جدید', (string) $db->value('SELECT first_name FROM users WHERE id = :id', ['id' => $userId]), 'نام کاربر Mini App ذخیره شد');
 
 // ۷) ذخیرهٔ توکن با فرم استاندارد x-www-form-urlencoded ($_POST پر و بدنهٔ JSON خالی)
 $_GET = [];
