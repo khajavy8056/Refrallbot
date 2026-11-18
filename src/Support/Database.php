@@ -101,8 +101,9 @@ final class Database
                 // SQLSTATE[HY000]: 3988 (Conversion from utf8mb3_general_ci into
                 // utf8mb4_general_ci impossible for parameter) رخ می‌دهد.
                 $mysqlOptions = $options;
-                if (defined('PDO::MYSQL_ATTR_INIT_COMMAND')) {
-                    $mysqlOptions[PDO::MYSQL_ATTR_INIT_COMMAND] = sprintf(
+                $initAttr = self::mysqlInitCommandAttr();
+                if ($initAttr !== null) {
+                    $mysqlOptions[$initAttr] = sprintf(
                         "SET NAMES '%s' COLLATE '%s'",
                         self::MYSQL_CHARSET,
                         self::MYSQL_COLLATION
@@ -115,8 +116,8 @@ final class Database
                 try {
                     $this->pdo = new PDO($dsn, $this->config['username'], $this->config['password'], $mysqlOptions);
                 } catch (PDOException $initErr) {
-                    // اگر پروکسی خاصی MYSQL_ATTR_INIT_COMMAND را نپذیرفت، بدون آن وصل شویم و بلافاصله SET NAMES بزنیم
-                    if (!isset($mysqlOptions[PDO::MYSQL_ATTR_INIT_COMMAND])) {
+                    // اگر پروکسی خاصی ATTR_INIT_COMMAND را نپذیرفت، بدون آن وصل شویم و بلافاصله SET NAMES بزنیم
+                    if ($initAttr === null) {
                         throw $initErr;
                     }
                     $this->pdo = new PDO($dsn, $this->config['username'], $this->config['password'], $options);
@@ -139,6 +140,24 @@ final class Database
         }
 
         return $this->pdo;
+    }
+
+    /**
+     * ثابت ATTR_INIT_COMMAND سازگار با PHP 8.1 تا 8.5+.
+     * در PHP 8.5 ثابت PDO::MYSQL_ATTR_INIT_COMMAND منسوخ شده و جایگزین رسمی آن
+     * Pdo\Mysql::ATTR_INIT_COMMAND (معرفی‌شده در PHP 8.4) است.
+     */
+    public static function mysqlInitCommandAttr(): ?int
+    {
+        if (PHP_VERSION_ID >= 80400 && defined('Pdo\\Mysql::ATTR_INIT_COMMAND')) {
+            /** @var int */
+            return constant('Pdo\\Mysql::ATTR_INIT_COMMAND');
+        }
+        if (PHP_VERSION_ID < 80500 && defined('PDO::MYSQL_ATTR_INIT_COMMAND')) {
+            /** @var int */
+            return constant('PDO::MYSQL_ATTR_INIT_COMMAND');
+        }
+        return null;
     }
 
     /**

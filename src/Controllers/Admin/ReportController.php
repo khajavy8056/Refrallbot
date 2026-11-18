@@ -62,13 +62,13 @@ final class ReportController extends AdminController
         $out = fopen('php://output', 'w');
         // BOM برای باز شدن صحیح فارسی در Excel
         fwrite($out, "\xEF\xBB\xBF");
-        fputcsv($out, array_map(static fn($c) => $c['label'], $columns));
+        fputcsv($out, array_map(static fn($c) => $c['label'], $columns), ',', '"', '');
         foreach ($rows as $row) {
             $line = [];
             foreach ($columns as $key => $meta) {
                 $line[] = $row[$key] ?? '';
             }
-            fputcsv($out, $line);
+            fputcsv($out, $line, ',', '"', '');
         }
         fclose($out);
     }

@@ -214,14 +214,14 @@ final class TelegramService
             $body = curl_exec($ch);
             $error = curl_error($ch);
             $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            unset($ch); // در PHP 8.5 تابع curl_close منسوخ شده؛ CurlHandle خودکار بسته می‌شود
             if ($body === false) {
                 return ['body' => '', 'error' => $error !== '' ? $error : 'اتصال برقرار نشد', 'status' => $status];
             }
             return ['body' => (string) $body, 'error' => null, 'status' => $status];
         }
 
-        // fallback با stream context
+        // fallback با stream context (بدون $http_response_header که در PHP 8.5 منسوخ شده)
         $context = stream_context_create([
             'http' => [
                 'method' => 'POST',
@@ -235,22 +235,28 @@ final class TelegramService
                 'verify_peer_name' => true,
             ],
         ]);
-        $http_response_header = [];
-        $body = @file_get_contents($url, false, $context);
-        $status = 0;
-        foreach ($http_response_header ?? [] as $line) {
-            if (preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', $line, $m)) {
-                $status = (int) $m[1]; // آخرین هدر = پاسخ نهایی (پس از ریدایرکت)
-            }
-        }
-        if ($body === false) {
+        $fp = @fopen($url, 'rb', false, $context);
+        if ($fp === false) {
             $lastError = error_get_last()['message'] ?? '';
             return [
                 'body' => '',
                 'error' => 'اتصال به تلگرام برقرار نشد (افزونه cURL توصیه می‌شود).'
                     . ($lastError !== '' ? ' ' . self::redact($lastError) : ''),
-                'status' => $status,
+                'status' => 0,
             ];
+        }
+        $meta = stream_get_meta_data($fp);
+        $body = stream_get_contents($fp);
+        fclose($fp);
+        $status = 0;
+        $wrapperHeaders = is_array($meta['wrapper_data'] ?? null) ? $meta['wrapper_data'] : [];
+        foreach ($wrapperHeaders as $line) {
+            if (is_string($line) && preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', $line, $m)) {
+                $status = (int) $m[1]; // آخرین هدر = پاسخ نهایی (پس از ریدایرکت)
+            }
+        }
+        if ($body === false) {
+            return ['body' => '', 'error' => 'خواندن پاسخ تلگرام ناموفق بود.', 'status' => $status];
         }
         return ['body' => $body, 'error' => null, 'status' => $status > 0 ? $status : 200];
     }
@@ -376,7 +382,7 @@ final class TelegramService
         $body = curl_exec($ch);
         $curlError = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        unset($ch);
 
         if ($body === false) {
             ErrorHandler::write('TELEGRAM', 'file upload transport error on ' . $method . ': ' . self::redact((string) $curlError));

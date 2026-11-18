@@ -1948,7 +1948,7 @@ final class UpdateService
             $err = curl_error($ch);
             $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $effectiveUrl = (string) curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
-            curl_close($ch);
+            unset($ch);
 
             if ($body === false) {
                 return ['status' => $status, 'body' => '', 'error' => $err !== '' ? $err : 'عدم برقراری ارتباط'];
@@ -1973,10 +1973,20 @@ final class UpdateService
                 'verify_peer_name' => true,
             ],
         ]);
-        $http_response_header = [];
-        $body = @file_get_contents($url, false, $context);
+        $fp = @fopen($url, 'rb', false, $context);
+        if ($fp === false) {
+            $lastErr = error_get_last()['message'] ?? 'اتصال برقرار نشد';
+            return ['status' => 0, 'body' => '', 'error' => $lastErr];
+        }
+        $meta = stream_get_meta_data($fp);
+        $body = stream_get_contents($fp);
+        fclose($fp);
         $status = 0;
-        foreach ($http_response_header ?? [] as $line) {
+        $wrapperHeaders = is_array($meta['wrapper_data'] ?? null) ? $meta['wrapper_data'] : [];
+        foreach ($wrapperHeaders as $line) {
+            if (!is_string($line)) {
+                continue;
+            }
             if (preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', $line, $m)) {
                 $status = (int) $m[1];
             }
@@ -1987,8 +1997,7 @@ final class UpdateService
             }
         }
         if ($body === false) {
-            $lastErr = error_get_last()['message'] ?? 'اتصال برقرار نشد';
-            return ['status' => $status, 'body' => '', 'error' => $lastErr];
+            return ['status' => $status, 'body' => '', 'error' => 'خواندن پاسخ سرور ناموفق بود.'];
         }
         return ['status' => $status > 0 ? $status : 200, 'body' => $body, 'error' => null];
     }

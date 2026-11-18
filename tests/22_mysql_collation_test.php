@@ -218,9 +218,39 @@ T::ok(
 );
 $dbCode = (string) file_get_contents(dirname(__DIR__) . '/src/Support/Database.php');
 T::ok(
-    str_contains($dbCode, 'MYSQL_ATTR_INIT_COMMAND') && str_contains($dbCode, "SET NAMES '%s' COLLATE '%s'"),
-    'Database::pdo هم MYSQL_ATTR_INIT_COMMAND و هم SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci را اعمال می‌کند'
+    str_contains($dbCode, 'Pdo\\\\Mysql::ATTR_INIT_COMMAND') && str_contains($dbCode, "SET NAMES '%s' COLLATE '%s'"),
+    'Database::pdo از Pdo\\Mysql::ATTR_INIT_COMMAND (سازگار با PHP 8.4/8.5) و SET NAMES utf8mb4 استفاده می‌کند'
 );
+// ۲-ب) سازگاری کامل PHP 8.4 و PHP 8.5 در کل src/: نبود PDO::MYSQL_ATTR_*، curl_close، $http_response_header و fputcsv بدون escape
+$php85Hits = [];
+foreach ($srcFiles as $file) {
+    $code = (string) file_get_contents($file);
+    foreach (token_get_all($code) as $tok) {
+        if (!is_array($tok)) {
+            continue;
+        }
+        if ($tok[0] === T_STRING && str_starts_with($tok[1], 'MYSQL_ATTR_')) {
+            $php85Hits[] = basename($file) . ':' . $tok[2] . ' => PDO::' . $tok[1];
+        }
+        if ($tok[0] === T_STRING && strtolower($tok[1]) === 'curl_close') {
+            $php85Hits[] = basename($file) . ':' . $tok[2] . ' => curl_close()';
+        }
+        if ($tok[0] === T_VARIABLE && $tok[1] === '$http_response_header') {
+            $php85Hits[] = basename($file) . ':' . $tok[2] . ' => $http_response_header';
+        }
+    }
+}
+T::eq([], $php85Hits, 'هیچ استفادهٔ منسوخ PHP 8.5 (PDO::MYSQL_ATTR_* / curl_close / $http_response_header) در src/ وجود ندارد');
+$reportCode = (string) file_get_contents(dirname(__DIR__) . '/src/Controllers/Admin/ReportController.php');
+T::eq(2, substr_count($reportCode, ", ',', '\"', '')"), 'هر دو فراخوانی fputcsv پارامتر escape صریح دارند (سازگار با PHP 8.4/8.5)');
+
+// ۲-ج) ErrorHandler نباید هشدار Deprecation را به استثنای مرگبار تبدیل کند
+\RB\Support\ErrorHandler::register();
+$deprecationSurvived = false;
+@trigger_error('test php 8.5 deprecation notice', E_USER_DEPRECATED);
+trigger_error('test php 8.5 unmuted deprecation notice', E_USER_DEPRECATED);
+$deprecationSurvived = true;
+T::eq(true, $deprecationSurvived, 'ErrorHandler هشدارهای Deprecation را بدون متوقف کردن درخواست فقط لاگ می‌کند');
 
 // ۳) تشخیص دقیق خطای 3988، 1267 و 1366
 $err3988 = FakeMysql3988Pdo::makeMysqlError(
