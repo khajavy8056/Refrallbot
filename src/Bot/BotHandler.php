@@ -6,6 +6,7 @@ namespace RB\Bot;
 use RB\Services\CampaignService;
 use RB\Services\MembershipService;
 use RB\Services\MenuService;
+use RB\Services\Notifier;
 use RB\Services\SettingsService;
 use RB\Services\SupportService;
 use RB\Services\TelegramService;
@@ -40,9 +41,17 @@ final class BotHandler
 
     public function handle(array $update): void
     {
-        $this->db->transaction(function () use ($update) {
-            $this->executeUpdate($update);
-        });
+        try {
+            $this->db->transaction(function () use ($update) {
+                $this->executeUpdate($update);
+            });
+        } catch (\Throwable $e) {
+            // اگر تراکنش Rollback شد، هیچ اعلان معوقی نباید به تلگرام ارسال شود
+            Notifier::clearDeferred();
+            throw $e;
+        }
+        // ارسال اعلان‌های معوق (دعوت موفق، پورسانت و...) فقط پس از COMMIT قطعی
+        Notifier::flushDeferred();
     }
 
     /**
@@ -188,9 +197,25 @@ final class BotHandler
             return;
         }
 
+        // اتصال پیام /start ثبت‌شده به شناسهٔ کاربر تازه و بررسی مجدد شرایط واجد شرایط شدن
+        try {
+            $this->db->run(
+                'UPDATE telegram_messages SET user_id = :u WHERE telegram_id = :t AND user_id IS NULL',
+                ['u' => (int) $user['id'], 't' => $telegramId]
+            );
+        } catch (\Throwable) {
+        }
+        $fresh = $this->users->find((int) $user['id']) ?? $user;
+        $this->users->maybeQualify($fresh);
+        $user = $this->users->find((int) $user['id']) ?? $fresh;
+
         // ثبت رویداد مشکوک: تلاش برای استفاده از لینک خود
         if ($payload !== null) {
-            $referrer = $this->users->findByCode(strtoupper($payload));
+            $code = strtoupper(trim($payload));
+            if (str_starts_with($code, 'REF_')) {
+                $code = substr($code, 4);
+            }
+            $referrer = $this->users->findByCode($code);
             if ($referrer && (int) $referrer['telegram_id'] === $telegramId) {
                 \RB\Services\SecurityService::log('self_referral_attempt', 'medium', ['payload' => $payload], (int) $user['id']);
             }
@@ -261,11 +286,18 @@ final class BotHandler
     // ------------------------------------------------------------------ گیت‌ها
     private function passGates(array $user, int|string $chatId): bool
     {
+        $wasVerified = !empty($user['channels_verified']);
         $membership = new MembershipService($this->db);
         $gate = $membership->gate($user);
         if (!$gate['passed']) {
             $this->sendMembershipGate($user, $chatId, $gate);
             return false;
+        }
+        if (!$wasVerified) {
+            $fresh = $this->users->find((int) $user['id']);
+            if ($fresh !== null && !empty($fresh['channels_verified'])) {
+                $this->users->maybeQualify($fresh);
+            }
         }
         return true;
     }
@@ -701,9 +733,11 @@ final class BotHandler
             $membership = new MembershipService($this->db);
             $gate = $membership->gate($user);
             if ($gate['passed']) {
+                $fresh = $this->users->find((int) $user['id']) ?? $user;
+                $this->users->maybeQualify($fresh);
                 $this->tg->answerCallbackQuery($callbackId, '✅ عضویت تأیید شد.');
                 if ($chatId !== null) {
-                    $this->sendMainMenu($this->users->find((int) $user['id']) ?? $user, $chatId, '✅ عضویت شما تأیید شد. اکنون می‌توانید از ربات استفاده کنید.');
+                    $this->sendMainMenu($this->users->find((int) $user['id']) ?? $fresh, $chatId, '✅ عضویت شما تأیید شد. اکنون می‌توانید از ربات استفاده کنید.');
                 }
             } else {
                 $this->tg->answerCallbackQuery($callbackId, '❌ هنوز عضو کانال‌ها نیستید.', true);

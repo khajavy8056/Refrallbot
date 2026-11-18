@@ -56,75 +56,95 @@ final class UserService
             throw new \InvalidArgumentException('شناسه تلگرام نامعتبر است.');
         }
 
-        return $this->db->transaction(function () use ($tgUser, $telegramId, $startPayload, $context) {
-            $existing = $this->findByTelegramId($telegramId);
-            $isNew = $existing === null;
+        try {
+            $out = $this->db->transaction(function () use ($tgUser, $telegramId, $startPayload, $context) {
+                $existing = $this->findByTelegramId($telegramId);
+                $isNew = $existing === null;
 
-            if (!$isNew) {
-                $this->db->update('users', [
-                    'username' => $tgUser['username'] ?? $existing['username'],
-                    'first_name' => $tgUser['first_name'] ?? $existing['first_name'],
-                    'last_name' => $tgUser['last_name'] ?? $existing['last_name'],
-                    'language' => $tgUser['language_code'] ?? $existing['language'],
+                if (!$isNew) {
+                    $this->db->update('users', [
+                        'username' => $tgUser['username'] ?? $existing['username'],
+                        'first_name' => $tgUser['first_name'] ?? $existing['first_name'],
+                        'last_name' => $tgUser['last_name'] ?? $existing['last_name'],
+                        'language' => $tgUser['language_code'] ?? $existing['language'],
+                        'last_activity_at' => now(),
+                        'last_ip' => $context['ip'] ?? $existing['last_ip'],
+                        'updated_at' => now(),
+                    ], 'id = :id', ['id' => (int) $existing['id']]);
+                    $user = $this->find((int) $existing['id']);
+                    if ($user !== null) {
+                        $this->maybeQualify($user);
+                    }
+                    return ['user' => $user ?? $existing, 'is_new' => false];
+                }
+
+                $referrer = null;
+                if ($startPayload !== null && $startPayload !== '') {
+                    $referrer = $this->findByCode($this->normalizeCode($startPayload));
+                    // جلوگیری از خودمعرفی (بر اساس شناسه تلگرام)
+                    if ($referrer !== null && (int) ($referrer['telegram_id'] ?? 0) === $telegramId) {
+                        $referrer = null;
+                    }
+                }
+
+                $userId = $this->db->insert('users', [
+                    'telegram_id' => $telegramId,
+                    'username' => isset($tgUser['username']) ? mb_substr((string) $tgUser['username'], 0, 64) : null,
+                    'first_name' => isset($tgUser['first_name']) ? mb_substr((string) $tgUser['first_name'], 0, 120) : null,
+                    'last_name' => isset($tgUser['last_name']) ? mb_substr((string) $tgUser['last_name'], 0, 120) : null,
+                    'language' => $tgUser['language_code'] ?? 'fa',
+                    'referral_code' => $this->generateUniqueCode(),
+                    'status' => 'active',
+                    'verify_status' => 'pending',
+                    'joined_at' => now(),
                     'last_activity_at' => now(),
-                    'last_ip' => $context['ip'] ?? $existing['last_ip'],
+                    'signup_ip' => $context['ip'] ?? Request::ip(),
+                    'last_ip' => $context['ip'] ?? Request::ip(),
+                    'meta' => json_encode([
+                        'start_payload' => $startPayload,
+                        'photo_url' => $tgUser['photo_url'] ?? null,
+                        'is_premium' => $tgUser['is_premium'] ?? false,
+                    ], JSON_UNESCAPED_UNICODE),
+                    'created_at' => now(),
                     'updated_at' => now(),
-                ], 'id = :id', ['id' => (int) $existing['id']]);
-                $user = $this->find((int) $existing['id']);
-                $this->maybeQualify($user);
-                return ['user' => $user ?? $existing, 'is_new' => false];
+                ]);
+
+                (new WalletService($this->db))->ensureWallet($userId);
+
+                if ($referrer !== null && (int) $referrer['id'] !== $userId) {
+                    $this->attachReferral($userId, (int) $referrer['id']);
+                }
+
+                // ثبت رویداد ورود (idempotent)
+                $this->db->insertIgnore('referral_events', [
+                    'event_key' => 'user_joined:' . $userId,
+                    'type' => 'user_joined',
+                    'user_id' => $userId,
+                    'actor_id' => $referrer['id'] ?? null,
+                    'source_user_id' => $userId,
+                    'base_amount' => 0,
+                    'status' => 'processed',
+                    'payload' => json_encode(['telegram_id' => $telegramId], JSON_UNESCAPED_UNICODE),
+                    'created_at' => now(),
+                ], 'event_key');
+
+                $user = $this->find($userId);
+                if ($user !== null) {
+                    $this->maybeQualify($user);
+                }
+                return ['user' => $this->find($userId) ?? $user, 'is_new' => true];
+            });
+        } catch (\Throwable $e) {
+            if (!$this->db->inTransaction()) {
+                Notifier::clearDeferred();
             }
+            throw $e;
+        }
 
-            $referrer = null;
-            if ($startPayload !== null && $startPayload !== '') {
-                $referrer = $this->findByCode($this->normalizeCode($startPayload));
-            }
-
-            $userId = $this->db->insert('users', [
-                'telegram_id' => $telegramId,
-                'username' => isset($tgUser['username']) ? mb_substr((string) $tgUser['username'], 0, 64) : null,
-                'first_name' => isset($tgUser['first_name']) ? mb_substr((string) $tgUser['first_name'], 0, 120) : null,
-                'last_name' => isset($tgUser['last_name']) ? mb_substr((string) $tgUser['last_name'], 0, 120) : null,
-                'language' => $tgUser['language_code'] ?? 'fa',
-                'referral_code' => $this->generateUniqueCode(),
-                'status' => 'active',
-                'verify_status' => 'pending',
-                'joined_at' => now(),
-                'last_activity_at' => now(),
-                'signup_ip' => $context['ip'] ?? Request::ip(),
-                'last_ip' => $context['ip'] ?? Request::ip(),
-                'meta' => json_encode([
-                    'start_payload' => $startPayload,
-                    'photo_url' => $tgUser['photo_url'] ?? null,
-                    'is_premium' => $tgUser['is_premium'] ?? false,
-                ], JSON_UNESCAPED_UNICODE),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-
-            (new WalletService($this->db))->ensureWallet($userId);
-
-            if ($referrer !== null && (int) $referrer['id'] !== $userId) {
-                $this->attachReferral($userId, (int) $referrer['id']);
-            }
-
-            // ثبت رویداد ورود (idempotent)
-            $this->db->insertIgnore('referral_events', [
-                'event_key' => 'user_joined:' . $userId,
-                'type' => 'user_joined',
-                'user_id' => $userId,
-                'actor_id' => $referrer['id'] ?? null,
-                'source_user_id' => $userId,
-                'base_amount' => 0,
-                'status' => 'processed',
-                'payload' => json_encode(['telegram_id' => $telegramId], JSON_UNESCAPED_UNICODE),
-                'created_at' => now(),
-            ], 'event_key');
-
-            $user = $this->find($userId);
-            $this->maybeQualify($user);
-            return ['user' => $this->find($userId) ?? $user, 'is_new' => true];
-        });
+        if (!$this->db->inTransaction()) {
+            Notifier::flushDeferred();
+        }
+        return $out;
     }
 
     /**
@@ -135,36 +155,56 @@ final class UserService
         if ($userId === $referrerId) {
             throw new \RuntimeException('کاربر نمی‌تواند معرف خودش باشد.');
         }
-        $this->db->transaction(function () use ($userId, $referrerId) {
-            $user = $this->find($userId);
-            if ($user === null) {
-                throw new \RuntimeException('کاربر یافت نشد.');
-            }
-            if (!empty($user['referred_by'])) {
-                // معرف قبلاً ثبت شده — تغییر فقط از پنل مدیریت مجاز است
-                throw new \RuntimeException('معرف این کاربر قبلاً ثبت شده است.');
-            }
-            if (!$this->exists($referrerId)) {
-                throw new \RuntimeException('معرف یافت نشد.');
-            }
-            if ($this->isDescendant($referrerId, $userId)) {
-                throw new \RuntimeException('این ارتباط یک حلقه در شبکه ایجاد می‌کند.');
-            }
+        try {
+            $this->db->transaction(function () use ($userId, $referrerId, $adminId) {
+                $user = $this->find($userId);
+                if ($user === null) {
+                    throw new \RuntimeException('کاربر یافت نشد.');
+                }
+                if (!empty($user['referred_by'])) {
+                    // معرف قبلاً ثبت شده — تغییر فقط از پنل مدیریت مجاز است
+                    throw new \RuntimeException('معرف این کاربر قبلاً ثبت شده است.');
+                }
+                if (!$this->exists($referrerId)) {
+                    throw new \RuntimeException('معرف یافت نشد.');
+                }
+                if ($this->isDescendant($referrerId, $userId)) {
+                    throw new \RuntimeException('این ارتباط یک حلقه در شبکه ایجاد می‌کند.');
+                }
 
-            $this->db->update('users', [
-                'referred_by' => $referrerId,
-                'referred_at' => now(),
-                'updated_at' => now(),
-            ], 'id = :id', ['id' => $userId]);
+                $this->db->update('users', [
+                    'referred_by' => $referrerId,
+                    'referred_at' => now(),
+                    'updated_at' => now(),
+                ], 'id = :id', ['id' => $userId]);
 
-            $this->rebuildRelations($userId);
+                $this->rebuildRelations($userId);
+                $this->refreshNetworkCounters([$referrerId, $userId]);
 
-            $this->db->run(
-                'UPDATE users SET direct_ref_count = direct_ref_count + 1, updated_at = :now WHERE id = :id',
-                ['now' => now(), 'id' => $referrerId]
-            );
-            $this->refreshNetworkCounters([$referrerId, $userId]);
-        });
+                // اطلاع‌رسانی «دعوت موفق» به معرف (حتی اگر پاداش معرفی صفر باشد)
+                if ($adminId === null) {
+                    $freshReferrer = $this->find($referrerId);
+                    $freshUser = $this->find($userId) ?? $user;
+                    if ($freshReferrer !== null) {
+                        Notifier::referralJoined(
+                            $referrerId,
+                            $freshUser,
+                            (int) ($freshReferrer['direct_ref_count'] ?? 1),
+                            (int) ($freshReferrer['total_ref_count'] ?? 1)
+                        );
+                    }
+                }
+            });
+        } catch (\Throwable $e) {
+            if (!$this->db->inTransaction()) {
+                Notifier::clearDeferred();
+            }
+            throw $e;
+        }
+
+        if (!$this->db->inTransaction()) {
+            Notifier::flushDeferred();
+        }
     }
 
     /**
@@ -407,6 +447,9 @@ final class UserService
         $user = $this->find($userId);
         if ($user) {
             $this->maybeQualify($user);
+            if (!$this->db->inTransaction()) {
+                Notifier::flushDeferred();
+            }
         }
     }
 
@@ -416,6 +459,9 @@ final class UserService
         $user = $this->find($userId);
         if ($user) {
             $this->maybeQualify($user);
+            if (!$this->db->inTransaction()) {
+                Notifier::flushDeferred();
+            }
         }
     }
 
