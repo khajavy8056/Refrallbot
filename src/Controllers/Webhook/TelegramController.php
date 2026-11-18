@@ -85,14 +85,37 @@ final class TelegramController extends Controller
         try {
             (new BotHandler())->handle($update);
             $dedupe->done($claim['id']);
+            // پاک‌سازی خودکار خطای پردازش قبلی پس از اجرای موفق آپدیت
+            $lastErr = (string) ($settings['last_error'] ?? '');
+            if ($lastErr !== '' && str_starts_with($lastErr, 'خطای پردازش آپدیت:')) {
+                try {
+                    Database::instance()->update('telegram_settings', [
+                        'last_error' => null,
+                        'updated_at' => now(),
+                    ], 'id = :id', ['id' => (int) ($settings['id'] ?? 0)]);
+                    TelegramService::forgetSettingsCache();
+                } catch (\Throwable) {
+                }
+            }
             $this->json(['ok' => true]);
         } catch (\Throwable $e) {
             // خطا را ثبت می‌کنیم و قفل را آزاد می‌کنیم تا تلاش مجدد تلگرام
             // واقعاً پردازش کند. پاسخ 500 عمدی است: تلگرام همان آپدیت را
             // دوباره می‌فرستد و کاربر پیام گم‌شده نمی‌بیند. عملیات مالی با
             // idempotency_key در برابر اجرای دوباره محافظت شده‌اند.
-            $dedupe->fail($claim['id'], $e->getMessage());
-            ErrorHandler::write('error', 'webhook processing failed: ' . $e->getMessage());
+            $safeMsg = ErrorHandler::redact($e->getMessage());
+            $dedupe->fail($claim['id'], $safeMsg);
+            ErrorHandler::write('error', 'webhook processing failed: ' . $safeMsg . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
+            if (!empty($settings['id'])) {
+                try {
+                    Database::instance()->update('telegram_settings', [
+                        'last_error' => mb_substr('خطای پردازش آپدیت: ' . $safeMsg, 0, 900),
+                        'updated_at' => now(),
+                    ], 'id = :id', ['id' => (int) $settings['id']]);
+                    TelegramService::forgetSettingsCache();
+                } catch (\Throwable) {
+                }
+            }
             $this->json([
                 'ok' => false,
                 'error' => 'پردازش آپدیت ناموفق بود.',

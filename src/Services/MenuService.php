@@ -73,10 +73,30 @@ final class MenuService
         }));
     }
 
-    /** ساختاری برای Reply Keyboard (چیدمان ۲ ستونه) */
+    /**
+     * ساختار Reply Keyboard بر اساس حالت انتخابی مدیر:
+     *   - miniapp : دکمه بزرگ بازکردن Mini App + دسترسی سریع لینک دعوت و پشتیبانی
+     *   - hybrid  : دکمه Mini App در سطر اول + تمام دکمه‌های ۲ ستونه ربات
+     *   - buttons : فقط دکمه‌های ۲ ستونه ربات (بدون هیچ دکمه web_app)
+     */
     public static function replyKeyboardRows(?array $user = null): array
     {
+        $uiMode = SettingsService::botUiMode();
+        $miniappUrl = SettingsService::resolvedMiniappUrl();
+        $hasHttpsApp = SettingsService::miniappActive() && str_starts_with($miniappUrl, 'https://');
+
+        if ($uiMode === 'miniapp' && $hasHttpsApp) {
+            return [
+                [['text' => '📱 ورود به پنل کاربری', 'web_app' => ['url' => $miniappUrl]]],
+                [self::actionTitle('invite'), self::actionTitle('support')],
+            ];
+        }
+
         $rows = [];
+        if ($uiMode === 'hybrid' && $hasHttpsApp) {
+            $rows[] = [['text' => '📱 پنل کاربری (مینی‌اپ)', 'web_app' => ['url' => $miniappUrl]]];
+        }
+
         $current = [];
         foreach (self::active() as $menu) {
             $current[] = $menu['title'];

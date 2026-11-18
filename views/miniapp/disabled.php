@@ -31,8 +31,9 @@
     </div>
 
     <p class="text-muted" style="font-size:.75rem;margin-top:18px">
-        مدیر سامانه می‌تواند این صفحه را از مسیر
-        <span class="ltr mono">پنل مدیریت → تنظیمات → شرایط ورود</span>
-        فعال کند (نیازمند HTTPS معتبر).
+        مدیر سامانه می‌تواند هر زمان این صفحه را از مسیر
+        <span class="ltr mono">پنل مدیریت → اتصال به ربات → حالت مینی‌اپ</span>
+        یا <span class="ltr mono">تنظیمات → شرایط ورود</span>
+        دوباره فعال کند (نیازمند HTTPS معتبر).
     </p>
 </div>

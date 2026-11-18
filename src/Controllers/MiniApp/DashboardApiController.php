@@ -84,18 +84,23 @@ final class DashboardApiController extends Controller
             ];
         }
 
+        $analytics = self::buildUserAnalytics($db, $user, $summary);
+
         $this->json([
             'ok' => true,
             'user' => [
                 'id' => (int) $user['id'],
                 'telegram_id' => (string) $user['telegram_id'],
                 'name' => trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')),
+                'first_name' => (string) ($user['first_name'] ?? ''),
+                'last_name' => (string) ($user['last_name'] ?? ''),
                 'username' => $user['username'],
                 'phone' => $user['phone'],
                 'profile_complete' => (bool) ($user['phone'] && $user['first_name']),
                 'status' => $user['status'],
                 'joined_at' => $user['joined_at'],
                 'joined_at_fa' => fa_date($user['joined_at']),
+                'joined_date_fa' => fa_date($user['joined_at'], false),
                 'referral_code' => $user['referral_code'],
                 'invite_link' => $link,
                 'verify_status' => $user['verify_status'],
@@ -110,6 +115,7 @@ final class DashboardApiController extends Controller
                 'direct_refs' => (int) $user['direct_ref_count'],
                 'total_refs' => (int) $user['total_ref_count'],
             ],
+            'analytics' => $analytics,
             'withdraw' => [
                 'enabled' => SettingsService::bool('withdrawal_enabled', true),
                 'min_amount' => SettingsService::int('min_withdraw_amount', 30000),
@@ -119,6 +125,150 @@ final class DashboardApiController extends Controller
             'campaigns' => $activeCampaigns,
             'csrf' => Csrf::token(),
         ]);
+    }
+
+    /**
+     * آمار و سری‌های زمانی حرفه‌ای دعوت و درآمد اختصاصی کاربر برای نمودارهای پروفایل و مینی‌اپ
+     * کاملاً سازگار با MySQL 5.7/8.x و SQLite.
+     */
+    private static function buildUserAnalytics(Database $db, array $user, array $walletSummary): array
+    {
+        $uid = (int) $user['id'];
+        $days30Start = date('Y-m-d', time() - 29 * 86400) . ' 00:00:00';
+        $todayStr = date('Y-m-d');
+
+        $baselineBefore30 = (int) $db->value(
+            'SELECT COUNT(*) FROM users WHERE referred_by = :u AND joined_at < :s',
+            ['u' => $uid, 's' => $days30Start]
+        );
+
+        $inviteRows = $db->all(
+            'SELECT DATE(joined_at) AS d, COUNT(*) AS c FROM users WHERE referred_by = :u AND joined_at >= :s GROUP BY DATE(joined_at)',
+            ['u' => $uid, 's' => $days30Start]
+        );
+        $earnRows = $db->all(
+            "SELECT DATE(created_at) AS d, COALESCE(SUM(amount), 0) AS s FROM wallet_transactions
+             WHERE user_id = :u AND status = 'completed' AND direction = 'credit'
+               AND type IN ('commission_direct','commission_level','campaign_reward')
+               AND created_at >= :s
+             GROUP BY DATE(created_at)",
+            ['u' => $uid, 's' => $days30Start]
+        );
+
+        $invMap = [];
+        foreach ($inviteRows as $r) {
+            $invMap[(string) $r['d']] = (int) $r['c'];
+        }
+        $earnMap = [];
+        foreach ($earnRows as $r) {
+            $earnMap[(string) $r['d']] = (int) $r['s'];
+        }
+
+        $labels30 = [];
+        $daily30 = [];
+        $cumulative30 = [];
+        $earnings30 = [];
+        $running = $baselineBefore30;
+        $invitesToday = 0;
+        $invitesWeek = 0;
+        $invitesMonth = 0;
+        $bestDay = 0;
+        $bestDayLabel = '—';
+
+        for ($i = 29; $i >= 0; $i--) {
+            $d = date('Y-m-d', time() - $i * 86400);
+            $jalali = fa_date($d . ' 12:00:00', false);
+            $parts = explode('/', $jalali);
+            $lbl = count($parts) === 3 ? ($parts[1] . '/' . $parts[2]) : fa_digits(substr($d, 5));
+
+            $cnt = $invMap[$d] ?? 0;
+            $ern = $earnMap[$d] ?? 0;
+            $running += $cnt;
+
+            $labels30[] = $lbl;
+            $daily30[] = $cnt;
+            $cumulative30[] = $running;
+            $earnings30[] = $ern;
+
+            $invitesMonth += $cnt;
+            if ($i < 7) {
+                $invitesWeek += $cnt;
+            }
+            if ($d === $todayStr) {
+                $invitesToday = $cnt;
+            }
+            if ($cnt >= $bestDay && $cnt > 0) {
+                $bestDay = $cnt;
+                $bestDayLabel = $lbl;
+            }
+        }
+
+        $qualifiedDirect = (int) $db->value(
+            'SELECT COUNT(*) FROM users WHERE referred_by = :u AND qualified_at IS NOT NULL',
+            ['u' => $uid]
+        );
+        $totalDirect = max((int) ($user['direct_ref_count'] ?? 0), $running);
+        $pendingDirect = max(0, $totalDirect - $qualifiedDirect);
+        $qualRate = $totalDirect > 0 ? (int) round(($qualifiedDirect / $totalDirect) * 100) : 0;
+
+        $levelRows = $db->all(
+            'SELECT rr.depth AS level, COUNT(*) AS c FROM referral_relations rr WHERE rr.ancestor_id = :a GROUP BY rr.depth ORDER BY rr.depth',
+            ['a' => $uid]
+        );
+        $levels = array_map(static fn($l) => ['level' => (int) $l['level'], 'count' => (int) $l['c']], $levelRows);
+
+        // سطح انگیزشی دعوت‌کننده بر اساس تعداد معرفی مستقیم
+        $milestones = [
+            ['min' => 0,   'max' => 5,   'name' => 'شروع‌کننده',   'icon' => '🌱', 'next' => 'برنزی'],
+            ['min' => 5,   'max' => 15,  'name' => 'دعوت‌کننده برنزی', 'icon' => '🥉', 'next' => 'نقره‌ای'],
+            ['min' => 15,  'max' => 50,  'name' => 'دعوت‌کننده نقره‌ای', 'icon' => '🥈', 'next' => 'طلایی'],
+            ['min' => 50,  'max' => 150, 'name' => 'دعوت‌کننده طلایی', 'icon' => '🥇', 'next' => 'سفیر الماسی'],
+            ['min' => 150, 'max' => 0,   'name' => 'سفیر الماسی',  'icon' => '💎', 'next' => null],
+        ];
+        $tier = $milestones[0];
+        foreach ($milestones as $ms) {
+            if ($totalDirect >= $ms['min']) {
+                $tier = $ms;
+            }
+        }
+        $tierPct = $tier['max'] > 0
+            ? min(100, (int) round((($totalDirect - $tier['min']) / max(1, $tier['max'] - $tier['min'])) * 100))
+            : 100;
+
+        return [
+            'labels_14' => array_slice($labels30, -14),
+            'daily_14' => array_slice($daily30, -14),
+            'cumulative_14' => array_slice($cumulative30, -14),
+            'earnings_14' => array_slice($earnings30, -14),
+            'labels_30' => $labels30,
+            'daily_30' => $daily30,
+            'cumulative_30' => $cumulative30,
+            'earnings_30' => $earnings30,
+            'kpis' => [
+                'today' => $invitesToday,
+                'week' => $invitesWeek,
+                'month' => $invitesMonth,
+                'best_day' => $bestDay,
+                'best_day_label' => $bestDayLabel,
+                'qualified_direct' => $qualifiedDirect,
+                'pending_direct' => $pendingDirect,
+                'qualification_rate' => $qualRate,
+            ],
+            'earnings_breakdown' => [
+                'direct' => (int) ($walletSummary['direct_earned'] ?? 0),
+                'layer' => (int) ($walletSummary['layer_earned'] ?? 0),
+                'campaign' => (int) ($walletSummary['campaign_earned'] ?? 0),
+            ],
+            'levels' => $levels,
+            'tier' => [
+                'name' => $tier['name'],
+                'icon' => $tier['icon'],
+                'next_name' => $tier['next'],
+                'next_target' => $tier['max'],
+                'remaining' => $tier['max'] > 0 ? max(0, $tier['max'] - $totalDirect) : 0,
+                'progress_pct' => $tierPct,
+            ],
+        ];
     }
 
     public function referrals(): void

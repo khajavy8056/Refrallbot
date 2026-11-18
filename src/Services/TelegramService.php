@@ -455,8 +455,8 @@ final class TelegramService
         $keyboard = [];
         foreach ($rows as $row) {
             $line = [];
-            foreach ($row as $text) {
-                $line[] = ['text' => $text];
+            foreach ($row as $item) {
+                $line[] = is_array($item) ? $item : ['text' => (string) $item];
             }
             if ($line) {
                 $keyboard[] = $line;

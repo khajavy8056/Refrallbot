@@ -133,6 +133,159 @@ final class StatsService
         return $out;
     }
 
+    /**
+     * تحلیل کامل رشد اعضا (روزانه، تجمعی، تفکیک دعوت‌شده/مستقیم، واجد شرایط و نرخ رشد دوره)
+     * کاملاً سازگار با MySQL 5.7/8.x (ONLY_FULL_GROUP_BY) و SQLite.
+     */
+    public static function memberGrowthBreakdown(int $days = 30): array
+    {
+        $db = Database::instance();
+        $days = max(1, min(365, $days));
+        $startDate = date('Y-m-d', time() - ($days - 1) * 86400);
+        $startTs = $startDate . ' 00:00:00';
+        $prevStartTs = date('Y-m-d', time() - (2 * $days - 1) * 86400) . ' 00:00:00';
+
+        $baseline = (int) $db->value('SELECT COUNT(*) FROM users WHERE joined_at < :s', ['s' => $startTs]);
+        $prevPeriodNew = (int) $db->value(
+            'SELECT COUNT(*) FROM users WHERE joined_at >= :ps AND joined_at < :s',
+            ['ps' => $prevStartTs, 's' => $startTs]
+        );
+
+        $allRows = $db->all(
+            'SELECT DATE(joined_at) AS d, COUNT(*) AS c FROM users WHERE joined_at >= :s GROUP BY DATE(joined_at)',
+            ['s' => $startTs]
+        );
+        $refRows = $db->all(
+            'SELECT DATE(joined_at) AS d, COUNT(*) AS c FROM users WHERE referred_by IS NOT NULL AND joined_at >= :s GROUP BY DATE(joined_at)',
+            ['s' => $startTs]
+        );
+        $qualRows = $db->all(
+            'SELECT DATE(qualified_at) AS d, COUNT(*) AS c FROM users WHERE qualified_at IS NOT NULL AND qualified_at >= :s GROUP BY DATE(qualified_at)',
+            ['s' => $startTs]
+        );
+
+        $toMap = static function (array $rows): array {
+            $map = [];
+            foreach ($rows as $row) {
+                $map[(string) $row['d']] = (int) $row['c'];
+            }
+            return $map;
+        };
+        $allMap = $toMap($allRows);
+        $refMap = $toMap($refRows);
+        $qualMap = $toMap($qualRows);
+
+        $labels = [];
+        $dailyTotal = [];
+        $dailyReferred = [];
+        $dailyDirect = [];
+        $dailyQualified = [];
+        $cumulative = [];
+
+        $running = $baseline;
+        $periodNew = 0;
+        $periodReferred = 0;
+        $periodDirect = 0;
+        $periodQualified = 0;
+        $peakCount = 0;
+        $peakLabel = '—';
+
+        for ($i = $days - 1; $i >= 0; $i--) {
+            $date = date('Y-m-d', time() - $i * 86400);
+            $fullJalali = fa_date($date . ' 12:00:00', false); // ۱۴۰۵/۰۸/۲۸
+            $parts = explode('/', $fullJalali);
+            $shortLabel = count($parts) === 3 ? ($parts[1] . '/' . $parts[2]) : fa_digits(substr($date, 5));
+
+            $tot = $allMap[$date] ?? 0;
+            $ref = min($tot, $refMap[$date] ?? 0);
+            $dir = max(0, $tot - $ref);
+            $qual = $qualMap[$date] ?? 0;
+            $running += $tot;
+
+            $labels[] = $shortLabel;
+            $dailyTotal[] = $tot;
+            $dailyReferred[] = $ref;
+            $dailyDirect[] = $dir;
+            $dailyQualified[] = $qual;
+            $cumulative[] = $running;
+
+            $periodNew += $tot;
+            $periodReferred += $ref;
+            $periodDirect += $dir;
+            $periodQualified += $qual;
+            if ($tot >= $peakCount && $tot > 0) {
+                $peakCount = $tot;
+                $peakLabel = $shortLabel;
+            }
+        }
+
+        $growthPct = $prevPeriodNew > 0
+            ? (int) round((($periodNew - $prevPeriodNew) / $prevPeriodNew) * 100)
+            : ($periodNew > 0 ? 100 : 0);
+
+        $totalUsersAll = (int) $db->value('SELECT COUNT(*) FROM users');
+        $totalRefAll = (int) $db->value('SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL');
+        $totalQualRefAll = (int) $db->value('SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL AND qualified_at IS NOT NULL');
+        $activeAll = (int) $db->value("SELECT COUNT(*) FROM users WHERE status = 'active'");
+
+        return [
+            'labels' => $labels,
+            'daily_total' => $dailyTotal,
+            'daily_referred' => $dailyReferred,
+            'daily_direct' => $dailyDirect,
+            'daily_qualified' => $dailyQualified,
+            'cumulative' => $cumulative,
+            'summary' => [
+                'baseline' => $baseline,
+                'end_total' => $running,
+                'period_new' => $periodNew,
+                'prev_period_new' => $prevPeriodNew,
+                'growth_pct' => $growthPct,
+                'period_referred' => $periodReferred,
+                'period_direct' => $periodDirect,
+                'period_qualified' => $periodQualified,
+                'daily_avg' => round($periodNew / $days, 1),
+                'peak_count' => $peakCount,
+                'peak_label' => $peakLabel,
+                'referral_share_pct' => $totalUsersAll > 0 ? (int) round(($totalRefAll / $totalUsersAll) * 100) : 0,
+                'qualification_rate_pct' => $totalRefAll > 0 ? (int) round(($totalQualRefAll / $totalRefAll) * 100) : 0,
+                'active_rate_pct' => $totalUsersAll > 0 ? (int) round(($activeAll / $totalUsersAll) * 100) : 0,
+            ],
+        ];
+    }
+
+    /** ترکیب کل اعضای ربات برای نمودار دونات */
+    public static function memberComposition(): array
+    {
+        $db = Database::instance();
+        $refQualified = (int) $db->value(
+            "SELECT COUNT(*) FROM users WHERE status = 'active' AND referred_by IS NOT NULL AND qualified_at IS NOT NULL"
+        );
+        $refPending = (int) $db->value(
+            "SELECT COUNT(*) FROM users WHERE status = 'active' AND referred_by IS NOT NULL AND qualified_at IS NULL"
+        );
+        $organic = (int) $db->value(
+            "SELECT COUNT(*) FROM users WHERE status = 'active' AND referred_by IS NULL"
+        );
+        $flagged = (int) $db->value(
+            "SELECT COUNT(*) FROM users WHERE status <> 'active'"
+        );
+        return [
+            ['label' => 'دعوت‌شده (واجد شرایط)', 'value' => $refQualified, 'color' => '#10b981'],
+            ['label' => 'دعوت‌شده (در انتظار)', 'value' => $refPending, 'color' => '#06b6d4'],
+            ['label' => 'عضویت مستقیم', 'value' => $organic, 'color' => '#6366f1'],
+            ['label' => 'مشکوک / مسدود', 'value' => $flagged, 'color' => '#f59e0b'],
+        ];
+    }
+
+    /** توزیع زیرمجموعه‌ها در لایه‌های مختلف شبکه */
+    public static function networkByLevel(): array
+    {
+        return Database::instance()->all(
+            'SELECT depth AS level, COUNT(*) AS c FROM referral_relations GROUP BY depth ORDER BY depth'
+        );
+    }
+
     public static function topUsers(int $limit = 10): array
     {
         return Database::instance()->all(

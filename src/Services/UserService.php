@@ -62,11 +62,24 @@ final class UserService
                 $isNew = $existing === null;
 
                 if (!$isNew) {
+                    $nextUsername = array_key_exists('username', $tgUser) && $tgUser['username'] !== null
+                        ? mb_substr((string) $tgUser['username'], 0, 64)
+                        : $existing['username'];
+                    $nextFirst = array_key_exists('first_name', $tgUser) && $tgUser['first_name'] !== null
+                        ? mb_substr((string) $tgUser['first_name'], 0, 120)
+                        : $existing['first_name'];
+                    $nextLast = array_key_exists('last_name', $tgUser) && $tgUser['last_name'] !== null
+                        ? mb_substr((string) $tgUser['last_name'], 0, 120)
+                        : $existing['last_name'];
+                    $nextLang = !empty($tgUser['language_code'])
+                        ? mb_substr((string) $tgUser['language_code'], 0, 10)
+                        : ($existing['language'] ?? 'fa');
+
                     $this->db->update('users', [
-                        'username' => $tgUser['username'] ?? $existing['username'],
-                        'first_name' => $tgUser['first_name'] ?? $existing['first_name'],
-                        'last_name' => $tgUser['last_name'] ?? $existing['last_name'],
-                        'language' => $tgUser['language_code'] ?? $existing['language'],
+                        'username' => $nextUsername,
+                        'first_name' => $nextFirst,
+                        'last_name' => $nextLast,
+                        'language' => $nextLang,
                         'last_activity_at' => now(),
                         'last_ip' => $context['ip'] ?? $existing['last_ip'],
                         'updated_at' => now(),
@@ -92,7 +105,7 @@ final class UserService
                     'username' => isset($tgUser['username']) ? mb_substr((string) $tgUser['username'], 0, 64) : null,
                     'first_name' => isset($tgUser['first_name']) ? mb_substr((string) $tgUser['first_name'], 0, 120) : null,
                     'last_name' => isset($tgUser['last_name']) ? mb_substr((string) $tgUser['last_name'], 0, 120) : null,
-                    'language' => $tgUser['language_code'] ?? 'fa',
+                    'language' => mb_substr((string) ($tgUser['language_code'] ?? 'fa'), 0, 10) ?: 'fa',
                     'referral_code' => $this->generateUniqueCode(),
                     'status' => 'active',
                     'verify_status' => 'pending',
@@ -240,26 +253,57 @@ final class UserService
 
     /**
      * به‌روزرسانی شمارنده‌های شبکه برای کاربران داده‌شده
+     *
+     * نکته سازگاری MySQL:
+     * در MySQL خطای 1093 رخ می‌دهد اگر جدول هدف UPDATE (اینجا `users`) مستقیماً در
+     * زیرکوئری FROM همان UPDATE ظاهر شود. به همین دلیل شمارش مستقیم ابتدا جداگانه
+     * خوانده و سپس با UPDATE ساده و استاندارد اعمال می‌شود (سازگار با MySQL 5.7/8.x و SQLite).
+     *
      * @param int[] $userIds
      */
     public function refreshNetworkCounters(array $userIds = []): void
     {
         if ($userIds === []) {
-            $this->db->run(
-                'UPDATE users SET direct_ref_count = (SELECT COUNT(*) FROM users c WHERE c.referred_by = users.id)'
+            $this->db->run('UPDATE users SET direct_ref_count = 0, total_ref_count = 0');
+
+            $directRows = $this->db->all(
+                'SELECT referred_by AS uid, COUNT(*) AS cnt FROM users WHERE referred_by IS NOT NULL GROUP BY referred_by'
             );
-            $this->db->run(
-                'UPDATE users SET total_ref_count = (SELECT COUNT(*) FROM referral_relations rr WHERE rr.ancestor_id = users.id)'
+            foreach ($directRows as $row) {
+                $uid = (int) ($row['uid'] ?? 0);
+                if ($uid > 0) {
+                    $this->db->update('users', ['direct_ref_count' => (int) $row['cnt']], 'id = :id', ['id' => $uid]);
+                }
+            }
+
+            $totalRows = $this->db->all(
+                'SELECT ancestor_id AS uid, COUNT(*) AS cnt FROM referral_relations GROUP BY ancestor_id'
             );
+            foreach ($totalRows as $row) {
+                $uid = (int) ($row['uid'] ?? 0);
+                if ($uid > 0) {
+                    $this->db->update('users', ['total_ref_count' => (int) $row['cnt']], 'id = :id', ['id' => $uid]);
+                }
+            }
             return;
         }
-        foreach (array_unique($userIds) as $id) {
-            $this->db->run(
-                'UPDATE users SET direct_ref_count = (SELECT COUNT(*) FROM users c WHERE c.referred_by = users.id),
-                                  total_ref_count = (SELECT COUNT(*) FROM referral_relations rr WHERE rr.ancestor_id = users.id)
-                 WHERE id = :id',
-                ['id' => (int) $id]
+
+        foreach (array_unique(array_map('intval', $userIds)) as $uid) {
+            if ($uid <= 0) {
+                continue;
+            }
+            $direct = (int) $this->db->value(
+                'SELECT COUNT(*) FROM users WHERE referred_by = :id',
+                ['id' => $uid]
             );
+            $total = (int) $this->db->value(
+                'SELECT COUNT(*) FROM referral_relations WHERE ancestor_id = :id',
+                ['id' => $uid]
+            );
+            $this->db->update('users', [
+                'direct_ref_count' => $direct,
+                'total_ref_count' => $total,
+            ], 'id = :id', ['id' => $uid]);
         }
     }
 

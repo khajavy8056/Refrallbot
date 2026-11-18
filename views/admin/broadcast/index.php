@@ -115,7 +115,7 @@ $totalTargets = array_sum($counts);
                         <td data-label="وضعیت"><span class="badge badge-<?= $statusBadge[$c['status']] ?? 'muted' ?>"><?= e($statusLabel[$c['status']] ?? (string) $c['status']) ?></span></td>
                         <td data-label="پیشرفت">
                             <div style="min-width:110px">
-                                <div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden">
+                                <div style="height:6px;background:var(--surface-3);border-radius:99px;overflow:hidden">
                                     <div style="height:100%;width:<?= $percent ?>%;background:linear-gradient(90deg,#6366f1,#10b981)"></div>
                                 </div>
                                 <span class="text-xs text-muted"><?= fa_digits($percent) ?>٪ از <?= fa_digits((int) $c['total_targets']) ?></span>

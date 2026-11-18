@@ -69,6 +69,7 @@ return static function (Router $router): void {
     $router->post('/admin/telegram/disconnect', [Admin\TelegramController::class, 'disconnect'], ['admin', 'csrf']);
     $router->post('/admin/telegram/webhook/set', [Admin\TelegramController::class, 'setWebhook'], ['admin', 'csrf']);
     $router->post('/admin/telegram/webhook/delete', [Admin\TelegramController::class, 'deleteWebhook'], ['admin', 'csrf']);
+    $router->post('/admin/telegram/mode', [Admin\TelegramController::class, 'saveMode'], ['admin', 'csrf']);
     $router->post('/admin/telegram/menu/sync', [Admin\TelegramController::class, 'syncMenu'], ['admin', 'csrf']);
     $router->get('/admin/telegram/menus', [Admin\TelegramController::class, 'menus'], ['admin']);
     $router->post('/admin/telegram/menus/save', [Admin\TelegramController::class, 'saveMenus'], ['admin', 'csrf']);

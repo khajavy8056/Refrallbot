@@ -134,20 +134,20 @@ $flag = static fn(string $key, bool $default = false) => (int) ($settings[$key] 
 
                 <div class="divider"></div>
                 <div class="form-group">
-                    <label class="form-label">🌐 پنل وب کاربران (Mini App)</label>
+                    <label class="form-label">🎛 حالت رابط کاربری ربات (مینی‌اپ / دکمه‌ای)</label>
                     <?php
-                    $miniappMode = (string) ($s('miniapp_mode') ?: 'auto');
+                    $botUiModeNow = \RB\Services\SettingsService::configuredBotUiMode();
                     $miniappUrlNow = (string) ($s('miniapp_url') ?: '');
                     ?>
-                    <select name="miniapp_mode" class="form-select" id="miniapp-mode">
-                        <option value="off" <?= $miniappMode === 'off' ? 'selected' : '' ?>>خاموش — همه‌چیز فقط با دکمه‌های ربات</option>
-                        <option value="auto" <?= $miniappMode === 'auto' ? 'selected' : '' ?>>خودکار — فقط اگر آدرس HTTPS باشد فعال شود</option>
-                        <option value="on" <?= $miniappMode === 'on' ? 'selected' : '' ?>>فعال — نیازمند HTTPS معتبر</option>
+                    <select name="bot_ui_mode" class="form-select" id="miniapp-mode">
+                        <option value="buttons" <?= $botUiModeNow === 'buttons' ? 'selected' : '' ?>>⌨️ حالت دکمه‌ای — فقط دکمه‌های داخل ربات (مینی‌اپ خاموش)</option>
+                        <option value="miniapp" <?= $botUiModeNow === 'miniapp' ? 'selected' : '' ?>>📱 حالت مینی‌اپ — تمرکز روی وب‌اپ گرافیکی تلگرام (HTTPS)</option>
+                        <option value="hybrid" <?= $botUiModeNow === 'hybrid' ? 'selected' : '' ?>>✨ حالت ترکیبی — هم مینی‌اپ و هم دکمه‌های کامل ربات</option>
                     </select>
                     <div class="form-hint">
-                        <b>پیشنهاد برای هاست بدون SSL:</b> گزینه «خاموش» را انتخاب کنید. کاربران همه‌ی
-                        کارها (لینک دعوت، کیف پول، درآمد، برداشت، جشنواره‌ها) را با دکمه‌های داخل خود ربات
-                        انجام می‌دهند و نیازی به بازکردن هیچ صفحه‌ی وبی نیست.
+                        هر زمان بخواهید می‌توانید بین «مینی‌اپ»، «دکمه‌ای» و «ترکیبی» جابه‌جا شوید (از بخش
+                        <a href="<?= url('admin/telegram#bot-mode') ?>">اتصال به ربات</a> هم با یک کلیک قابل تغییر است).
+                        در صورت نداشتن SSL گزینه «حالت دکمه‌ای» را انتخاب کنید.
                     </div>
                 </div>
                 <div class="form-group" id="miniapp-url-group">

@@ -1,28 +1,22 @@
 /* ============================================================
-   RefrallBot — منطق پنل کاربری (Telegram Mini App)
+   RefrallBot — منطق پنل کاربری (Telegram Mini App v1.2)
+   پشتیبانی از دارک‌مود پیش‌فرض + نمودارهای تعاملی دعوت و پروفایل
    ============================================================ */
 (function () {
   'use strict';
 
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
-  const API = {
-    bootstrap: 'app/api/bootstrap',
-    dashboard: 'app/api/dashboard',
-    referrals: 'app/api/referrals',
-    transactions: 'app/api/transactions',
-    withdrawals: 'app/api/withdrawals',
-    withdraw: 'app/api/withdraw',
-    cancelWithdraw: 'app/api/withdraw',
-    campaigns: 'app/api/campaigns',
-    ranking: 'app/api/ranking',
-    notifications: 'app/api/notifications',
-    readNotifications: 'app/api/notifications/read',
-    support: 'app/api/support',
-    profile: 'app/api/profile',
-    auth: 'app/auth'
-  };
+  const API = { auth: 'app/auth' };
 
-  const state = { profile: null, txPage: 1, txType: '', csrf: (window.RB_MINIAPP || {}).csrf || '' };
+  const state = {
+    profile: null,
+    txPage: 1,
+    txType: '',
+    activeTab: 'home',
+    inviteChartMode: 'cumulative', // cumulative | daily
+    inviteChartRange: 14,          // 14 | 30
+    csrf: (window.RB_MINIAPP || {}).csrf || ''
+  };
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -39,6 +33,10 @@
     return node;
   }
 
+  function esc(s) {
+    return window.RB && RB.escape ? RB.escape(s) : String(s == null ? '' : s);
+  }
+
   function haptic(type) {
     if (!tg || !tg.HapticFeedback) return;
     try {
@@ -47,6 +45,23 @@
       else tg.HapticFeedback.impactOccurred('light');
     } catch (e) {}
   }
+
+  function syncTelegramChrome() {
+    if (!tg) return;
+    const isDark = !window.RB || RB.getTheme() === 'dark';
+    try {
+      tg.setHeaderColor(isDark ? '#1e1b4b' : '#4f46e5');
+      tg.setBackgroundColor(isDark ? '#0b1120' : '#f4f6fb');
+      if (typeof tg.setBottomBarColor === 'function') {
+        tg.setBottomBarColor(isDark ? '#0b1120' : '#f4f6fb');
+      }
+    } catch (e) {}
+  }
+
+  window.addEventListener('rb:themechange', function () {
+    syncTelegramChrome();
+    haptic();
+  });
 
   async function api(path, options) {
     options = options || {};
@@ -78,7 +93,6 @@
   function toast(message, type) {
     if (tg && tg.showAlert && type === 'error') { tg.showAlert(message); return; }
     if (window.RB && RB.toast) { RB.toast(message, type || 'info'); return; }
-    console.log(message);
   }
 
   function money(n) {
@@ -95,6 +109,7 @@
   }
 
   function faNum(n) { return window.RB ? RB.faNum(n) : String(n); }
+  function faFormat(n) { return faNum(Number(n || 0).toLocaleString('en-US')); }
 
   function loadingList(host, text) {
     if (!host) return;
@@ -104,8 +119,8 @@
   function emptyList(host, title, text) {
     if (!host) return;
     host.innerHTML = '<div class="empty" style="padding:22px"><div class="empty-icon">📭</div>' +
-      '<div class="empty-title">' + title + '</div>' +
-      (text ? '<div class="empty-text">' + text + '</div>' : '') + '</div>';
+      '<div class="empty-title">' + esc(title) + '</div>' +
+      (text ? '<div class="empty-text">' + esc(text) + '</div>' : '') + '</div>';
   }
 
   function showGate(message) {
@@ -123,7 +138,6 @@
   async function authenticate() {
     const initData = tg && tg.initData ? tg.initData : '';
     if (!initData) {
-      // شاید سشن قبلاً معتبر شده باشد
       const probe = await api('bootstrap');
       if (probe && probe.ok) { return true; }
       showGate('این صفحه باید از داخل تلگرام باز شود. اگر از دسکتاپ باز کرده‌اید، از ربات روی «پنل کاربری» بزنید.');
@@ -149,6 +163,146 @@
     }
   }
 
+  /* ------------------------------ نمودارهای دعوت و پروفایل ------------------------------ */
+  function renderHomeChart() {
+    const a = state.profile && state.profile.analytics;
+    const canvas = $('#mini-chart-home');
+    if (!a || !canvas || !window.RB || canvas.offsetParent === null) return;
+    const sub = $('#home-chart-sub');
+    if (sub && a.kpis) {
+      sub.textContent = faFormat(a.kpis.week) + ' دعوت در ۷ روز · ' + faFormat(a.kpis.month) + ' دعوت در ۳۰ روز اخیر';
+    }
+    RB.lineChart(canvas, {
+      labels: a.labels_14 || [],
+      unit: 'نفر',
+      series: [
+        { name: 'دعوت روزانه', data: a.daily_14 || [], color: '#818cf8', fill: true }
+      ]
+    });
+  }
+
+  function renderProfileInviteChart() {
+    const a = state.profile && state.profile.analytics;
+    const canvas = $('#mini-chart-invites');
+    if (!a || !canvas || !window.RB || canvas.offsetParent === null) return;
+
+    const is30 = state.inviteChartRange === 30;
+    const labels = is30 ? (a.labels_30 || []) : (a.labels_14 || []);
+    if (state.inviteChartMode === 'daily') {
+      const vals = is30 ? (a.daily_30 || []) : (a.daily_14 || []);
+      RB.barChart(canvas, {
+        labels: labels,
+        data: vals,
+        name: 'دعوت جدید',
+        unit: 'نفر',
+        color: '#818cf8'
+      });
+    } else {
+      const vals = is30 ? (a.cumulative_30 || []) : (a.cumulative_14 || []);
+      RB.lineChart(canvas, {
+        labels: labels,
+        unit: 'نفر',
+        series: [
+          { name: 'مجموع دعوت‌های من', data: vals, color: '#06b6d4', fill: true }
+        ]
+      });
+    }
+  }
+
+  function renderProfileCharts() {
+    const d = state.profile;
+    const a = d && d.analytics;
+    if (!d || !a || !window.RB) return;
+
+    renderProfileInviteChart();
+
+    const qCanvas = $('#mini-chart-quality');
+    if (qCanvas && qCanvas.offsetParent !== null) {
+      const qual = Number((a.kpis && a.kpis.qualified_direct) || 0);
+      const pend = Number((a.kpis && a.kpis.pending_direct) || 0);
+      const indirect = Math.max(0, Number(d.counts.total_refs || 0) - Number(d.counts.direct_refs || 0));
+      RB.donutChart(qCanvas, {
+        data: [
+          { label: 'واجد شرایط', value: qual },
+          { label: 'در انتظار', value: pend },
+          { label: 'زیرمجموعه لایه‌ها', value: indirect }
+        ],
+        colors: ['#10b981', '#f59e0b', '#818cf8'],
+        centerValue: faFormat(d.counts.total_refs || 0),
+        centerLabel: 'کل شبکه من',
+        emptyText: 'بدون دعوت'
+      });
+    }
+
+    const eCanvas = $('#mini-chart-earnings');
+    if (eCanvas && eCanvas.offsetParent !== null) {
+      RB.lineChart(eCanvas, {
+        labels: a.labels_14 || [],
+        unit: 'تومان',
+        series: [
+          { name: 'درآمد روزانه', data: a.earnings_14 || [], color: '#10b981', fill: true }
+        ]
+      });
+    }
+  }
+
+  function renderReferralsBarChart() {
+    const a = state.profile && state.profile.analytics;
+    const canvas = $('#mini-chart-refs-bar');
+    if (!a || !canvas || !window.RB || canvas.offsetParent === null) return;
+    RB.barChart(canvas, {
+      labels: a.labels_14 || [],
+      data: a.daily_14 || [],
+      name: 'دعوت مستقیم',
+      unit: 'نفر',
+      color: '#10b981'
+    });
+  }
+
+  function populateProfileSection(data) {
+    const u = data.user || {};
+    const a = data.analytics || {};
+    const kpis = a.kpis || {};
+    const tier = a.tier || { icon: '🌱', name: 'شروع‌کننده', progress_pct: 0, remaining: 5, next_name: 'برنزی' };
+    const eb = a.earnings_breakdown || {};
+    const initial = (u.name || '؟').trim().charAt(0) || '؟';
+
+    const setText = (sel, txt) => { const n = $(sel); if (n) n.textContent = txt; };
+
+    setText('#mini-tier-pill', tier.icon + ' ' + tier.name);
+    setText('#prof-avatar', initial);
+    setText('#prof-name', u.name || 'کاربر');
+    setText('#prof-meta', (u.username ? '@' + u.username + ' · ' : '') + 'شناسه: ' + faNum(u.telegram_id));
+    setText('#prof-tier-badge', tier.icon + ' ' + tier.name);
+    setText('#prof-code-badge', 'کد دعوت: ' + (u.referral_code || '—'));
+    setText('#prof-joined-date', u.joined_date_fa ? 'عضویت: ' + u.joined_date_fa : '');
+
+    if (tier.next_name) {
+      setText('#prof-tier-next', faFormat(tier.remaining) + ' دعوت دیگر تا سطح «' + tier.next_name + '»');
+    } else {
+      setText('#prof-tier-next', 'تبریک! در بالاترین سطح دعوت‌کنندگان قرار دارید');
+    }
+    setText('#prof-tier-pct', faNum(tier.progress_pct || 0) + '٪');
+    const bar = $('#prof-tier-bar');
+    if (bar) bar.style.width = Math.min(100, Math.max(0, Number(tier.progress_pct) || 0)) + '%';
+
+    setText('#kpi-inv-today', faFormat(kpis.today || 0));
+    setText('#kpi-inv-week', faFormat(kpis.week || 0));
+    setText('#kpi-inv-month', faFormat(kpis.month || 0));
+    setText('#kpi-inv-best', faFormat(kpis.best_day || 0));
+    setText('#kpi-inv-best-lbl', kpis.best_day > 0 ? ('رکورد (' + kpis.best_day_label + ')') : 'رکورد روزانه');
+
+    setText('#prof-qual-badge', faNum(kpis.qualification_rate || 0) + '٪ تأییدشده');
+    setText('#leg-qualified', faFormat(kpis.qualified_direct || 0) + ' نفر');
+    setText('#leg-pending', faFormat(kpis.pending_direct || 0) + ' نفر');
+    const indirect = Math.max(0, Number(data.counts.total_refs || 0) - Number(data.counts.direct_refs || 0));
+    setText('#leg-indirect', faFormat(indirect) + ' نفر');
+
+    setText('#earn-direct', money(eb.direct || 0));
+    setText('#earn-layer', money(eb.layer || 0));
+    setText('#earn-campaign', money(eb.campaign || 0));
+  }
+
   /* ------------------------------ داشبورد ------------------------------ */
   async function loadDashboard() {
     const data = await api('dashboard');
@@ -167,13 +321,13 @@
 
     $('#stat-balance').textContent = money(data.wallet.balance);
     $('#stat-pending').textContent = data.wallet.pending > 0
-      ? 'در انتظار: ' + money(data.wallet.pending)
-      : 'بدون مبلغ در انتظار';
+      ? 'در انتظار پرداخت: ' + money(data.wallet.pending)
+      : 'آماده تسویه آنی';
     $('#stat-earned').textContent = money(data.wallet.total_earned);
-    $('#stat-rank').textContent = u.rank ? 'رتبه شما: ' + faNum(u.rank) : 'رتبه‌بندی غیرفعال';
-    $('#stat-direct').textContent = faNum(data.counts.direct_refs);
-    $('#stat-network').textContent = faNum(data.counts.total_refs);
-    $('#stat-withdrawn').textContent = faNum(data.wallet.total_withdrawn);
+    $('#stat-rank').textContent = u.rank ? '🏆 رتبه شما: ' + faFormat(u.rank) : 'عضویت: ' + (u.joined_date_fa || 'فعال');
+    $('#stat-direct').textContent = faFormat(data.counts.direct_refs);
+    $('#stat-network').textContent = faFormat(data.counts.total_refs);
+    $('#stat-withdrawn').textContent = faFormat(data.wallet.total_withdrawn);
 
     const link = $('#invite-link');
     if (link) link.textContent = u.invite_link || u.referral_code;
@@ -193,25 +347,29 @@
     const submit = $('#withdraw-submit');
     if (submit) submit.disabled = !data.withdraw.enabled;
 
-    renderTx('#home-tx', data.recent_transactions || [], 5, true);
+    populateProfileSection(data);
+    renderTx('#home-tx', data.recent_transactions || [], 5);
     renderCampaigns(data.campaigns || []);
 
-    // پروفایل
+    // فرم پروفایل
     const pf = $('#profile-form');
     if (pf) {
-      pf.first_name.value = u.name ? (u.name.split(' ')[0] || '') : '';
-      pf.last_name.value = u.name ? (u.name.split(' ').slice(1).join(' ')) : '';
+      pf.first_name.value = u.first_name !== undefined ? u.first_name : (u.name ? (u.name.split(' ')[0] || '') : '');
+      pf.last_name.value = u.last_name !== undefined ? u.last_name : (u.name ? (u.name.split(' ').slice(1).join(' ')) : '');
     }
 
-    if (!u.phone) {
-      toast('برای دریافت شماره تماس، از دکمه «ارسال شماره» در ربات استفاده کنید.', 'info');
-    }
+    // ترسیم نمودار تب فعال پس از نمایش DOM
+    requestAnimationFrame(function () {
+      if (state.activeTab === 'home') renderHomeChart();
+      else if (state.activeTab === 'profile') renderProfileCharts();
+      else if (state.activeTab === 'referrals') renderReferralsBarChart();
+    });
   }
 
-  function renderTx(hostSel, rows, limit, compact) {
+  function renderTx(hostSel, rows, limit) {
     const host = $(hostSel);
     if (!host) return;
-    if (!rows.length) { emptyList(host, 'تراکنشی ثبت نشده', 'با دعوت دوستان، درآمد شما در این بخش ثبت می‌شود.'); return; }
+    if (!rows.length) { emptyList(host, 'تراکنشی ثبت نشده', 'با دعوت دوستان، پاداش‌ها در این بخش ثبت می‌شود.'); return; }
     host.innerHTML = '';
     rows.slice(0, limit || rows.length).forEach(function (tx) {
       const isCredit = tx.direction === 'credit';
@@ -219,12 +377,12 @@
       row.innerHTML =
         '<div class="mini-row-icon ' + (isCredit ? 'in' : 'out') + '">' + (isCredit ? '↓' : '↑') + '</div>' +
         '<div class="mini-row-main">' +
-          '<div class="mini-row-title">' + (window.RB ? RB.escape(tx.type_label) : tx.type_label) + '</div>' +
-          '<div class="mini-row-sub">' + (window.RB ? RB.escape(tx.created_at) : tx.created_at) +
-            (tx.status !== 'completed' ? ' · ' + (window.RB ? RB.escape(tx.status_label) : tx.status) : '') + '</div>' +
+          '<div class="mini-row-title">' + esc(tx.type_label) + '</div>' +
+          '<div class="mini-row-sub">' + esc(tx.created_at) +
+            (tx.status !== 'completed' ? ' · ' + esc(tx.status_label) : '') + '</div>' +
         '</div>' +
         '<div class="mini-row-amount ' + (isCredit ? 'in' : 'out') + '">' +
-          (isCredit ? '+' : '−') + (window.RB ? RB.faNum(tx.amount_fa) : tx.amount_fa) +
+          (isCredit ? '+' : '−') + faNum(tx.amount_fa) +
         '</div>';
       host.appendChild(row);
     });
@@ -233,7 +391,7 @@
   function renderCampaigns(list) {
     const host = $('#home-campaigns');
     if (!host) return;
-    if (!list.length) { emptyList(host, 'کمپین فعالی وجود ندارد', 'کمپین‌های جشنواره در این بخش نمایش داده می‌شوند.'); return; }
+    if (!list.length) { emptyList(host, 'جشنواره فعالی وجود ندارد', 'جشنواره‌های پاداش دعوت در این بخش نمایش داده می‌شوند.'); return; }
     host.innerHTML = '';
     list.forEach(function (c) {
       const pct = c.required > 0 ? Math.min(100, Math.round(c.progress / c.required * 100)) : 0;
@@ -241,13 +399,12 @@
       row.style.flexDirection = 'column';
       row.style.alignItems = 'stretch';
       row.innerHTML =
-        '<div class="flex justify-between items-center mb-1"><strong>' + (window.RB ? RB.escape(c.title) : c.title) + '</strong>' +
+        '<div class="flex justify-between items-center mb-1"><strong>' + esc(c.title) + '</strong>' +
         '<span class="badge badge-brand no-dot">' + money(c.reward) + '</span></div>' +
-        (c.description ? '<div class="mini-row-sub mb-1">' + (window.RB ? RB.escape(c.description) : '') + '</div>' : '') +
-        '<div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden">' +
-          '<div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#6366f1,#10b981)"></div></div>' +
-        '<div class="mini-row-sub">' + faNum(c.progress) + ' از ' + faNum(c.required) +
-          ' دعوت · مهلت: ' + (c.ends_at ? (window.RB ? RB.escape(c.ends_at) : c.ends_at) : 'نامحدود') + '</div>';
+        (c.description ? '<div class="mini-row-sub mb-1">' + esc(c.description) + '</div>' : '') +
+        '<div class="mini-meter" style="margin:4px 0"><span style="width:' + pct + '%"></span></div>' +
+        '<div class="mini-row-sub">' + faFormat(c.progress) + ' از ' + faFormat(c.required) +
+          ' دعوت (' + faNum(pct) + '٪) · مهلت: ' + (c.ends_at ? esc(c.ends_at) : 'نامحدود') + '</div>';
       host.appendChild(row);
     });
   }
@@ -267,10 +424,10 @@
       row.innerHTML =
         '<div class="mini-row-icon ' + (isCredit ? 'in' : 'out') + '">' + (isCredit ? '↓' : '↑') + '</div>' +
         '<div class="mini-row-main">' +
-          '<div class="mini-row-title">' + (window.RB ? RB.escape(tx.type_label) : tx.type_label) + '</div>' +
-          '<div class="mini-row-sub">' + (window.RB ? RB.escape(tx.created_at) : tx.created_at) + '</div></div>' +
+          '<div class="mini-row-title">' + esc(tx.type_label) + '</div>' +
+          '<div class="mini-row-sub">' + esc(tx.created_at) + '</div></div>' +
         '<div class="mini-row-amount ' + (isCredit ? 'in' : 'out') + '">' +
-          (isCredit ? '+' : '−') + (window.RB ? RB.faNum(tx.amount_fa) : tx.amount_fa) + '</div>';
+          (isCredit ? '+' : '−') + faNum(tx.amount_fa) + '</div>';
       host.appendChild(row);
     });
     const more = $('#load-more-tx');
@@ -279,24 +436,27 @@
 
   /* ------------------------------ زیرمجموعه ------------------------------ */
   async function loadReferrals() {
+    requestAnimationFrame(renderReferralsBarChart);
     const host = $('#refs-list');
     loadingList(host);
     const data = await api('referrals');
     if (!data.ok) { toast(data.error || 'خطا', 'error'); return; }
-    $('#refs-summary').textContent = faNum(data.totals.direct) + ' مستقیم · ' + faNum(data.totals.network) + ' کل شبکه';
+    const sumEl = $('#refs-summary');
+    if (sumEl) sumEl.textContent = faFormat(data.totals.direct) + ' مستقیم · ' + faFormat(data.totals.network) + ' کل شبکه';
     if (!data.direct.length) {
-      emptyList(host, 'هنوز زیرمجموعه‌ای ندارید', 'لینک دعوت خود را برای دوستان بفرستید.');
+      emptyList(host, 'هنوز زیرمجموعه‌ای ندارید', 'لینک دعوت خود را برای دوستان بفرستید تا نمودار رشد شما شروع شود!');
     } else {
       host.innerHTML = '';
       data.direct.forEach(function (r) {
         const row = el('div', 'mini-row');
         row.innerHTML =
-          '<div class="mini-row-icon in">' + (window.RB ? RB.escape((r.name || '؟').charAt(0)) : '؟') + '</div>' +
+          '<div class="mini-row-icon in">' + esc((r.name || '؟').charAt(0)) + '</div>' +
           '<div class="mini-row-main">' +
-            '<div class="mini-row-title">' + (window.RB ? RB.escape(r.name) : r.name) + '</div>' +
-            '<div class="mini-row-sub">' + (r.username ? '@' + (window.RB ? RB.escape(r.username) : r.username) : 'بدون یوزرنیم') +
-              ' · ' + (window.RB ? RB.escape(r.joined_at) : r.joined_at) + '</div></div>' +
-          '<div class="badge badge-' + (r.qualified ? 'success' : 'warning') + '">' + (r.qualified ? 'واجد شرایط' : 'در انتظار') + '</div>';
+            '<div class="mini-row-title">' + esc(r.name) + '</div>' +
+            '<div class="mini-row-sub">' + (r.username ? '@' + esc(r.username) : 'کاربر تلگرام') +
+              ' · ' + esc(r.joined_at) +
+              (r.refs > 0 ? ' · ' + faFormat(r.refs) + ' زیرمجموعه' : '') + '</div></div>' +
+          '<span class="badge badge-' + (r.qualified ? 'success' : 'warning') + '">' + (r.qualified ? 'تأییدشده' : 'در انتظار') + '</span>';
         host.appendChild(row);
       });
     }
@@ -304,15 +464,15 @@
     const bars = $('#levels-bars');
     if (bars) {
       if (!data.levels.length) {
-        bars.innerHTML = '<div class="text-sm text-muted">شبکه‌ای برای نمایش وجود ندارد.</div>';
+        bars.innerHTML = '<div class="text-sm text-muted text-center" style="padding:8px 0">با اولین دعوت موفق، سطوح شبکه شما اینجا نمایش داده می‌شود.</div>';
       } else {
         const max = Math.max.apply(null, data.levels.map(l => l.count));
         bars.innerHTML = data.levels.map(function (l) {
-          const pct = max > 0 ? Math.round(l.count / max * 100) : 0;
+          const pct = max > 0 ? Math.max(5, Math.round(l.count / max * 100)) : 0;
           return '<div class="mb-2"><div class="flex justify-between text-xs mb-1">' +
-            '<span>سطح ' + faNum(l.level) + '</span><span>' + faNum(l.count) + ' نفر</span></div>' +
-            '<div style="height:8px;background:#e2e8f0;border-radius:99px;overflow:hidden">' +
-            '<div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#6366f1,#06b6d4)"></div></div></div>';
+            '<span class="font-bold">سطح ' + faNum(l.level) + (l.level === 1 ? ' (مستقیم)' : '') + '</span>' +
+            '<strong>' + faFormat(l.count) + ' نفر</strong></div>' +
+            '<div class="mini-meter"><span style="width:' + pct + '%"></span></div></div>';
         }).join('');
       }
     }
@@ -332,13 +492,12 @@
       row.style.flexWrap = 'wrap';
       row.innerHTML =
         '<div class="mini-row-main">' +
-          '<div class="mini-row-title">' + (window.RB ? RB.faNum(r.amount_fa) : r.amount_fa) + '</div>' +
-          '<div class="mini-row-sub">' + (window.RB ? RB.escape(r.code) : r.code) + ' · ' +
-            (window.RB ? RB.escape(r.created_at) : r.created_at) + '</div>' +
-          (r.reject_reason ? '<div class="mini-row-sub" style="color:#b91c1c">' + (window.RB ? RB.escape(r.reject_reason) : r.reject_reason) + '</div>' : '') +
-          (r.tracking_code ? '<div class="mini-row-sub">کد پیگیری: ' + (window.RB ? RB.escape(r.tracking_code) : r.tracking_code) + '</div>' : '') +
+          '<div class="mini-row-title">' + faNum(r.amount_fa) + '</div>' +
+          '<div class="mini-row-sub">' + esc(r.code) + ' · ' + esc(r.created_at) + '</div>' +
+          (r.reject_reason ? '<div class="mini-row-sub" style="color:var(--danger-text)">' + esc(r.reject_reason) + '</div>' : '') +
+          (r.tracking_code ? '<div class="mini-row-sub">کد پیگیری: ' + esc(r.tracking_code) + '</div>' : '') +
         '</div>' +
-        '<span class="badge badge-' + (badges[r.status] || 'muted') + '">' + (window.RB ? RB.escape(r.status_label) : r.status) + '</span>' +
+        '<span class="badge badge-' + (badges[r.status] || 'muted') + '">' + esc(r.status_label) + '</span>' +
         (r.cancellable ? '<button class="btn btn-sm btn-ghost" data-cancel="' + r.id + '">لغو</button>' : '');
       host.appendChild(row);
     });
@@ -353,15 +512,15 @@
     if (!data.enabled) { emptyList(host, 'رتبه‌بندی غیرفعال است'); return; }
     if (!data.rows.length) { emptyList(host, 'داده‌ای برای رتبه‌بندی وجود ندارد'); return; }
     host.innerHTML = '';
+    const medals = { 1: '🥇', 2: '🥈', 3: '🥉' };
     data.rows.forEach(function (r) {
-      const row = el('div', 'mini-row');
-      if (r.is_me) row.style.background = 'var(--brand-50, #eef2ff)';
+      const row = el('div', 'mini-row' + (r.is_me ? ' highlight' : ''));
       row.innerHTML =
-        '<div class="mini-row-icon in">' + faNum(r.rank) + '</div>' +
-        '<div class="mini-row-main"><div class="mini-row-title">' + (window.RB ? RB.escape(r.name) : r.name) +
-          (r.is_me ? ' (شما)' : '') + '</div>' +
-          '<div class="mini-row-sub">' + (r.username ? '@' + (window.RB ? RB.escape(r.username) : r.username) : '') + '</div></div>' +
-        '<div class="mini-row-amount">' + (window.RB ? RB.faNum(r.value_fa) : r.value_fa) + '</div>';
+        '<div class="mini-row-icon in">' + (medals[r.rank] || faNum(r.rank)) + '</div>' +
+        '<div class="mini-row-main"><div class="mini-row-title">' + esc(r.name) +
+          (r.is_me ? ' <span class="badge badge-brand no-dot">شما</span>' : '') + '</div>' +
+          '<div class="mini-row-sub">' + (r.username ? '@' + esc(r.username) : '') + '</div></div>' +
+        '<div class="mini-row-amount">' + faNum(r.value_fa) + '</div>';
       host.appendChild(row);
     });
   }
@@ -374,12 +533,11 @@
     if (!data.rows.length) { emptyList(host, 'اعلانی وجود ندارد'); return; }
     host.innerHTML = '';
     data.rows.forEach(function (n) {
-      const row = el('div', 'mini-row');
-      if (!n.read) row.style.background = '#f8fafc';
+      const row = el('div', 'mini-row' + (!n.read ? ' unread' : ''));
       row.innerHTML =
-        '<div class="mini-row-main"><div class="mini-row-title">' + (window.RB ? RB.escape(n.title) : n.title) + '</div>' +
-        '<div class="mini-row-sub" style="white-space:pre-wrap">' + (window.RB ? RB.escape(n.body) : n.body) + '</div>' +
-        '<div class="mini-row-sub">' + (window.RB ? RB.escape(n.created_at) : n.created_at) + '</div></div>' +
+        '<div class="mini-row-main"><div class="mini-row-title">' + esc(n.title) + '</div>' +
+        '<div class="mini-row-sub" style="white-space:pre-wrap">' + esc(n.body) + '</div>' +
+        '<div class="mini-row-sub">' + esc(n.created_at) + '</div></div>' +
         (!n.read ? '<span class="badge badge-info no-dot">جدید</span>' : '');
       host.appendChild(row);
     });
@@ -387,8 +545,11 @@
 
   /* ------------------------------ تب‌ها ------------------------------ */
   function activateTab(name) {
+    state.activeTab = name;
     $$('.mini-tab').forEach(t => t.classList.toggle('active', t.getAttribute('data-tab') === name));
     $$('.mini-panel').forEach(p => p.classList.toggle('hidden', p.getAttribute('data-panel') !== name));
+    if (name === 'home') requestAnimationFrame(renderHomeChart);
+    if (name === 'profile') requestAnimationFrame(renderProfileCharts);
     if (name === 'wallet') loadTransactions(true);
     if (name === 'referrals') loadReferrals();
     if (name === 'withdraw') loadWithdrawals();
@@ -404,9 +565,27 @@
     const goto = e.target.closest('[data-goto]');
     if (goto) { activateTab(goto.getAttribute('data-goto')); return; }
 
+    const modeBtn = e.target.closest('[data-invite-mode]');
+    if (modeBtn) {
+      state.inviteChartMode = modeBtn.getAttribute('data-invite-mode');
+      $$('[data-invite-mode]').forEach(b => b.classList.toggle('active', b === modeBtn));
+      renderProfileInviteChart();
+      haptic();
+      return;
+    }
+
+    const rangeBtn = e.target.closest('[data-invite-range]');
+    if (rangeBtn) {
+      state.inviteChartRange = parseInt(rangeBtn.getAttribute('data-invite-range'), 10) || 14;
+      $$('[data-invite-range]').forEach(b => b.classList.toggle('active', b === rangeBtn));
+      renderProfileInviteChart();
+      haptic();
+      return;
+    }
+
     if (e.target.closest('#copy-invite')) {
       const link = $('#invite-link').textContent.trim();
-      if (window.RB) RB.copy(link); else { navigator.clipboard.writeText(link); toast('کپی شد', 'success'); }
+      if (window.RB) RB.copy(link); else if (navigator.clipboard) { navigator.clipboard.writeText(link); toast('کپی شد', 'success'); }
       haptic('success');
       return;
     }
@@ -417,7 +596,7 @@
         tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text));
       } else if (navigator.share) {
         navigator.share({ title: 'دعوت به ربات', text: text, url: link }).catch(() => {});
-      } else { window.RB && RB.copy(link); }
+      } else if (window.RB) { RB.copy(link); }
       return;
     }
     if (e.target.closest('#read-all')) {
@@ -493,9 +672,8 @@
       try {
         tg.ready();
         tg.expand();
-        tg.setHeaderColor('#4f46e5');
-        tg.setBackgroundColor('#f5f7fb');
       } catch (e) {}
+      syncTelegramChrome();
     }
     const ok = await authenticate();
     if (!ok) return;

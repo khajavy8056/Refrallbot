@@ -37,15 +37,20 @@ $isActive = static function (array $item) use ($path): bool {
 };
 ?>
 <!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="fa" dir="rtl" data-theme="dark" data-theme-scope="admin">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="csrf-token" content="<?= e(csrf_token()) ?>">
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#0b1120" id="meta-theme-color">
     <meta name="robots" content="noindex, nofollow">
     <title><?= e($title) ?> — پنل مدیریت <?= e(setting('app_name', 'رفرال‌بات')) ?></title>
-    <link rel="stylesheet" href="<?= asset('css/app.css') ?>">
-    <link rel="icon" href="data:image/svg+xml,<?= rawurlencode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="#4f46e5"/><text x="50" y="68" font-size="52" text-anchor="middle" fill="white" font-family="sans-serif">R</text></svg>') ?>">
+    <script>
+    (function(){try{var t=localStorage.getItem('rb_admin_theme');if(t!=='light'&&t!=='dark'){t='dark';}document.documentElement.setAttribute('data-theme',t);var m=document.getElementById('meta-theme-color');if(m){m.content=t==='dark'?'#0b1120':'#f5f7fb';}}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();
+    </script>
+    <link rel="stylesheet" href="<?= asset('css/app.css') ?>?v=<?= e(RB_VERSION) ?>">
+    <link rel="icon" href="data:image/svg+xml,<?= rawurlencode('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient></defs><rect width="100" height="100" rx="24" fill="url(#g)"/><text x="50" y="68" font-size="52" font-weight="bold" text-anchor="middle" fill="white" font-family="sans-serif">R</text></svg>') ?>">
 </head>
 <body>
 <div class="layout">
@@ -54,7 +59,7 @@ $isActive = static function (array $item) use ($path): bool {
             <div class="brand-logo">R</div>
             <div class="brand-text">
                 <span class="brand-title"><?= e(setting('app_name', 'رفرال‌بات')) ?></span>
-                <span class="brand-sub">پنل مدیریت نسخه <?= e(RB_VERSION) ?></span>
+                <span class="brand-sub">پنل مدیریت · v<?= e(RB_VERSION) ?></span>
             </div>
         </div>
         <nav class="nav">
@@ -89,15 +94,21 @@ $isActive = static function (array $item) use ($path): bool {
             <div class="topbar-spacer"></div>
 
             <?php if (!empty($navBadges['withdrawals'])): ?>
-                <a href="<?= url('admin/withdrawals?status=open') ?>" class="btn btn-secondary btn-sm">
-                    🏦 <?= fa_digits((int) $navBadges['withdrawals']) ?> درخواست در انتظار
+                <a href="<?= url('admin/withdrawals?status=open') ?>" class="btn btn-secondary btn-sm hide-xs">
+                    🏦 <?= fa_digits((int) $navBadges['withdrawals']) ?> برداشت در انتظار
                 </a>
             <?php endif; ?>
 
-            <div style="display:flex;align-items:center;gap:10px;padding-inline-start:12px;border-inline-start:1px solid var(--border)">
+            <button type="button" class="theme-toggle" data-theme-toggle title="تغییر حالت تاریک / روشن" aria-label="تغییر تم">
+                <span class="theme-icon-dark">🌙</span>
+                <span class="theme-icon-light">☀️</span>
+                <span class="theme-label hide-xs" data-theme-label>روشن</span>
+            </button>
+
+            <div class="topbar-user">
                 <div class="avatar"><?= e(mb_substr($admin['name'] ?? 'م', 0, 1)) ?></div>
-                <div style="line-height:1.35">
-                    <div style="font-weight:600;font-size:.84rem"><?= e($admin['name'] ?? 'مدیر') ?></div>
+                <div class="topbar-user-info hide-xs">
+                    <div class="topbar-user-name"><?= e($admin['name'] ?? 'مدیر') ?></div>
                     <div class="text-xs text-muted"><?= e($admin['role_name'] ?? 'مدیر') ?></div>
                 </div>
                 <a href="<?= url('admin/logout') ?>" class="btn btn-ghost btn-sm" title="خروج"
@@ -118,7 +129,7 @@ $isActive = static function (array $item) use ($path): bool {
 </div>
 
 <div class="toasts"></div>
-<script src="<?= asset('js/app.js') ?>"></script>
+<script src="<?= asset('js/app.js') ?>?v=<?= e(RB_VERSION) ?>"></script>
 <?= $scripts ?? '' ?>
 </body>
 </html>

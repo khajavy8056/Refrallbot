@@ -30,18 +30,17 @@ final class DashboardController extends AdminController
 
         $growth = StatsService::userGrowth($days);
         $series = StatsService::referralSeries($days);
-
-        $labels = array_map(
-            static fn($row) => fa_digits(substr($row['date'], 8, 2)) . '/' . fa_digits(substr($row['date'], 5, 2)),
-            $growth
-        );
+        $memberAnalytics = StatsService::memberGrowthBreakdown($days);
 
         $this->render('admin/dashboard', [
             'title' => 'داشبورد',
             'overview' => $overview,
             'days' => $days,
-            'labels' => $labels,
+            'labels' => $memberAnalytics['labels'],
             'growth' => array_column($growth, 'value'),
+            'memberAnalytics' => $memberAnalytics,
+            'memberComposition' => StatsService::memberComposition(),
+            'networkLevels' => StatsService::networkByLevel(),
             'referrals' => array_column($series, 'referrals'),
             'payouts' => array_column($series, 'payouts'),
             'withdrawalSeries' => array_column($series, 'withdrawals'),
@@ -51,6 +50,7 @@ final class DashboardController extends AdminController
             'activity' => StatsService::recentActivity(8),
             'settings' => CommissionSettings::current(),
             'telegram' => TelegramService::settings(),
+            'botUiMode' => \RB\Services\SettingsService::botUiMode(),
         ]);
     }
 

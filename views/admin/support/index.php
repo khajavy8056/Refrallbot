@@ -47,7 +47,7 @@ $statusLabels = ['open' => 'باز', 'answered' => 'پاسخ داده‌شده',
                     <?php if (!empty($m['subject'])): ?>
                         <div class="font-bold mb-1"><?= e((string) $m['subject']) ?></div>
                     <?php endif; ?>
-                    <div style="white-space:pre-wrap;line-height:1.9;font-size:.87rem;background:#f8fafc;border-radius:12px;padding:12px"><?= e((string) $m['message']) ?></div>
+                    <div style="white-space:pre-wrap;line-height:1.9;font-size:.87rem;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px"><?= e((string) $m['message']) ?></div>
 
                     <?php if ($m['direction'] === 'in' && $m['status'] !== 'closed'): ?>
                         <form method="post" action="<?= url('admin/support/' . $m['id'] . '/reply') ?>" data-ajax class="mt-2">

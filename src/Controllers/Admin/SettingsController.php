@@ -91,19 +91,26 @@ final class SettingsController extends AdminController
         SettingsService::set('force_channel_membership', !empty($_POST['force_channel_membership']) ? '1' : '0', 'telegram');
         SettingsService::set('contact_required', !empty($_POST['contact_required']) ? '1' : '0', 'telegram');
 
-        // پنل کاربری (Mini App): به‌صورت پیش‌فرض خاموش، چون به HTTPS معتبر نیاز دارد.
-        // حالت‌ها: auto (خودکار بر اساس https)، on (اجباری)، off
-        $mode = (string) ($_POST['miniapp_mode'] ?? 'auto');
-        if (!in_array($mode, ['auto', 'on', 'off'], true)) {
-            $mode = 'auto';
-        }
-        SettingsService::set('miniapp_mode', $mode, 'telegram');
-        $miniappUrl = trim((string) ($_POST['miniapp_url'] ?? ''));
-        if ($miniappUrl !== '') {
-            if (!preg_match('~^https?://~i', $miniappUrl)) {
-                $miniappUrl = 'https://' . $miniappUrl;
+        // حالت نمایش ربات (buttons / miniapp / hybrid) یا miniapp_mode قدیمی (off / on / auto)
+        $miniappUrlInput = isset($_POST['miniapp_url']) ? trim((string) $_POST['miniapp_url']) : null;
+        if (isset($_POST['bot_ui_mode']) && array_key_exists((string) $_POST['bot_ui_mode'], SettingsService::BOT_UI_MODES)) {
+            SettingsService::applyBotUiMode((string) $_POST['bot_ui_mode'], $miniappUrlInput);
+        } else {
+            $mode = (string) ($_POST['miniapp_mode'] ?? 'auto');
+            if (!in_array($mode, ['auto', 'on', 'off'], true)) {
+                $mode = 'auto';
             }
-            SettingsService::set('miniapp_url', mb_substr(rtrim($miniappUrl, '/'), 0, 255), 'telegram');
+            $mappedUi = $mode === 'off' ? 'buttons' : 'hybrid';
+            SettingsService::set('miniapp_mode', $mode, 'telegram');
+            SettingsService::set('bot_ui_mode', $mappedUi, 'telegram');
+            if ($miniappUrlInput !== null && $miniappUrlInput !== '') {
+                if (!preg_match('~^https?://~i', $miniappUrlInput)) {
+                    $miniappUrlInput = 'https://' . $miniappUrlInput;
+                }
+                SettingsService::set('miniapp_url', mb_substr(rtrim($miniappUrlInput, '/'), 0, 255), 'telegram');
+            }
+            SettingsService::flush();
+            SettingsService::syncTelegramMenuButton();
         }
         if (isset($_POST['contact_request_message'])) {
             SettingsService::set('contact_request_message', mb_substr((string) $_POST['contact_request_message'], 0, 600), 'telegram');

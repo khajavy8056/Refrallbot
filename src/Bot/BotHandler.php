@@ -171,7 +171,23 @@ final class BotHandler
         }
 
         if ($text === '🏠 منوی اصلی' || $text === '/menu') {
-            $this->sendMainMenu($user, $chatId, 'منوی اصلی — یک گزینه را انتخاب کنید:');
+            $prompt = SettingsService::botUiMode() === 'miniapp'
+                ? '📱 برای مدیریت حساب، دعوت دوستان، مشاهده نمودارها و برداشت وجه، دکمه «ورود به پنل کاربری» را در پایین صفحه لمس کنید:'
+                : 'منوی اصلی — یک گزینه را انتخاب کنید:';
+            $this->sendMainMenu($user, $chatId, $prompt);
+            return;
+        }
+
+        if ($text === '/app') {
+            if (SettingsService::miniappActive()) {
+                $this->tg->sendMessage(
+                    $chatId,
+                    "📱 <b>پنل کاربری (Mini App)</b>\n\nبرای باز کردن پنل گرافیکی، نمودار دعوت‌ها و کیف پول روی دکمه زیر بزنید:",
+                    ['reply_markup' => $this->panelButton()]
+                );
+            } else {
+                $this->sendMainMenu($user, $chatId, '⌨️ ربات در حالت دکمه‌ای فعال است — از منوی زیر گزینه مورد نظر را انتخاب کنید:');
+            }
             return;
         }
 
@@ -232,7 +248,7 @@ final class BotHandler
     private function cmdAdmin(int $telegramId, int|string $chatId): void
     {
         $admin = $this->db->first(
-            'SELECT id, username, full_name FROM admins WHERE telegram_user_id = :t AND is_active = 1 LIMIT 1',
+            'SELECT id, username, name FROM admins WHERE telegram_user_id = :t AND is_active = 1 LIMIT 1',
             ['t' => $telegramId]
         );
         if ($admin === null) {
@@ -246,7 +262,7 @@ final class BotHandler
             [['text' => '🛠 ورود به پنل مدیریت', 'callback_data' => 'admin:panel']],
         ];
         $this->tg->sendMessage($chatId, "🛠 <b>پنل مدیریت</b>\n\n"
-            . 'خوش آمدید' . ($admin['full_name'] ? ' ' . e((string) $admin['full_name']) : '') . ".\n"
+            . 'خوش آمدید' . (!empty($admin['name']) ? ' ' . e((string) $admin['name']) : '') . ".\n"
             . 'گزینه مورد نظر را انتخاب کنید:', [
                 'reply_markup' => TelegramService::inlineKeyboard($rows),
             ]);
@@ -691,7 +707,8 @@ final class BotHandler
     private function panelButton(): array
     {
         $mode = (string) (SettingsService::get('miniapp_mode', 'auto') ?? 'auto');
-        if ($mode === 'off') {
+        $uiMode = (string) (SettingsService::get('bot_ui_mode', '') ?? '');
+        if ($mode === 'off' || $uiMode === 'buttons') {
             return TelegramService::inlineKeyboard([]);
         }
         $base = (string) (SettingsService::get('miniapp_url', '') ?: '');
