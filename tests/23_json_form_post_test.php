@@ -47,29 +47,21 @@ file_put_contents(RB_STORAGE . '/installed.lock', '{}');
 MenuService::syncDefaults($db);
 
 // شبیه‌ساز ترنسپورت تلگرام برای getMe و setWebhook
-TelegramService::setTransport(static function (string $method, array $payload): array {
+TelegramService::$fakeTransport = static function (string $method, array $payload): array {
     if ($method === 'getMe') {
         return [
-            'body' => json_encode([
-                'ok' => true,
-                'result' => ['id' => 9876543210, 'is_bot' => true, 'first_name' => 'ربات تست', 'username' => 'refrall_ok_bot'],
-            ], JSON_UNESCAPED_UNICODE),
-            'error' => null,
-            'status' => 200,
+            'ok' => true,
+            'result' => ['id' => 9876543210, 'is_bot' => true, 'first_name' => 'ربات تست', 'username' => 'refrall_ok_bot'],
         ];
-    }
-    if ($method === 'setWebhook') {
-        return ['body' => json_encode(['ok' => true, 'result' => true]), 'error' => null, 'status' => 200];
     }
     if ($method === 'getWebhookInfo') {
         return [
-            'body' => json_encode(['ok' => true, 'result' => ['url' => 'https://bot.example.com/webhook/telegram', 'pending_update_count' => 0]]),
-            'error' => null,
-            'status' => 200,
+            'ok' => true,
+            'result' => ['url' => 'https://bot.example.com/webhook/telegram', 'pending_update_count' => 0],
         ];
     }
-    return ['body' => json_encode(['ok' => true, 'result' => true]), 'error' => null, 'status' => 200];
-});
+    return ['ok' => true, 'result' => true];
+};
 
 // ابزار ارسال درخواست POST با بدنهٔ JSON و $_POST کاملاً خالی (بازتولید دقیق رفتار مرورگر)
 $dispatchJsonPost = static function (string $uri, array $body) use ($adminId): array {
@@ -191,7 +183,7 @@ T::eq(['joined', 'channel'], $expanded['conditions'] ?? null, 'expandBracketKeys
 T::eq('20', $expanded['order']['5'] ?? null, 'expandBracketKeys کلید عددی را درست می‌سازد');
 T::eq('ok', $expanded['simple'] ?? null, 'expandBracketKeys کلید ساده را حفظ می‌کند');
 
-TelegramService::setTransport(null);
+TelegramService::$fakeTransport = null;
 Request::setRawBody('');
 $_POST = [];
 @unlink(RB_STORAGE . '/installed.lock');
