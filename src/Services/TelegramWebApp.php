@@ -118,7 +118,27 @@ final class TelegramWebApp
 
         $user = $users->find((int) $existing['id']) ?? $existing;
 
+        // ---- ضدتکرار (Replay): همان initData نباید دو بار پذیرفته شود
+        //
+        // initData تا ۲۴ ساعت معتبر است؛ اگر کسی آن را از URL/لاگ بردارد،
+        // می‌تواند دوباره به همان حساب وارد شود. با ثبت یک nonce یکتا
+        // (هش کل initData) استفادهٔ دوم رد می‌شود.
+        //
+        // استثنا: همان مرورگری که همین حالا با همین initData وارد شده است
+        // می‌تواند صفحه را رفرش کند (تلگرام initData را در هر باز شدن صفحه
+        // عوض نمی‌کند). در این حالت احراز هویت تکراری است، نه حمله.
         Session::start();
+        $alreadyAuthed = (int) ($_SESSION['miniapp_user_id'] ?? 0) === (int) $user['id'];
+
+        if (!self::claimNonce($initData, (int) $user['id'], (int) ($verified['auth_date'] ?? 0))) {
+            if ($alreadyAuthed) {
+                $_SESSION['miniapp_auth_at'] = time();
+                return ['ok' => true, 'user' => $user, 'reused' => true];
+            }
+            SecurityService::log('miniapp_replay', 'medium', ['user_id' => (int) $user['id']]);
+            return ['ok' => false, 'error' => 'این دادهٔ احراز هویت قبلاً استفاده شده است. صفحه را دوباره از ربات باز کنید.'];
+        }
+
         Session::regenerate();
         $_SESSION['miniapp_user_id'] = (int) $user['id'];
         $_SESSION['miniapp_auth_at'] = time();
@@ -158,6 +178,40 @@ final class TelegramWebApp
     {
         $settings = TelegramService::settings();
         return (string) (Crypto::decrypt($settings['bot_token_enc'] ?? null) ?? '');
+    }
+
+    /**
+     * ثبت nonce یکتا برای initData و رد استفادهٔ مجدد.
+     *
+     * @return bool false اگر این initData قبلاً استفاده شده باشد
+     */
+    private static function claimNonce(string $initData, int $userId, int $authDate): bool
+    {
+        $db = Database::instance();
+        $nonce = hash('sha256', $initData);
+
+        try {
+            // پاک‌سازی فرصت‌طلبانهٔ nonce های منقضی (بدون وابستگی به Cron)
+            if (random_int(1, 20) === 1) {
+                $db->delete('miniapp_auth_nonces', 'expires_at < :n', ['n' => now()]);
+            }
+
+            $db->insert('miniapp_auth_nonces', [
+                'nonce' => $nonce,
+                'user_id' => $userId > 0 ? $userId : null,
+                'expires_at' => date('Y-m-d H:i:s', ($authDate > 0 ? $authDate : time()) + self::MAX_AGE + 3600),
+                'created_at' => now(),
+            ]);
+            return true;
+        } catch (\Throwable $e) {
+            // اگر جدول موجود نیست (نصب قدیمی) یا خطای Duplicate:
+            // Duplicate → replay؛ جدول ناموجود → اجازه بده (سازگاری عقب‌رو)
+            if ($db->tableExists('miniapp_auth_nonces')) {
+                return false; // تقریباً همیشه یعنی UNIQUE شکسته = nonce تکراری
+            }
+            \RB\Support\ErrorHandler::write('warning', 'miniapp nonce table missing: ' . $e->getMessage());
+            return true;
+        }
     }
 
     /**

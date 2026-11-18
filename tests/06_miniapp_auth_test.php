@@ -109,8 +109,10 @@ T::ok(is_array($decoded) && ($decoded['ok'] ?? true) === false, 'API بدون ا
 T::ok(($decoded['need_auth'] ?? false) === true, 'پاسخ شامل need_auth است تا فرانت صفحه ورود را نشان دهد');
 
 // ---------- API: داده داشبورد با سشن معتبر
+// initData تازه لازم است: هر initData فقط یک بار از یک نشست تازه پذیرفته
+// می‌شود (ضدتکرار). نسخهٔ قبلی همان initData را دوباره استفاده می‌کرد.
 $_SESSION = [];
-TelegramWebApp::authenticate($initData);
+TelegramWebApp::authenticate(TelegramWebApp::buildInitData($tgUser, $botToken));
 $wallet = new RB\Services\WalletService($db);
 $wallet->credit((int) $user['id'], 'commission_direct', 50000, ['idempotency_key' => 'miniapp-test:' . $user['id'], 'description' => 'تست واریز']);
 

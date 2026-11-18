@@ -57,10 +57,13 @@ final class HomeController extends Controller
     /** احراز هویت با initData تلگرام */
     public function auth(): void
     {
-        $initData = (string) ($_POST['init_data'] ?? '');
+        // ورودی یکپارچه: miniapp.js بدنه را با Content-Type: application/json
+        // می‌فرستد، پس $_POST خالی است. نسخهٔ قبلی فقط $_POST را می‌خواند و
+        // احراز هویت همیشه با خطای «داده ارسال نشده» شکست می‌خورد.
+        $initData = Request::string('init_data', '');
         if ($initData === '') {
-            // هدر تلگرام هم بررسی می‌شود
-            $initData = (string) ($_SERVER['HTTP_X_TELEGRAM_INIT_DATA'] ?? '');
+            // هدر تلگرام هم پذیرفته می‌شود
+            $initData = trim((string) ($_SERVER['HTTP_X_TELEGRAM_INIT_DATA'] ?? ''));
         }
         $result = TelegramWebApp::authenticate($initData);
         if (!$result['ok']) {
