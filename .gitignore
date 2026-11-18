@@ -8,6 +8,7 @@
 # ---------------------------------------------------------------- runtime
 storage/logs/*.log
 storage/backups/*
+storage/updates/*
 storage/cache/*
 storage/installed.lock
 storage/app_key.php

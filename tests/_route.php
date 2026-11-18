@@ -75,6 +75,7 @@ $cases = [
     ['/admin/support', true],
     ['/admin/admins', true],
     ['/admin/backup', true],
+    ['/admin/update', true],
     ['/admin/api/chart', true],
 ];
 

@@ -70,16 +70,20 @@
    */
   RB.request = async function (url, options) {
     options = options || {};
-    const headers = Object.assign({
-      'X-Requested-With': 'XMLHttpRequest',
-      'Accept': 'application/json'
-    }, options.headers || {});
-    const isForm = options.body instanceof FormData;
-    if (options.body && !isForm) {
+    const token = RB.csrf();
+    const isFormData = options.body instanceof FormData;
+    const baseHeaders = isFormData
+      ? { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json', 'X-CSRF-Token': token }
+      : { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json', 'X-CSRF-Token': token };
+    const headers = Object.assign(baseHeaders, options.headers || {});
+    if (isFormData) {
+      // برای FormData هرگز Content-Type دستی ست نمی‌شود تا مرورگر boundary صحیح multipart را بگذارد
+      delete headers['Content-Type'];
+      delete headers['content-type'];
+    } else if (options.body !== undefined && options.body !== null) {
       headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(options.body);
     }
-    if (!isForm) { headers['X-CSRF-Token'] = RB.csrf(); }
 
     let response;
     try {
@@ -246,8 +250,16 @@
     if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px"></span>'; }
 
     const formData = new FormData(form);
-    const payload = {};
-    formData.forEach((value, key) => { if (key !== '_csrf') payload[key] = value; });
+    const isMultipart = (form.getAttribute('enctype') || '').toLowerCase() === 'multipart/form-data'
+      || form.querySelector('input[type="file"]') !== null;
+    let payload;
+    if (isMultipart) {
+      if (!formData.has('_csrf')) { formData.append('_csrf', RB.csrf()); }
+      payload = formData;
+    } else {
+      payload = {};
+      formData.forEach((value, key) => { if (key !== '_csrf') payload[key] = value; });
+    }
 
     const result = await RB.post(form.getAttribute('action') || window.location.pathname, payload);
     if (btn) { btn.disabled = false; btn.innerHTML = original; }

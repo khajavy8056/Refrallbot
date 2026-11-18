@@ -47,7 +47,13 @@ final class AuditService
         'channel.deleted' => 'حذف کانال اجباری',
         'security.reviewed' => 'بررسی رویداد امنیتی',
         'backup.created' => 'تهیه نسخه پشتیبان',
+        'backup.downloaded' => 'دانلود نسخه پشتیبان',
         'backup.restored' => 'بازیابی نسخه پشتیبان',
+        'update.checked' => 'بررسی نسخه جدید',
+        'update.applied' => 'به‌روزرسانی سامانه',
+        'update.failed' => 'خطا در به‌روزرسانی سامانه',
+        'update.restored' => 'بازگردانی فایل‌های سامانه',
+        'update.settings_updated' => 'تغییر تنظیمات به‌روزرسانی',
         'support.replied' => 'پاسخ به پشتیبانی',
         'commission.reverted' => 'برگشت پورسانت',
     ];

@@ -9,13 +9,15 @@ namespace RB\Support;
 final class Migrator
 {
     private Database $db;
+    private string $migrationsDir;
 
-    public function __construct(?Database $db = null)
+    public function __construct(?Database $db = null, ?string $migrationsDir = null)
     {
         $this->db = $db ?? Database::instance();
+        $this->migrationsDir = rtrim($migrationsDir ?? (RB_ROOT . '/database/migrations'), '/\\');
     }
 
-    /** @return string[] نام migrationهای اجرانشده */
+    /** @return string[] نام migrationهای اجراشده */
     public function applied(): array
     {
         if (!$this->db->tableExists('migrations')) {
@@ -28,7 +30,7 @@ final class Migrator
     public function run(): array
     {
         $applied = $this->applied();
-        $files = glob(RB_ROOT . '/database/migrations/*.php') ?: [];
+        $files = glob($this->migrationsDir . '/*.php') ?: [];
         sort($files);
         $newlyApplied = [];
         $skipped = [];

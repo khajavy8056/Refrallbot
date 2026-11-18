@@ -121,6 +121,14 @@ return static function (Router $router): void {
     $router->post('/admin/backup/create', [Admin\BackupController::class, 'create'], ['admin', 'csrf']);
     $router->get('/admin/backup/download/{file}', [Admin\BackupController::class, 'download'], ['admin']);
 
+    // به‌روزرسانی سامانه (فقط مدیر کل)
+    $router->get('/admin/update', [Admin\UpdateController::class, 'index'], ['admin']);
+    $router->post('/admin/update/check', [Admin\UpdateController::class, 'check'], ['admin', 'csrf']);
+    $router->post('/admin/update/github', [Admin\UpdateController::class, 'installGithub'], ['admin', 'csrf']);
+    $router->post('/admin/update/upload', [Admin\UpdateController::class, 'upload'], ['admin', 'csrf']);
+    $router->post('/admin/update/restore', [Admin\UpdateController::class, 'restore'], ['admin', 'csrf']);
+    $router->post('/admin/update/settings', [Admin\UpdateController::class, 'saveSettings'], ['admin', 'csrf']);
+
     // ------------------------------------------------ Cron وب (هاست اشتراکی بدون crontab)
     $router->get('/cron/run', [\RB\Controllers\CronController::class, 'run']);
     $router->post('/cron/run', [\RB\Controllers\CronController::class, 'run']);

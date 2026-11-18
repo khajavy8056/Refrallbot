@@ -25,7 +25,8 @@ $navItems = [
     ['path' => '/admin/security', 'label' => 'امنیت', 'icon' => '🛡', 'badge' => $navBadges['security'] ?? 0],
     ['path' => '/admin/admins', 'label' => 'مدیران', 'icon' => '🔑'],
     ['path' => '/admin/logs', 'label' => 'گزارش فعالیت', 'icon' => '📋'],
-    ['path' => '/admin/backup', 'label' => 'پشتیبان‌گیری', 'icon' => '💾'],
+    ['path' => '/admin/backup', 'label' => 'پشتیبان‌گیری', 'icon' => '💾', 'superadmin' => true],
+    ['path' => '/admin/update', 'label' => 'به‌روزرسانی', 'icon' => '🔄', 'badge' => $navBadges['update'] ?? 0, 'superadmin' => true],
 ];
 
 $isActive = static function (array $item) use ($path): bool {
@@ -62,6 +63,7 @@ $isActive = static function (array $item) use ($path): bool {
                     <div class="nav-group-label"><?= e($item['group']) ?></div>
                     <?php continue; ?>
                 <?php endif; ?>
+                <?php if (!empty($item['superadmin']) && isset($admin['role_slug']) && $admin['role_slug'] !== 'superadmin') { continue; } ?>
                 <a href="<?= url(ltrim($item['path'], '/')) ?>" class="nav-item <?= $isActive($item) ? 'active' : '' ?>">
                     <span class="nav-icon"><?= $item['icon'] ?></span>
                     <span><?= e($item['label']) ?></span>

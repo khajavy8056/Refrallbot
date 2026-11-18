@@ -14,6 +14,14 @@ final class DashboardController extends AdminController
 {
     public function index(): void
     {
+        try {
+            if (\RB\Services\AdminAuth::requireSuperAdmin()) {
+                (new \RB\Services\UpdateService())->autoCheckIfDue();
+            }
+        } catch (\Throwable $e) {
+            \RB\Support\ErrorHandler::logException($e);
+        }
+
         $overview = StatsService::overview();
         $days = (int) ($_GET['days'] ?? 30);
         if (!in_array($days, [7, 14, 30, 90], true)) {
