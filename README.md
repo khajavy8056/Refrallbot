@@ -278,6 +278,7 @@ storage/         لاگ‌ها، پشتیبان‌ها، فایل قفل نصب
 
 ## مستندات
 
+- [`docs/MYSQL-COMPAT.md`](docs/MYSQL-COMPAT.md) — گزارش بازبینی سازگاری با MySQL
 - [`docs/HOSTING.md`](docs/HOSTING.md) — **چه هاستی بخرم؟** (cPanel یا DirectAdmin، تست روی گوشی)
 - [`docs/INSTALL.md`](docs/INSTALL.md) — نصب گام‌به‌گام
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — معماری و طراحی دیتابیس
