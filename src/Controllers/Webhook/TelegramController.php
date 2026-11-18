@@ -7,6 +7,7 @@ use RB\Bot\BotHandler;
 use RB\Http\Controller;
 use RB\Services\SecurityService;
 use RB\Services\TelegramService;
+use RB\Services\UpdateDeduplicator;
 use RB\Support\Config;
 use RB\Support\Database;
 use RB\Support\ErrorHandler;
@@ -25,7 +26,7 @@ final class TelegramController extends Controller
             return;
         }
 
-        $raw = (string) file_get_contents('php://input');
+        $raw = Request::raw();
         if ($raw === '') {
             $this->json(['ok' => false, 'error' => 'بدنه درخواست خالی است'], 400);
             return;
@@ -35,9 +36,24 @@ final class TelegramController extends Controller
             return;
         }
 
+        // ---------------------------------------------------------- راز Webhook
+        //
+        // سیاست: اگر Webhook فعال است، Secret اجباری است.
+        // قبلاً اگر secret خالی بود کل بررسی رد می‌شد، یعنی هر کسی می‌توانست
+        // آپدیت جعلی بفرستد. حالا نبود Secret با 403 رد می‌شود.
         $settings = TelegramService::settings();
         $secret = (string) ($settings['webhook_secret'] ?? '');
-        if ($secret !== '') {
+        $webhookActive = !empty($settings['webhook_active']);
+
+        if ($secret === '') {
+            // بدون Secret، وبهوک عملاً باز است؛ فقط اگر webhook فعال نیست
+            // (یعنی این درخواست از مسیر Polling/تست می‌آید) اجازه می‌دهیم.
+            if ($webhookActive) {
+                SecurityService::log('webhook_missing_secret', 'high', ['ip' => Request::ip()]);
+                $this->json(['ok' => false, 'error' => 'Secret Token برای Webhook تنظیم نشده است.'], 403);
+                return;
+            }
+        } else {
             $provided = (string) ($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '');
             if (!hash_equals($secret, $provided)) {
                 SecurityService::log('webhook_invalid_secret', 'high', ['ip' => Request::ip()]);
@@ -52,14 +68,36 @@ final class TelegramController extends Controller
             return;
         }
 
-        // همیشه سریع پاسخ می‌دهیم تا تلگرام آپدیت را مجدداً ارسال نکند؛
-        // پردازش در همان درخواست انجام می‌شود اما خطاها پاسخ را خراب نمی‌کنند.
+        // ---------------------------------------------------------- ضدتکرار
+        //
+        // تلگرام اگر 200 نگیرد همان آپدیت را دوباره می‌فرستد. ثبت update_id
+        // قبل از پردازش، جلوی اجرای دوبارهٔ عملیات مالی را می‌گیرد.
+        $updateId = (int) ($update['update_id'] ?? 0);
+        $dedupe = new UpdateDeduplicator();
+        $claim = $dedupe->begin($updateId, $update);
+
+        if (!$claim['proceed']) {
+            // آپدیت تکراری یا در حال پردازش — پاسخ 200 تا تلگرام دوباره نفرستد
+            $this->json(['ok' => true, 'duplicate' => true, 'reason' => $claim['reason']]);
+            return;
+        }
+
         try {
             (new BotHandler())->handle($update);
+            $dedupe->done($claim['id']);
             $this->json(['ok' => true]);
         } catch (\Throwable $e) {
-            error_log('[refrallbot] webhook error: ' . $e->getMessage());
-            $this->json(['ok' => true, 'warning' => 'processed_with_error']);
+            // خطا را ثبت می‌کنیم و قفل را آزاد می‌کنیم تا تلاش مجدد تلگرام
+            // واقعاً پردازش کند. پاسخ 500 عمدی است: تلگرام همان آپدیت را
+            // دوباره می‌فرستد و کاربر پیام گم‌شده نمی‌بیند. عملیات مالی با
+            // idempotency_key در برابر اجرای دوباره محافظت شده‌اند.
+            $dedupe->fail($claim['id'], $e->getMessage());
+            ErrorHandler::write('error', 'webhook processing failed: ' . $e->getMessage());
+            $this->json([
+                'ok' => false,
+                'error' => 'پردازش آپدیت ناموفق بود.',
+                'retry' => true,
+            ], 500);
         }
     }
 
