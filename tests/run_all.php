@@ -17,7 +17,7 @@ if (!function_exists('exec')) {
 $files = glob(__DIR__ . '/[0-9][0-9]_*_test.php') ?: [];
 sort($files);
 // تست‌های کمکی (رندر قالب‌ها و دود مسیرها)
-foreach (['_lint.php', '_smoke.php', '_route.php', '_actions.php'] as $extra) {
+foreach (['_lint.php', '_smoke.php', '_route.php', '_actions.php', '_mysql_ddl.php'] as $extra) {
     if (is_file(__DIR__ . '/' . $extra)) {
         $files[] = __DIR__ . '/' . $extra;
     }

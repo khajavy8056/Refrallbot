@@ -48,6 +48,14 @@ final class Migrator
 
             foreach ($schema->statements() as $sql) {
                 try {
+                    // MySQL دستور «CREATE INDEX IF NOT EXISTS» ندارد؛ اگر اجرای
+                    // Migration نیمه‌کاره مانده باشد و ایندکس از قبل ساخته شده
+                    // باشد، بدون این بررسی Migration با خطای «Duplicate key
+                    // name» شکست می‌خورد.
+                    $existing = $this->existingIndexName($sql);
+                    if ($existing !== null && $this->db->indexExists($existing[0], $existing[1])) {
+                        continue;
+                    }
                     $this->db->pdo()->exec($sql);
                 } catch (\PDOException $e) {
                     throw new \RuntimeException('خطا در اجرای Migration ' . $name . ': ' . ErrorHandler::redact($e->getMessage()), 0, $e);
@@ -69,5 +77,18 @@ final class Migrator
         }
 
         return ['applied' => $newlyApplied, 'skipped' => $skipped];
+    }
+
+    /**
+     * استخراج (جدول، ایندکس) از یک دستور CREATE INDEX تا بتوان تکرار آن را رد کرد.
+     *
+     * @return array{0:string,1:string}|null
+     */
+    private function existingIndexName(string $sql): ?array
+    {
+        if (!preg_match('~^CREATE\s+(?:UNIQUE\s+)?INDEX\s+`([^`]+)`\s+ON\s+`([^`]+)`~i', trim($sql), $m)) {
+            return null;
+        }
+        return [$m[2], $m[1]];
     }
 }

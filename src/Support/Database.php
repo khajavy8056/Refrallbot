@@ -205,6 +205,29 @@ final class Database
         return '`' . str_replace('`', '', $name) . '`';
     }
 
+    /**
+     * آیا ایندکس با این نام روی این جدول وجود دارد؟
+     * (برای MySQL لازم است چون CREATE INDEX IF NOT EXISTS ندارد)
+     */
+    public function indexExists(string $table, string $index): bool
+    {
+        try {
+            if ($this->isSqlite()) {
+                return (bool) $this->value(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND name = :i",
+                    ['i' => $index]
+                );
+            }
+            return (bool) $this->value(
+                'SELECT index_name FROM information_schema.statistics
+                  WHERE table_schema = DATABASE() AND table_name = :t AND index_name = :i LIMIT 1',
+                ['t' => $table, 'i' => $index]
+            );
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     public function tableExists(string $table): bool
     {
         try {

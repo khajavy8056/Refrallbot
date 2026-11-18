@@ -188,6 +188,12 @@ final class TableDefinition
         if ($this->driver === 'sqlite') {
             return $this; // کلید خارجی در SQLite از طریق PRAGMA کنترل می‌شود؛ برای سادگی نادیده گرفته می‌شود
         }
+        // MySQL اجازهٔ ON DELETE SET NULL روی ستون NOT NULL را نمی‌دهد
+        // (خطای 1830 در زمان اجرای Migration). اگر ستون اجباری است، CASCADE
+        // منطقی‌تر و امن‌تر است تا کل Migration شکست نخورد.
+        if ($onDelete === 'SET NULL' && $this->isNotNull($column)) {
+            $onDelete = 'CASCADE';
+        }
         $this->foreigns[] = sprintf(
             'CONSTRAINT `fk_%s_%s` FOREIGN KEY (`%s`) REFERENCES `%s` (`id`) ON DELETE %s',
             substr($this->name, 0, 40),
@@ -197,6 +203,16 @@ final class TableDefinition
             $onDelete
         );
         return $this;
+    }
+
+    /** آیا ستون به‌صورت NOT NULL ساخته شده است؟ */
+    private function isNotNull(string $column): bool
+    {
+        if (!isset($this->columns[$column])) {
+            return false;
+        }
+        // ستون id تعریف جداگانه دارد و همیشه کلید اصلی است
+        return str_contains($this->columns[$column], ' NOT NULL') && !str_contains($this->columns[$column], ' NULL,');
     }
 
     public function toSql(): string
@@ -231,13 +247,18 @@ final class TableDefinition
         if ($this->driver === 'sqlite') {
             return []; // UNIQUE کافی است؛ ایندکس‌های اضافی برای سرعت تست لازم نیستند
         }
+        // نکتهٔ مهم: MySQL (برخلاف MariaDB و SQLite) عبارت «CREATE INDEX IF NOT
+        // EXISTS» را نمی‌شناسد و Migration با خطای سینتکس متوقف می‌شود. پس نام
+        // ایندکس را در ابتدای statement می‌گذاریم تا Migrator بتواند قبل از اجرا
+        // وجودش را در information_schema بررسی کند (ایندکس‌ها در SQLite ساخته
+        // نمی‌شوند، چون UNIQUE برای تست کافی است).
         $out = [];
         $i = 0;
         foreach ($this->indexes as $cols) {
             $i++;
             $name = 'idx_' . substr($this->name, 0, 34) . '_' . implode('_', $cols) . '_' . $i;
             $name = substr($name, 0, 60);
-            $out[] = 'CREATE INDEX IF NOT EXISTS `' . $name . '` ON `' . $this->name . '` (`'
+            $out[] = 'CREATE INDEX `' . $name . '` ON `' . $this->name . '` (`'
                 . implode('`, `', $cols) . '`)';
         }
         return $out;
