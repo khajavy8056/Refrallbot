@@ -14,6 +14,7 @@ use RB\Services\WalletService;
 use RB\Services\WithdrawalService;
 use RB\Support\Database;
 use RB\Support\ErrorHandler;
+use RB\Support\RateLimiter;
 use RB\Support\Request;
 
 /**
@@ -39,6 +40,21 @@ final class BotHandler
 
     public function handle(array $update): void
     {
+        $this->db->transaction(function () use ($update) {
+            $this->executeUpdate($update);
+        });
+    }
+
+    /**
+     * پردازش آپدیت داخل یک تراکنش دیتابیس.
+     *
+     * هر آپدیت (اعم از پیام یا callback) در یک تراکنش واحد اجرا می‌شود تا اگر
+     * وسط کار خطایی رخ داد، هیچ اثر مالی نیمه‌کاره‌ای باقی نماند. اگر کار
+     * شکست بخورد، خطا به بالادست پرتاب می‌شود و لایهٔ وب‌هوک/polling آن را
+     * با کد 500 گزارش می‌کند تا تلگرام آپدیت را دوباره بفرستد.
+     */
+    public function executeUpdate(array $update): void
+    {
         try {
             $this->db->run(
                 'UPDATE telegram_settings SET last_update_at = :now, updates_count = updates_count + 1, updated_at = :now2',
@@ -48,16 +64,16 @@ final class BotHandler
         }
 
         if (isset($update['message'])) {
-            $this->handleMessage($update['message']);
+            $this->dispatchMessage($update['message']);
         } elseif (isset($update['callback_query'])) {
-            $this->handleCallback($update['callback_query']);
+            $this->dispatchCallback($update['callback_query']);
         } elseif (isset($update['my_chat_member']) || isset($update['chat_member'])) {
             // بی‌اهمیت برای منطق فعلی
         }
     }
 
     // ------------------------------------------------------------------ پیام‌ها
-    private function handleMessage(array $message): void
+    private function dispatchMessage(array $message): void
     {
         $from = $message['from'] ?? [];
         $chatId = $message['chat']['id'] ?? null;
@@ -67,6 +83,18 @@ final class BotHandler
         }
 
         $text = trim((string) ($message['text'] ?? ''));
+
+        // ---- محدودیت نرخ: از سیل‌آب پیام و بازپخش (replay) جلوگیری می‌کند
+        if (RateLimiter::tooMany('bot:' . $telegramId, 30, 60)) {
+            if (!empty($message['message_id'])) {
+                // فقط یک بار در دقیقه پاسخ می‌دهیم تا خودمان هم سیل نسازیم
+                if (!RateLimiter::tooMany('bot:notice:' . $telegramId, 1, 60)) {
+                    $this->send($chatId, '⏳ تعداد پیام‌های شما زیاد است. لطفاً یک دقیقه صبر کنید.');
+                }
+            }
+            return;
+        }
+
         $this->logMessage($telegramId, 'in', $text !== '' ? 'message' : 'media', $message);
 
         // ---- دستور /start
@@ -104,6 +132,11 @@ final class BotHandler
 
         // ---- وضعیت گفتگو (جریان چندمرحله‌ای)
         $session = $this->session->get($telegramId);
+        if ($session !== null && (int) ($session['user_id'] ?? 0) !== (int) $user['id']) {
+            // نشست باقی‌مانده از کاربر دیگر/حذف‌شده — پاک می‌شود
+            $this->session->clear($telegramId);
+            $session = null;
+        }
         if ($session !== null && $session['step'] !== null) {
             if ($this->handleStep($user, $session, $text, $message, $chatId)) {
                 return;
@@ -165,6 +198,33 @@ final class BotHandler
 
         $this->session->clear($telegramId);
         $this->sendMainMenu($user, $chatId, $this->startText($isNew, $user));
+    }
+
+    /**
+     * دستور /admin — پنل مدیریت فقط برای ادمین‌های فعال تلگرامی.
+     * (پیش‌تر این متد وجود نداشت و /admin باعث خطای مرگبار می‌شد.)
+     */
+    private function cmdAdmin(int $telegramId, int|string $chatId): void
+    {
+        $admin = $this->db->first(
+            'SELECT id, username, full_name FROM admins WHERE telegram_user_id = :t AND is_active = 1 LIMIT 1',
+            ['t' => $telegramId]
+        );
+        if ($admin === null) {
+            // پاسخ یکسان با «دستور ناموجود» تا شناسایی ادمین‌ها ممکن نباشد
+            $this->send($chatId, "دستور نامعتبر است. برای دیدن منو /menu را بزنید.");
+            return;
+        }
+
+        $rows = [
+            [['text' => '📊 آمار سریع', 'callback_data' => 'admin:stats']],
+            [['text' => '🛠 ورود به پنل مدیریت', 'callback_data' => 'admin:panel']],
+        ];
+        $this->tg->sendMessage($chatId, "🛠 <b>پنل مدیریت</b>\n\n"
+            . 'خوش آمدید' . ($admin['full_name'] ? ' ' . e((string) $admin['full_name']) : '') . ".\n"
+            . 'گزینه مورد نظر را انتخاب کنید:', [
+                'reply_markup' => TelegramService::inlineKeyboard($rows),
+            ]);
     }
 
     private function startText(bool $isNew, array $user): string
@@ -249,6 +309,19 @@ final class BotHandler
     private function handleContact(array $user, array $message, int|string $chatId): void
     {
         $contact = $message['contact'];
+
+        // فقط در چت خصوصی و فقط شمارهٔ خودِ فرستنده
+        $chatType = (string) ($message['chat']['type'] ?? '');
+        if ($chatType !== 'private') {
+            $this->send($chatId, 'ارسال شماره تماس فقط در چت خصوصی با ربات امکان‌پذیر است.');
+            return;
+        }
+        if (empty($contact['user_id'])) {
+            // مخاطبی که با دفترچه تلفن ارسال شده، قابل تطبیق نیست
+            \RB\Services\SecurityService::log('contact_without_user_id', 'medium', [], (int) $user['id']);
+            $this->send($chatId, '❌ لطفاً با دکمهٔ «ارسال شماره تماس» شمارهٔ خودتان را ارسال کنید، نه از دفترچه تلفن.');
+            return;
+        }
         // تطبیق شماره با شناسه تلگرام فرستنده
         if ((int) ($contact['user_id'] ?? 0) !== (int) $user['telegram_id']) {
             \RB\Services\SecurityService::log('contact_mismatch', 'high', [
@@ -605,7 +678,7 @@ final class BotHandler
     }
 
     // ------------------------------------------------------------------ کال‌بک‌ها
-    private function handleCallback(array $callback): void
+    private function dispatchCallback(array $callback): void
     {
         $callbackId = (string) ($callback['id'] ?? '');
         $data = (string) ($callback['data'] ?? '');

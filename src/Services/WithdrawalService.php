@@ -268,7 +268,7 @@ final class WithdrawalService
 
     public function approve(int $id, int $adminId): array
     {
-        return $this->db->transaction(function () use ($id, $adminId) {
+        $result = $this->db->transaction(function () use ($id, $adminId) {
             $request = $this->db->lockRow('withdrawal_requests', $id);
             if ($request === null) {
                 throw new \RuntimeException('درخواست یافت نشد.');
@@ -283,10 +283,13 @@ final class WithdrawalService
                 'updated_at' => now(),
             ], 'id = :id', ['id' => $id]);
             AuditService::log('withdrawal.approved', 'withdrawal', $id, ['amount' => (int) $request['amount']], $adminId);
-            Notifier::toUser((int) $request['user_id'], '✅ درخواست برداشت تأیید شد',
+            // اعلان داخل تراکنش ثبت می‌شود، ارسال تلگرام بعد از COMMIT
+            Notifier::defer((int) $request['user_id'], '✅ درخواست برداشت تأیید شد',
                 'درخواست برداشت ' . $request['request_code'] . ' به مبلغ ' . wtoman((int) $request['amount']) . " تأیید شد و در صف پرداخت قرار گرفت.", 'withdrawal');
             return $this->find($id) ?? [];
         });
+        Notifier::flushDeferred();
+        return $result;
     }
 
     public function reject(int $id, int $adminId, string $reason): array
@@ -295,7 +298,7 @@ final class WithdrawalService
         if (mb_strlen($reason) < 3) {
             throw new \RuntimeException('دلیل رد باید حداقل ۳ کاراکتر باشد.');
         }
-        return $this->db->transaction(function () use ($id, $adminId, $reason) {
+        $result = $this->db->transaction(function () use ($id, $adminId, $reason) {
             $request = $this->db->lockRow('withdrawal_requests', $id);
             if ($request === null) {
                 throw new \RuntimeException('درخواست یافت نشد.');
@@ -333,16 +336,18 @@ final class WithdrawalService
                 'reason' => $reason,
             ], $adminId);
 
-            Notifier::toUser((int) $request['user_id'], '❌ درخواست برداشت رد شد',
+            Notifier::defer((int) $request['user_id'], '❌ درخواست برداشت رد شد',
                 'درخواست برداشت ' . $request['request_code'] . ' رد شد.' . "\n" . 'دلیل: ' . $reason . "\n" . 'مبلغ ' . wtoman((int) $request['amount']) . ' به موجودی شما بازگشت.', 'withdrawal');
 
             return $this->find($id) ?? [];
         });
+        Notifier::flushDeferred();
+        return $result;
     }
 
     public function markPaid(int $id, int $adminId, ?string $trackingCode = null, ?string $note = null): array
     {
-        return $this->db->transaction(function () use ($id, $adminId, $trackingCode, $note) {
+        $result = $this->db->transaction(function () use ($id, $adminId, $trackingCode, $note) {
             $request = $this->db->lockRow('withdrawal_requests', $id);
             if ($request === null) {
                 throw new \RuntimeException('درخواست یافت نشد.');
@@ -395,12 +400,20 @@ final class WithdrawalService
                 'tracking_code' => $trackingCode,
             ], $adminId);
 
-            Notifier::toUser((int) $request['user_id'], '💸 برداشت پرداخت شد',
-                'مبلغ ' . wtoman((int) $request['amount']) . ' از درخواست ' . $request['request_code'] . ' پرداخت شد.'
-                . ($trackingCode ? "\nکد پیگیری: " . $trackingCode : ''), 'withdrawal');
+            // رسید پرداخت برای کاربر (خواستهٔ کارفرما): مبلغ، کد پیگیری، روش پرداخت
+            $receiptBody = 'درخواست برداشت ' . $request['request_code'] . ' تسویه شد.' . "\n"
+                . 'مبلغ: ' . wtoman((int) $request['amount']) . "\n"
+                . 'کارت مقصد: ' . (!empty($request['card_last4']) ? '****' . $request['card_last4'] : '—') . "\n"
+                . ($trackingCode ? 'کد پیگیری: ' . $trackingCode . "\n" : '')
+                . ($note ? 'توضیح: ' . $note . "\n" : '')
+                . 'موجودی کیف پول شما به‌روزرسانی شد.';
+
+            Notifier::defer((int) $request['user_id'], '💸 برداشت پرداخت شد', $receiptBody, 'withdrawal');
 
             return $this->find($id) ?? [];
         });
+        Notifier::flushDeferred();
+        return $result;
     }
 
     public function setStatus(int $id, string $status, int $adminId): void
