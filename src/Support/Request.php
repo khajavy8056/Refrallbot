@@ -137,27 +137,232 @@ final class Request
         return substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255);
     }
 
+    /**
+     * آیا کلاینت پاسخ JSON می‌خواهد؟
+     * (برای اینکه خطاها به‌جای HTML خام، JSON استاندارد باشند و RB.request
+     *  بتواند پیام را به کاربر نشان دهد.)
+     */
+    public static function expectsJson(): bool
+    {
+        $accept = strtolower((string) ($_SERVER['HTTP_ACCEPT'] ?? ''));
+        if (str_contains($accept, 'application/json')) {
+            return true;
+        }
+        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
+        if (str_contains($contentType, 'json')) {
+            return true;
+        }
+        $requestedWith = strtolower((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? ''));
+        return $requestedWith === 'xmlhttprequest';
+    }
+
     public static function isAjax(): bool
     {
         return strtolower((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')) === 'xmlhttprequest'
             || str_contains(strtolower((string) ($_SERVER['HTTP_ACCEPT'] ?? '')), 'application/json');
     }
 
-    /** بدنه JSON خام */
+    /**
+     * بدنه JSON خام.
+     *
+     * اگر بدنه JSON نامعتبر (خراب) باشد، آرایهٔ خالی برمی‌گردد تا کد فراخوان
+     * با «ورودی نامعتبر» رفتار کند. برای تشخیص «بدنهٔ سینتکسی خراب» از
+     * Request::jsonInvalid() استفاده کنید.
+     */
     public static function json(): array
     {
-        static $cache = null;
-        if ($cache !== null) {
-            return $cache;
-        }
-        $raw = file_get_contents('php://input') ?: '';
-        $data = json_decode($raw, true);
-        return $cache = is_array($data) ? $data : [];
+        $parsed = self::parseJsonBody();
+        return is_array($parsed) ? $parsed : [];
     }
+
+    /** آیا بدنهٔ درخواست JSON بود ولی معتبر نبود (سینتکس خراب)؟ */
+    public static function jsonInvalid(): bool
+    {
+        self::parseJsonBody();
+        return self::$jsonInvalid;
+    }
+
+    private static bool $jsonInvalid = false;
+    private static bool $jsonParsed = false;
+    /** @var mixed */
+    private static $jsonCache = null;
+
+    /**
+     * @return mixed آرایه اگر JSON معتبر بود، null اگر بدنه JSON نبود
+     */
+    private static function parseJsonBody()
+    {
+        if (self::$jsonParsed) {
+            return self::$jsonCache;
+        }
+        self::$jsonParsed = true;
+        self::$jsonCache = null;
+        self::$jsonInvalid = false;
+
+        if (self::method() !== 'POST' && self::method() !== 'PUT' && self::method() !== 'PATCH') {
+            return null;
+        }
+
+        $raw = self::raw();
+        if (trim($raw) === '') {
+            return null;
+        }
+
+        // فقط وقتی به‌عنوان JSON تفسیر می‌کنیم که هدر Content-Type این را بگوید
+        // یا بدنه شبیه JSON باشد. (multipart/form-data و x-www-form-urlencoded
+        // توسط PHP در $_POST پر می‌شوند و نباید دوباره پارس شوند.)
+        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
+        $looksJson = str_starts_with(ltrim($raw), '{') || str_starts_with(ltrim($raw), '[');
+        if (!str_contains($contentType, 'json') && !($contentType === '' && $looksJson)) {
+            return null;
+        }
+
+        $data = json_decode($raw, true);
+        if (!is_array($data)) {
+            self::$jsonInvalid = true;
+            return null;
+        }
+        self::$jsonCache = $data;
+        return $data;
+    }
+
+    /**
+     * ورودی یکپارچهٔ درخواست: JSON یا فرم معمولی (یا multipart).
+     *
+     * اولویت: بدنهٔ JSON → $_POST. اگر هیچ‌کدام نبود، $_GET (فقط برای
+     * پارامترهای ساده و بدون‌خطر مثل token کرون لازم است).
+     *
+     * چرا لازم است؟ کنترلر نصب قبلاً فقط $_POST را می‌خواند، در حالی که
+     * RB.post() در JavaScript بدنه را با Content-Type: application/json و
+     * JSON.stringify ارسال می‌کند. نتیجه: $_POST خالی → همهٔ مقادیر null →
+     * پاسخ 422 «نام پایگاه داده و نام کاربری الزامی است» با وجود پر بودن فرم.
+     *
+     * @return array<string,mixed>
+     */
+    public static function input(): array
+    {
+        $json = self::json();
+        if ($json !== []) {
+            return $json;
+        }
+        if ($_POST !== []) {
+            return $_POST;
+        }
+        return $_GET;
+    }
+
+    /**
+     * خواندن یک مقدار از ورودی یکپارچه با تبدیل نوع قابل پیش‌بینی.
+     *
+     * @param array<string,mixed>|null $source اگر داده شده باشد از همان استفاده می‌شود
+     */
+    public static function field(string $key, mixed $default = null, ?array $source = null): mixed
+    {
+        $data = $source ?? self::input();
+        if (!array_key_exists($key, $data)) {
+            return $default;
+        }
+        $value = $data[$key];
+        // FormData ممکن است همه‌چیز را رشته بفرستد؛ null/'' را یکسان می‌بینیم
+        return $value;
+    }
+
+    /** مقدار رشته‌ای trim‌شده */
+    public static function string(string $key, string $default = '', ?array $source = null): string
+    {
+        $value = self::field($key, null, $source);
+        if ($value === null || is_array($value) || is_object($value)) {
+            return $default;
+        }
+        $out = trim((string) $value);
+        return $out === '' ? $default : $out;
+    }
+
+    /**
+     * مقدار عددی صحیح (ارقام فارسی/عربی هم پذیرفته می‌شوند).
+     * اگر مقدار نامعتبر باشد، null برمی‌گردد تا اعتبارسنجی بتواند خطا بدهد.
+     */
+    public static function int(string $key, ?int $default = null, ?array $source = null): ?int
+    {
+        $value = self::field($key, null, $source);
+        if ($value === null || is_array($value) || is_object($value)) {
+            return $default;
+        }
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return $default;
+        }
+        // ارقام فارسی و عربی → لاتین
+        $raw = strtr($raw, [
+            '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
+            '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+            '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
+            '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
+        ]);
+        $raw = str_replace([',', '٬', ' '], '', $raw);
+        if (!preg_match('~^-?\d+$~', $raw)) {
+            return $default;
+        }
+        return (int) $raw;
+    }
+
+    /**
+     * مقدار بولی — برای checkbox ها که ممکن است نباشند، "on"، "1"، true یا 1 بیایند.
+     */
+    public static function bool(string $key, bool $default = false, ?array $source = null): bool
+    {
+        $data = $source ?? self::input();
+        if (!array_key_exists($key, $data)) {
+            return $default;
+        }
+        $value = $data[$key];
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_array($value) || is_object($value)) {
+            return $default;
+        }
+        return in_array(strtolower(trim((string) $value)), ['1', 'true', 'on', 'yes', 'y'], true);
+    }
+
+    /**
+     * بازنویسی بدنهٔ خام برای تست.
+     *
+     * در محیط تست (php://input فقط یک بار و فقط در SAPI واقعی قابل خواندن
+     * است) با Request::setRawBody() می‌توان بدنهٔ JSON را شبیه‌سازی کرد.
+     * این متد فقط زمانی اثر دارد که RB_TEST_MODE تعریف شده باشد.
+     */
+    private static ?string $rawOverride = null;
+
+    public static function setRawBody(string $body): void
+    {
+        if (!defined('RB_TEST_MODE') && getenv('RB_TEST_MODE') !== '1') {
+            throw new \LogicException('Request::setRawBody فقط در حالت تست قابل استفاده است.');
+        }
+        self::$rawOverride = $body;
+        self::resetCaches();
+    }
+
+    /** پاک کردن کش‌های پارس بدنه (برای تست و درخواست‌های تازه) */
+    public static function resetCaches(): void
+    {
+        self::$jsonParsed = false;
+        self::$jsonCache = null;
+        self::$jsonInvalid = false;
+        self::$rawCache = null;
+    }
+
+    private static ?string $rawCache = null;
 
     public static function raw(): string
     {
-        return (string) file_get_contents('php://input');
+        if (self::$rawOverride !== null) {
+            return self::$rawOverride;
+        }
+        if (self::$rawCache === null) {
+            self::$rawCache = (string) file_get_contents('php://input');
+        }
+        return self::$rawCache;
     }
 
     /**

@@ -140,9 +140,26 @@ $r = act(RB\Controllers\Admin\ChannelController::class, 'save', [], ['title' => 
 T::eq(1, (int) $db->value('SELECT COUNT(*) FROM telegram_channels'), 'شناسه کانال نامعتبر ثبت نشد (اعتبارسنجی کار می‌کند)');
 
 // ---------- ۵) اتصال ربات با توکن ساختگی (بدون تماس با تلگرام)
-TelegramService::$fakeTransport = static fn (string $method, array $params): array => $method === 'getMe'
-    ? ['ok' => true, 'result' => ['id' => 424242, 'is_bot' => true, 'first_name' => 'RefrallBot', 'username' => 'refrallbot_test_bot']]
-    : ['ok' => true, 'result' => true];
+// شبیه‌ساز تلگرام: setWebhook آدرس را نگه می‌دارد و getWebhookInfo همان را
+// برمی‌گرداند؛ چون پنل حالا بعد از setWebhook وضعیت واقعی را تأیید می‌کند.
+$fakeWebhook = ['url' => ''];
+TelegramService::$fakeTransport = static function (string $method, array $params) use (&$fakeWebhook): array {
+    if ($method === 'getMe') {
+        return ['ok' => true, 'result' => ['id' => 424242, 'is_bot' => true, 'first_name' => 'RefrallBot', 'username' => 'refrallbot_test_bot']];
+    }
+    if ($method === 'setWebhook') {
+        $fakeWebhook['url'] = (string) ($params['url'] ?? '');
+        return ['ok' => true, 'result' => true, 'description' => 'Webhook was set'];
+    }
+    if ($method === 'deleteWebhook') {
+        $fakeWebhook['url'] = '';
+        return ['ok' => true, 'result' => true, 'description' => 'Webhook was deleted'];
+    }
+    if ($method === 'getWebhookInfo') {
+        return ['ok' => true, 'result' => ['url' => $fakeWebhook['url'], 'pending_update_count' => 0]];
+    }
+    return ['ok' => true, 'result' => true];
+};
 $r = act(RB\Controllers\Admin\TelegramController::class, 'saveToken', [], [
     'bot_token' => '424242:AAFakeTokenForAutomatedTests_abcdefghijklmno',
     'base_url' => 'https://bot.example.test',

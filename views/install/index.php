@@ -283,6 +283,45 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
     if (on) { btn.dataset.html = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px"></span> در حال اجرا…'; }
     else { btn.disabled = false; btn.innerHTML = btn.dataset.html || btn.innerHTML; }
   }
+
+  /*
+   * جمع‌آوری مقادیر فرم.
+   *
+   * نکته: FormData فقط checkbox های تیک‌خورده را برمی‌گرداند؛ اگر تیک
+   * نخورده باشد کلید وجود ندارد و سرور ممکن است مقدار قبلی را نگه دارد.
+   * اینجا برای همهٔ checkbox ها صریحاً true/false می‌فرستیم تا سرور همیشه
+   * وضعیت واقعی را بداند (JSON مقادیر بولی را درست منتقل می‌کند).
+   */
+  function formPayload(form) {
+    const payload = {};
+    new FormData(form).forEach((v, k) => { payload[k] = v; });
+    form.querySelectorAll('input[type=checkbox][name]').forEach(cb => {
+      payload[cb.name] = cb.checked;
+    });
+    return payload;
+  }
+
+  /* پیام خطای قابل فهم برای کاربر (شامل 429 با زمان انتظار) */
+  function errorText(result) {
+    if (!result) return 'خطای نامشخص.';
+    let text = result.error || 'خطا در انجام عملیات.';
+    if (result.status === 429) {
+      const wait = result.retry_after || 0;
+      text = wait > 0
+        ? 'تعداد تلاش‌ها زیاد بود. لطفاً ' + RB.faNum(Math.ceil(wait / 60)) + ' دقیقه دیگر دوباره تلاش کنید.'
+        : 'تعداد تلاش‌ها زیاد بود. لطفاً کمی بعد دوباره تلاش کنید.';
+    }
+    if (result.restart) {
+      text += ' — صفحه را دوباره بارگذاری کنید تا از مرحلهٔ اول شروع شود.';
+    }
+    if (result.errors && Array.isArray(result.errors)) {
+      text += ' ' + result.errors.join(' ');
+    }
+    if (result.notes && Array.isArray(result.notes) && result.notes.length) {
+      text += ' ' + result.notes.join(' ');
+    }
+    return text;
+  }
   function box(id, ok, msg) {
     document.getElementById(id).innerHTML = '<div class="alert alert-' + (ok ? 'success' : 'error') +
       '"><span class="alert-icon">' + (ok ? '✓' : '⚠️') + '</span><div>' + RB.escape(msg) + '</div></div>';
@@ -295,21 +334,25 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
   if (testDbBtn) {
     testDbBtn.addEventListener('click', async function () {
       const form = document.getElementById('form-db');
-      const payload = {};
-      new FormData(form).forEach((v, k) => payload[k] = v);
       busy(this, true);
-      const result = await RB.post('<?= url('install/test-database') ?>', payload);
-      busy(this, false);
-      if (result.ok) {
-        box('db-result', true, result.message);
-        if (result.need_create) {
-          document.getElementById('db-result').insertAdjacentHTML('beforeend',
-            '<div class="alert alert-warning"><span class="alert-icon">⚠️</span><div>' +
-            'پایگاه داده وجود ندارد. گزینه «اگر پایگاه داده وجود نداشت، خودش بسازد» را تیک بزنید ' +
-            'یا از cPanel آن را بسازید.</div></div>');
+      // try/finally: دکمه هرگز در حالت «در حال اجرا» گیر نمی‌کند
+      try {
+        const result = await RB.post('<?= url('install/test-database') ?>', formPayload(form));
+        if (result.ok) {
+          box('db-result', true, result.message || 'اتصال موفق بود.');
+          if (result.need_create) {
+            document.getElementById('db-result').insertAdjacentHTML('beforeend',
+              '<div class="alert alert-warning"><span class="alert-icon">⚠️</span><div>' +
+              'پایگاه داده وجود ندارد. گزینه «اگر پایگاه داده وجود نداشت، خودش بسازد» را تیک بزنید ' +
+              'یا از cPanel آن را بسازید.</div></div>');
+          }
+        } else {
+          box('db-result', false, errorText(result));
         }
-      } else {
-        box('db-result', false, (result.error || 'اتصال ناموفق') + (result.hint ? '\n' + result.hint : ''));
+      } catch (err) {
+        box('db-result', false, 'خطای غیرمنتظره در مرورگر: ' + (err && err.message ? err.message : 'نامشخص'));
+      } finally {
+        busy(this, false);
       }
     });
   }
@@ -318,47 +361,62 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
     e.preventDefault();
     const btn = this.querySelector('[type=submit]');
     busy(btn, true);
-    const payload = {};
-    new FormData(this).forEach((v, k) => payload[k] = v);
-    const result = await RB.post('<?= url('install/database') ?>', payload);
-    busy(btn, false);
-    box('db-result', result.ok, result.ok ? result.message : (result.error || 'اتصال ناموفق'));
-    if (result.ok) setTimeout(() => show(3), 700);
+    try {
+      const result = await RB.post('<?= url('install/database') ?>', formPayload(this));
+      box('db-result', result.ok, result.ok ? (result.message || 'اتصال موفق بود.') : errorText(result));
+      if (result.ok) setTimeout(() => show(3), 700);
+    } catch (err) {
+      box('db-result', false, 'خطای غیرمنتظره در مرورگر: ' + (err && err.message ? err.message : 'نامشخص'));
+    } finally {
+      busy(btn, false);
+    }
   });
 
   document.getElementById('btn-migrate').addEventListener('click', async function () {
     busy(this, true);
-    const result = await RB.post('<?= url('install/migrate') ?>', {});
-    busy(this, false);
-    box('migrate-result', result.ok, result.ok
-      ? result.message + ' — تعداد جداول: ' + RB.faNum(result.tables || 0)
-      : result.error);
-    if (result.ok) setTimeout(() => show(4), 800);
+    try {
+      const result = await RB.post('<?= url('install/migrate') ?>', {});
+      box('migrate-result', result.ok, result.ok
+        ? (result.message || 'جداول ساخته شدند.') + ' — تعداد جداول: ' + RB.faNum(result.tables || 0)
+        : errorText(result));
+      if (result.ok) setTimeout(() => show(4), 800);
+    } catch (err) {
+      box('migrate-result', false, 'خطای غیرمنتظره: ' + (err && err.message ? err.message : 'نامشخص'));
+    } finally {
+      busy(this, false);
+    }
   });
 
   document.getElementById('form-admin').addEventListener('submit', async function (e) {
     e.preventDefault();
     const btn = this.querySelector('[type=submit]');
     busy(btn, true);
-    const payload = {};
-    new FormData(this).forEach((v, k) => payload[k] = v);
-    const result = await RB.post('<?= url('install/admin') ?>', payload);
-    busy(btn, false);
-    box('admin-result', result.ok, result.ok ? result.message : result.error);
-    if (result.ok) setTimeout(() => show(5), 700);
+    try {
+      const result = await RB.post('<?= url('install/admin') ?>', formPayload(this));
+      box('admin-result', result.ok, result.ok ? (result.message || 'حساب مدیر ساخته شد.') : errorText(result));
+      if (result.ok) setTimeout(() => show(5), 700);
+    } catch (err) {
+      box('admin-result', false, 'خطای غیرمنتظره: ' + (err && err.message ? err.message : 'نامشخص'));
+    } finally {
+      busy(btn, false);
+    }
   });
 
   document.getElementById('form-settings').addEventListener('submit', async function (e) {
     e.preventDefault();
     const btn = this.querySelector('[type=submit]');
     busy(btn, true);
-    const payload = {};
-    new FormData(this).forEach((v, k) => payload[k] = v);
-    const r1 = await RB.post('<?= url('install/settings') ?>', payload);
-    if (!r1.ok) { busy(btn, false); box('settings-result', false, r1.error); return; }
-    const r2 = await RB.post('<?= url('install/finish') ?>', {});
-    busy(btn, false);
-    if (r2.ok) show(6); else box('settings-result', false, r2.error);
+    try {
+      const r1 = await RB.post('<?= url('install/settings') ?>', formPayload(this));
+      if (!r1.ok) { box('settings-result', false, errorText(r1)); return; }
+      const r2 = await RB.post('<?= url('install/finish') ?>', {});
+      if (r2.ok) { show(6); }
+      else { box('settings-result', false, errorText(r2)); }
+    } catch (err) {
+      box('settings-result', false, 'خطای غیرمنتظره: ' + (err && err.message ? err.message : 'نامشخص'));
+    } finally {
+      busy(btn, false);
+    }
   });
 
   show(<?= (int) $step ?>);

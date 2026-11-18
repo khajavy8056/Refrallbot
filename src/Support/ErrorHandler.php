@@ -52,15 +52,25 @@ final class ErrorHandler
             // ⚠️ اگر تا اینجا هیچ خروجی تولید نشده باشد، پاسخ «۲۰۰ با بدنهٔ خالی»
             // می‌شود و عیب‌یابی عملاً غیرممکن است. پس وضعیت را حتماً ۵۰۰ می‌کنیم
             // و همیشه بدنه تولید می‌کنیم.
-            $isJson = str_contains($_SERVER['HTTP_ACCEPT'] ?? '', 'json')
-                || str_contains($_SERVER['CONTENT_TYPE'] ?? '', 'json')
+            // HttpException کد وضعیت خودش را دارد (مثلاً 409 یا 422) و نباید
+            // همیشه ۵۰۰ گزارش شود.
+            $status = $e instanceof \RB\Support\HttpException ? $e->statusCode() : 500;
+            if ($status < 400 || $status > 599) {
+                $status = 500;
+            }
+            $isJson = \RB\Support\Request::expectsJson()
                 || str_starts_with((string) ($_SERVER['REQUEST_URI'] ?? ''), '/api/');
-            http_response_code(500);
+            http_response_code($status);
             if ($isJson) {
                 header('Content-Type: application/json; charset=utf-8');
                 echo json_encode([
                     'ok' => false,
-                    'error' => $debug ? $e->getMessage() : 'خطای داخلی سرور رخ داد. لطفاً بعداً تلاش کنید.',
+                    'code' => $status === 500 ? 'internal_error' : 'request_failed',
+                    'error' => $debug
+                        ? $e->getMessage()
+                        : ($status === 500
+                            ? 'خطای داخلی سرور رخ داد. لطفاً بعداً تلاش کنید.'
+                            : $e->getMessage()),
                 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 return;
             }

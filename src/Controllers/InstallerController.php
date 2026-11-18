@@ -22,7 +22,57 @@ use RB\Support\Session;
  */
 final class InstallerController
 {
-    private function guard(): void
+    /**
+     * قلاب تست: اگر مقدار داشته باشد، به‌جای exit() پاسخ را به آن می‌دهد.
+     * (مثل Request::$redirectHandler که برای تست redirect استفاده می‌شود.)
+     *
+     * @var null|callable(array,int):void
+     */
+    public static $abortHandler = null;
+
+    /**
+     * پاسخ دادن و پایان درخواست.
+     * در محیط تست (با abortHandler) به‌جای exit استثنا صادر می‌شود تا
+     * فرآیند تست متوقف نشود.
+     */
+    private function abort(array $payload, int $status): never
+    {
+        if (self::$abortHandler !== null) {
+            (self::$abortHandler)($payload, $status);
+            throw new \RB\Support\InstallAborted($payload, $status);
+        }
+        if (!headers_sent()) {
+            http_response_code($status);
+            header('Content-Type: application/json; charset=utf-8');
+        }
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    /** پنجرهٔ زمانی شمارش درخواست‌های حساس (ثانیه) */
+    private const RATE_WINDOW = 600;
+
+    /** حداکثر درخواست POST حساس در هر پنجره */
+    private const RATE_MAX_POST = 60;
+
+    /** حداکثر درخواست POST به «آزمایش اتصال» در هر پنجره (عملیات سنگین‌تر) */
+    private const RATE_MAX_TEST_DB = 20;
+
+    /**
+     * بررسی قفل نصب + محدودیت درخواست.
+     *
+     * تفاوت با نسخهٔ قبلی (که باعث خطای 429 در Termux می‌شد):
+     *   • قبلاً هر باز شدن صفحهٔ نصب هم شمارنده را زیاد می‌کرد؛ با چند Refresh
+     *     ساده ویزارد قفل می‌شد. حالا فقط POST شمارش می‌شود.
+     *   • شمارنده پنجرهٔ زمانی دارد (۱۰ دقیقه) و خودکار صفر می‌شود، پس
+     *     Refresh مرورگر هیچ‌وقت دائمی قفل نمی‌کند.
+     *   • دو سبد جدا: درخواست‌های سنگین (آزمایش اتصال) و بقیهٔ مراحل.
+     *   • پاسخ 429 حالا JSON استاندارد با هدر Retry-After است تا RB.request
+     *     بتواند پیام را نشان دهد (قبلاً متن ساده بود و «پاسخ نامعتبر» می‌شد).
+     *   • درخواست‌های هم‌زمان با قفل فایل (flock) شمارش می‌شوند تا محدودیت
+     *     با چند درخواست موازی دور زده نشود.
+     */
+    private function guard(bool $sensitive = false): void
     {
         if (Middleware::isInstalled()) {
             if (!headers_sent()) {
@@ -32,17 +82,142 @@ final class InstallerController
             exit;
         }
         Session::start();
-        // محدودیت ساده: حداکثر ۲۰ درخواست نصب از یک IP
-        $key = '_install_attempts';
-        $attempts = (int) ($_SESSION[$key] ?? 0);
-        if ($attempts > 40) {
-            if (!headers_sent()) {
-                http_response_code(429);
-            }
-            echo 'تعداد درخواست‌های نصب بیش از حد مجاز است.';
-            exit;
+
+        // درخواست GET (فقط باز کردن صفحه یا Refresh) هرگز شمارش نمی‌شود.
+        if (Request::method() !== 'POST') {
+            return;
         }
-        $_SESSION[$key] = $attempts + 1;
+
+        $bucket = $sensitive ? 'test_db' : 'post';
+        $limit = $sensitive ? self::RATE_MAX_TEST_DB : self::RATE_MAX_POST;
+        $state = $this->rateState($bucket, $limit);
+        if ($state['blocked']) {
+            $retry = max(1, $state['reset'] - time());
+            if (!headers_sent()) {
+                header('Retry-After: ' . $retry);
+            }
+            $this->abort([
+                'ok' => false,
+                'code' => 'rate_limited',
+                'error' => 'تلاش‌های نصب بیش از حد مجاز در بازهٔ زمانی کوتاه بود. '
+                    . 'لطفاً ' . fa_digits((string) ceil($retry / 60)) . ' دقیقه دیگر دوباره تلاش کنید.',
+                'retry_after' => $retry,
+            ], 429);
+        }
+    }
+
+    /**
+     * خواندن وضعیت شمارنده بدون افزایش آن (برای تست و عیب‌یابی).
+     *
+     * @return array{blocked:bool,count:int,reset:int}
+     */
+    public function rateSnapshot(string $bucket = 'post'): array
+    {
+        $key = '_install_rate_' . $bucket;
+        $state = $_SESSION[$key] ?? null;
+        $file = $this->rateStateFile($bucket, time());
+        $count = max(is_array($state) ? (int) ($state['count'] ?? 0) : 0, $file['count']);
+        $start = is_array($state) ? (int) ($state['start'] ?? time()) : time();
+        return [
+            'blocked' => false,
+            'count' => $count,
+            'reset' => max($start, $file['start']) + self::RATE_WINDOW,
+        ];
+    }
+
+    /**
+     * ثبت و بررسی شمارندهٔ درخواست.
+     *
+     * شمارنده هم در Session (برای کاربر عادی) و هم در فایل موقت (برای
+     * پایداری در برابر پاک شدن Session و شمارش درخواست‌های هم‌زمان) نگه‌داری
+     * می‌شود. قفل flock مانع «دور زدن با درخواست موازی» می‌شود.
+     *
+     * @return array{blocked:bool,count:int,reset:int}
+     */
+    private function rateState(string $bucket, int $limit): array
+    {
+        $now = time();
+        $key = '_install_rate_' . $bucket;
+
+        // ---- ۱) سبد Session (سریع، بدون I/O)
+        $sessionState = $_SESSION[$key] ?? null;
+        $count = 0;
+        $start = $now;
+        if (is_array($sessionState) && isset($sessionState['start'], $sessionState['count'])) {
+            $start = (int) $sessionState['start'];
+            $count = (int) $sessionState['count'];
+        }
+        if ($now - $start >= self::RATE_WINDOW) {
+            $start = $now;
+            $count = 0;
+        }
+
+        // ---- ۲) شمارش مشترک بر اساس IP (پایدارتر و ضد درخواست موازی)
+        $fileState = $this->rateStateFile($bucket, $now);
+
+        $total = max($count, $fileState['count']);
+        $windowStart = min($start, $fileState['start']);
+        $reset = $windowStart + self::RATE_WINDOW;
+
+        if ($total >= $limit) {
+            $_SESSION[$key] = ['start' => $windowStart, 'count' => $total];
+            return ['blocked' => true, 'count' => $total, 'reset' => $reset];
+        }
+
+        $next = $total + 1;
+        $_SESSION[$key] = ['start' => $windowStart, 'count' => $next];
+        $this->rateStateFile($bucket, $now, true);
+
+        return ['blocked' => false, 'count' => $next, 'reset' => $reset];
+    }
+
+    /**
+     * خواندن/افزایش شمارندهٔ فایلی برای یک IP.
+     *
+     * در محیط تست و روی هاست‌های بدون اجازهٔ نوشتن، بی‌صدا غیرفعال می‌شود
+     * (محدودیت Session همچنان برقرار است).
+     *
+     * @return array{count:int,start:int}
+     */
+    private function rateStateFile(string $bucket, int $now, bool $increment = false): array
+    {
+        $dir = RB_STORAGE . '/cache';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+        $ip = preg_replace('~[^0-9a-fA-F.:]~', '', Request::ip()) ?: 'unknown';
+        $file = $dir . '/rate_' . $bucket . '_' . md5($ip) . '.json';
+
+        $handle = @fopen($file, 'c+');
+        if ($handle === false) {
+            return ['count' => 0, 'start' => $now];
+        }
+
+        try {
+            // قفل انحصاری: درخواست‌های موازی پشت سر هم شمارش می‌شوند
+            if (!@flock($handle, $increment ? LOCK_EX : LOCK_SH)) {
+                return ['count' => 0, 'start' => $now];
+            }
+            $content = stream_get_contents($handle) ?: '';
+            $data = json_decode($content, true);
+            $count = is_array($data) ? (int) ($data['count'] ?? 0) : 0;
+            $start = is_array($data) ? (int) ($data['start'] ?? 0) : 0;
+            if ($start <= 0 || $now - $start >= self::RATE_WINDOW) {
+                $start = $now;
+                $count = 0;
+            }
+            if ($increment) {
+                $count++;
+                @ftruncate($handle, 0);
+                @rewind($handle);
+                @fwrite($handle, (string) json_encode(['count' => $count, 'start' => $start]));
+                @fflush($handle);
+            }
+            return ['count' => $count, 'start' => $start];
+        } finally {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
     }
 
     /**
@@ -118,118 +293,284 @@ final class InstallerController
         ], 'none');
     }
 
-    /** اطلاعات اتصال از POST (با مقادیر امن پیش‌فرض) */
+    /**
+     * اطلاعات اتصال دیتابیس از ورودی یکپارچه (JSON یا فرم).
+     *
+     * باگ واقعی که باعث خطای 422 می‌شد: RB.post در جاوااسکریپت بدنه را
+     * application/json می‌فرستد، ولی این متد فقط $_POST را می‌خواند؛ نتیجه
+     * این بود که همهٔ فیلدها null می‌شدند و پاسخ «نام پایگاه داده و نام
+     * کاربری الزامی است» با کد 422 برمی‌گشت — با وجود پر بودن فرم.
+     */
     private function dbInput(): array
     {
+        $host = Request::string('db_host', '') ?: 'localhost';
+        $port = Request::string('db_port', '') ?: '3306';
+        // پورت باید عدد معتبر باشد، وگرنه DSN می‌شکند
+        if (!preg_match('~^\d{1,5}$~', $port)) {
+            $port = '3306';
+        }
         return [
-            'host' => trim((string) ($_POST['db_host'] ?? 'localhost')) ?: 'localhost',
-            'port' => trim((string) ($_POST['db_port'] ?? '3306')) ?: '3306',
-            'name' => trim((string) ($_POST['db_name'] ?? '')),
-            'user' => trim((string) ($_POST['db_user'] ?? '')),
-            'pass' => (string) ($_POST['db_pass'] ?? ''),
+            'host' => $host,
+            'port' => $port,
+            'name' => Request::string('db_name', ''),
+            'user' => Request::string('db_user', ''),
+            // رمز عبور نباید trim شود (فاصله ممکن است بخشی از رمز باشد)
+            'pass' => (string) Request::field('db_pass', ''),
+            'create_db' => Request::bool('create_db', false),
         ];
     }
 
-    /**
-     * تست اتصال بدون ذخیره‌سازی — برای دکمه «آزمایش اتصال»
-     * اگر دیتابیس وجود نداشته باشد، تلاش می‌کند آن را بسازد.
-     */
-    public function testDatabase(): void
+    /** اعتبارسنجی ورودی دیتابیس؛ فهرست خطاها را برمی‌گرداند */
+    private function validateDbInput(array $in): array
     {
-        $this->guard();
-        \RB\Support\Csrf::verify();
-        $in = $this->dbInput();
-
-        if ($in['name'] === '' || $in['user'] === '') {
-            json_out(['ok' => false, 'error' => 'نام پایگاه داده و نام کاربری الزامی است.'], 422);
+        $errors = [];
+        if ($in['name'] === '') {
+            $errors[] = 'نام پایگاه داده الزامی است.';
         }
+        if ($in['user'] === '') {
+            $errors[] = 'نام کاربری پایگاه داده الزامی است.';
+        }
+        if ($in['host'] === '') {
+            $errors[] = 'میزبان پایگاه داده الزامی است.';
+        }
+        // نام دیتابیس باید با قاعدهٔ MySQL سازگار باشد تا در CREATE DATABASE
+        // که پارامترپذیر نیست، تزریق ممکن نباشد.
+        if ($in['name'] !== '' && !preg_match('~^[A-Za-z0-9_$]{1,64}$~', $in['name'])) {
+            $errors[] = 'نام پایگاه داده فقط می‌تواند شامل حروف لاتین، عدد، زیرخط و $ باشد (حداکثر ۶۴ کاراکتر).';
+        }
+        return $errors;
+    }
 
+    /**
+     * برقراری اتصال به دیتابیس نصب.
+     *
+     * منطق مشترک «فقط آزمایش اتصال» و «اتصال و ادامه» تا رفتارشان یکسان و
+     * قابل پیش‌بینی باشد (قبلاً فقط دکمهٔ آزمایش می‌توانست دیتابیس بسازد و
+     * دکمهٔ ادامه در همان حالت خطا می‌داد).
+     *
+     * مراحل:
+     *   ۱) اتصال بدون نام دیتابیس — فقط برای تشخیص وجود دیتابیس
+     *   ۲) اگر وجود نداشت و create_db فعال بود: CREATE DATABASE (با اعتبارسنجی نام)
+     *   ۳) اتصال نهایی به همان دیتابیس
+     *
+     * اگر کاربر مجوز مدیریتی نداشته باشد (هاست اشتراکی)، مرحلهٔ ۱ شکست
+     * می‌خورد ولی مرحلهٔ ۳ می‌تواند موفق باشد؛ بنابراین خطای مرحلهٔ ۱
+     * کشنده نیست و به‌عنوان «نامشخص» گزارش می‌شود.
+     *
+     * @return array{db:Database,version:string,exists:?bool,created:bool,notes:string[]}
+     */
+    private function connectDatabase(array $in, bool $createIfMissing): array
+    {
+        $notes = [];
+        $version = '';
+        $exists = null;
+        $created = false;
+
+        $config = static fn(string $database): Database => new Database([
+            'driver' => 'mysql',
+            'host' => $in['host'],
+            'port' => $in['port'],
+            'database' => $database,
+            'username' => $in['user'],
+            'password' => $in['pass'],
+        ]);
+
+        // ---- ۱) بررسی وجود دیتابیس (بدون انتخاب آن)
+        $serverError = null;
         try {
-            // اول بدون نام دیتابیس وصل می‌شویم تا بتوانیم وجود آن را بررسی/ایجاد کنیم
-            $root = new Database([
-                'driver' => 'mysql', 'host' => $in['host'], 'port' => $in['port'],
-                'database' => '', 'username' => $in['user'], 'password' => $in['pass'],
-            ]);
+            $root = $config('');
             $pdo = $root->pdo();
             $version = (string) $root->value('SELECT VERSION()');
             $exists = (bool) $root->value(
                 'SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = :n',
                 ['n' => $in['name']]
             );
+        } catch (\Throwable $e) {
+            $serverError = $e;
+        }
 
-            $created = false;
-            if (!$exists && !empty($_POST['create_db'])) {
-                $safe = str_replace('`', '', $in['name']);
-                $pdo->exec('CREATE DATABASE `' . $safe . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
+        // ---- ۲) ساخت دیتابیس در صورت نیاز
+        if ($exists === false && $createIfMissing) {
+            try {
+                $root = $root ?? $config('');
+                $pdo = $root->pdo();
+                // نام دیتابیس پارامترپذیر نیست؛ چون در validateDbInput فقط
+                // [A-Za-z0-9_$] مجاز است، تزریق ممکن نیست. با این حال
+                // backtickها را هم حذف می‌کنیم (دفاع لایه‌ای).
+                $safeName = str_replace('`', '', (string) $in['name']);
+                $pdo->exec('CREATE DATABASE `' . $safeName . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');
                 $created = true;
                 $exists = true;
+                $notes[] = 'دیتابیس «' . $safeName . '» ساخته شد.';
+            } catch (\Throwable $e) {
+                $message = ErrorHandler::redact($e->getMessage());
+                if (stripos($message, 'denied') !== false || stripos($message, 'privilege') !== false) {
+                    $notes[] = 'کاربر دیتابیس مجوز CREATE DATABASE ندارد. '
+                        . 'دیتابیس را از cPanel بسازید و کاربر را با دسترسی کامل به آن اضافه کنید.';
+                } else {
+                    $notes[] = 'ساخت دیتابیس ناموفق بود: ' . $message;
+                }
+            }
+        }
+
+        // ---- ۳) اتصال نهایی
+        try {
+            $db = $config((string) $in['name']);
+            $db->pdo();
+        } catch (\Throwable $e) {
+            $detail = ErrorHandler::redact($e->getMessage());
+            $hint = 'در cPanel → MySQL Databases بررسی کنید: نام دیتابیس و کاربر درست باشد '
+                . 'و کاربر با «All Privileges» به دیتابیس اضافه شده باشد.';
+            if ($exists === false) {
+                $hint = 'پایگاه دادهٔ «' . $in['name'] . '» وجود ندارد. '
+                    . 'یا گزینهٔ ساخت خودکار را فعال کنید یا آن را از cPanel بسازید.';
+            } elseif ($serverError !== null) {
+                $hint .= ' (اتصال به سرور هم ناموفق بود: ' . ErrorHandler::redact($serverError->getMessage()) . ')';
+            }
+            throw new \RuntimeException($detail . ' — ' . $hint, 0, $e);
+        }
+
+        if ($version === '') {
+            try {
+                $version = (string) $db->value('SELECT VERSION()');
+            } catch (\Throwable) {
+            }
+        }
+
+        if ($exists === null) {
+            // مجوز خواندن information_schema نبود؛ با اتصال موفق به خود دیتابیس، وجود آن ثابت شد
+            $exists = true;
+            $notes[] = 'بررسی مجوزها ممکن نبود؛ اتصال مستقیم به دیتابیس موفق بود.';
+        }
+
+        return [
+            'db' => $db,
+            'version' => $version,
+            'exists' => $exists,
+            'created' => $created,
+            'notes' => $notes,
+        ];
+    }
+
+    /**
+     * تست اتصال بدون ذخیره — دکمهٔ «فقط آزمایش اتصال».
+     * همان منطق «اتصال و ادامه» را دارد تا نتیجه‌اش دقیقاً پیش‌بینی‌پذیر باشد.
+     */
+    public function testDatabase(): void
+    {
+        // عملیات سنگین‌تر است → سبد محدودیت جداگانه
+        $this->guard(true);
+        \RB\Support\Csrf::verify();
+
+        $in = $this->dbInput();
+        $errors = $this->validateDbInput($in);
+        if ($errors !== []) {
+            json_out(['ok' => false, 'error' => implode(' ', $errors), 'errors' => $errors], 422);
+            return;
+        }
+
+        try {
+            $result = $this->connectDatabase($in, (bool) $in['create_db']);
+            $db = $result['db'];
+
+            $alreadyInstalled = false;
+            try {
+                $alreadyInstalled = $db->tableExists('system_settings')
+                    && (bool) $db->value("SELECT 1 FROM system_settings WHERE `key` = 'installed_at' LIMIT 1");
+            } catch (\Throwable) {
             }
 
-            $connect = new Database([
-                'driver' => 'mysql', 'host' => $in['host'], 'port' => $in['port'],
-                'database' => $in['name'], 'username' => $in['user'], 'password' => $in['pass'],
-            ]);
-            $connect->pdo();
+            $message = 'اتصال موفق بود';
+            if ($result['version'] !== '') {
+                $message .= ' (نسخه ' . $result['version'] . ')';
+            }
+            if ($result['created']) {
+                $message .= ' — دیتابیس ساخته شد.';
+            }
+            if ($alreadyInstalled) {
+                $message .= ' ⚠️ این دیتابیس قبلاً نصب شده است.';
+            }
 
             json_out([
                 'ok' => true,
-                'version' => $version,
-                'exists' => $exists,
-                'created' => $created,
-                'message' => 'اتصال موفق بود. نسخه MySQL: ' . $version
-                    . ($created ? ' — دیتابیس ساخته شد.' : ($exists ? '' : ' — دیتابیس وجود ندارد.')),
-                'need_create' => !$exists,
+                'version' => $result['version'],
+                'exists' => $result['exists'],
+                'created' => $result['created'],
+                'already_installed' => $alreadyInstalled,
+                'message' => $message,
+                'notes' => $result['notes'],
+                // سازگاری با نسخهٔ قبلی فرانت‌اند
+                'need_create' => $result['exists'] === false,
             ]);
         } catch (\Throwable $e) {
             json_out([
                 'ok' => false,
+                'code' => 'db_connection_failed',
                 'error' => 'اتصال ناموفق: ' . ErrorHandler::redact($e->getMessage()),
-                'hint' => 'مقادیر را از cPanel → MySQL Databases بردارید. کاربر دیتابیس باید به آن دسترسی کامل داشته باشد.',
             ], 422);
         }
     }
 
+    /**
+     * تست اتصال + ذخیره در Session و رفتن به مرحلهٔ بعد.
+     * ساخت خودکار دیتابیس هم اینجا انجام می‌شود (نه فقط در دکمهٔ آزمایش).
+     */
     public function database(): void
     {
         $this->guard();
         \RB\Support\Csrf::verify();
-        $in = $this->dbInput();
 
-        if ($in['name'] === '' || $in['user'] === '') {
-            json_out(['ok' => false, 'error' => 'نام پایگاه داده و نام کاربری الزامی است.'], 422);
+        $in = $this->dbInput();
+        $errors = $this->validateDbInput($in);
+        if ($errors !== []) {
+            json_out(['ok' => false, 'error' => implode(' ', $errors), 'errors' => $errors], 422);
+            return;
         }
 
         try {
-            $db = new Database([
-                'driver' => 'mysql', 'host' => $in['host'], 'port' => $in['port'],
-                'database' => $in['name'], 'username' => $in['user'], 'password' => $in['pass'],
-            ]);
-            $db->pdo();
-            $version = (string) $db->value('SELECT VERSION()');
+            $result = $this->connectDatabase($in, (bool) $in['create_db']);
+            $db = $result['db'];
 
-            // بررسی اینکه این دیتابیس قبلاً نصب نشده باشد
+            // اگر این دیتابیس قبلاً نصب شده، جلوی بازنویسی را بگیریم
             $alreadyInstalled = false;
             try {
-                $alreadyInstalled = (bool) $db->value(
-                    "SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'system_settings'"
-                );
+                $alreadyInstalled = $db->tableExists('system_settings')
+                    && (bool) $db->value("SELECT 1 FROM system_settings WHERE `key` = 'installed_at' LIMIT 1");
             } catch (\Throwable) {
             }
-            if ($alreadyInstalled && (int) $db->value("SELECT COUNT(*) FROM system_settings WHERE `key` = 'installed_at'")) {
+            if ($alreadyInstalled) {
                 json_out([
                     'ok' => false,
                     'error' => 'این دیتابیس قبلاً نصب شده است. برای نصب مجدد، جدول‌ها را پاک کنید یا دیتابیس دیگری بسازید.',
                     'already_installed' => true,
                 ], 409);
+                return;
             }
 
             Database::setInstance($db);
             Session::start();
-            $_SESSION['_install_db'] = $in;
+            // فقط اطلاعات لازم؛ رمز در Session می‌ماند ولی هرگز لاگ نمی‌شود
+            $_SESSION['_install_db'] = [
+                'host' => $in['host'],
+                'port' => $in['port'],
+                'name' => $in['name'],
+                'user' => $in['user'],
+                'pass' => $in['pass'],
+            ];
             $this->setStep(3);
-            json_out(['ok' => true, 'message' => 'اتصال موفق بود (نسخه MySQL: ' . $version . ')', 'version' => $version]);
+            json_out([
+                'ok' => true,
+                'message' => 'اتصال موفق بود' . ($result['version'] !== '' ? ' (نسخه ' . $result['version'] . ')' : '') . '.',
+                'version' => $result['version'],
+                'created' => $result['created'],
+                'notes' => $result['notes'],
+            ]);
         } catch (\Throwable $e) {
-            json_out(['ok' => false, 'error' => 'اتصال ناموفق: ' . ErrorHandler::redact($e->getMessage())], 422);
+            json_out([
+                'ok' => false,
+                'code' => 'db_connection_failed',
+                'error' => 'اتصال ناموفق: ' . ErrorHandler::redact($e->getMessage()),
+            ], 422);
         }
     }
 
@@ -304,11 +645,12 @@ final class InstallerController
         $this->guard();
         \RB\Support\Csrf::verify();
 
-        $name = trim((string) ($_POST['name'] ?? ''));
-        $username = trim((string) ($_POST['username'] ?? ''));
-        $password = (string) ($_POST['password'] ?? '');
-        $password2 = (string) ($_POST['password_confirm'] ?? '');
-        $telegramId = trim((string) ($_POST['telegram_id'] ?? ''));
+        // ورودی یکپارچه: هم JSON (RB.post) و هم فرم معمولی
+        $name = Request::string('name', '');
+        $username = Request::string('username', '');
+        $password = (string) Request::field('password', '');
+        $password2 = (string) Request::field('password_confirm', '');
+        $telegramId = Request::string('telegram_id', '');
 
         $errors = [];
         if (mb_strlen($name) < 3) {
@@ -329,12 +671,27 @@ final class InstallerController
         if (in_array(strtolower($password), ['password12', 'admin12345', '123456789a'], true)) {
             $errors[] = 'این رمز عبور بسیار رایج و ناامن است.';
         }
+        if ($telegramId !== '' && !preg_match('~^\d{5,20}$~', en_digits($telegramId))) {
+            $errors[] = 'شناسهٔ تلگرام باید فقط عدد باشد (یا خالی بماند).';
+        }
         if ($errors) {
             json_out(['ok' => false, 'error' => implode(' ', $errors)], 422);
         }
 
         try {
             $db = $this->resolveDatabase();
+            // جلوگیری از ساخت مدیر تکراری: اگر قبلاً مدیری ساخته شده و مرحله
+            // جلوتر رفته، درخواست تکراری نباید مدیر دوم بسازد.
+            $existingAdmins = (int) $db->value('SELECT COUNT(*) FROM admins');
+            if ($existingAdmins > 0 && $this->step() > 4) {
+                $this->setStep(5);
+                json_out([
+                    'ok' => true,
+                    'message' => 'حساب مدیر قبلاً ایجاد شده است.',
+                    'skipped' => true,
+                ]);
+                return;
+            }
             if ($db->value('SELECT id FROM admins WHERE username = :u', ['u' => $username])) {
                 json_out(['ok' => false, 'error' => 'این نام کاربری قبلاً ثبت شده است.'], 422);
             }
@@ -364,12 +721,12 @@ final class InstallerController
         \RB\Support\Csrf::verify();
         try {
             $this->resolveDatabase();
-            $appName = trim((string) ($_POST['app_name'] ?? 'رفرال‌بات'));
+            $appName = Request::string('app_name', 'رفرال‌بات');
             SettingsService::set('app_name', $appName !== '' ? mb_substr($appName, 0, 60) : 'رفرال‌بات', 'general');
 
             // آدرس پایه: اگر خالی بماند از آدرس فعلی مرورگر استفاده می‌شود،
             // تا نصب روی IP بدون دامنه هم بدون هیچ ورودی اضافه‌ای کار کند.
-            $baseUrl = trim((string) ($_POST['base_url'] ?? ''));
+            $baseUrl = Request::string('base_url', '');
             if ($baseUrl === '') {
                 $baseUrl = Request::origin();
             }
@@ -380,7 +737,7 @@ final class InstallerController
             $isHttps = str_starts_with($baseUrl, 'https://');
 
             // زیرپوشه نصب (اگر در ریشه باشد خالی است)
-            $basePath = trim((string) ($_POST['base_path'] ?? ''));
+            $basePath = Request::string('base_path', '');
             if ($basePath !== '' && $basePath !== '/') {
                 $basePath = '/' . trim($basePath, '/');
             } else {
@@ -393,7 +750,7 @@ final class InstallerController
 
             // پنل وب کاربران (Mini App) فقط با HTTPS معتبر کار می‌کند.
             // روی IP/HTTP این ماژول خاموش می‌ماند و کاربران همه‌چیز را با دکمه‌های ربات انجام می‌دهند.
-            $mode = (string) ($_POST['miniapp_mode'] ?? 'auto');
+            $mode = Request::string('miniapp_mode', 'auto');
             if (!in_array($mode, ['auto', 'on', 'off'], true)) {
                 $mode = 'auto';
             }
@@ -405,7 +762,7 @@ final class InstallerController
             SettingsService::set('miniapp_url', ($mode !== 'off' && $isHttps) ? $baseUrl . $appRoute : '', 'telegram');
 
             // پاداش پیش‌فرض معرفی (قابل تغییر بعدی از پنل → پورسانت)
-            $reward = Money::parseToman($_POST['direct_reward'] ?? null);
+            $reward = Money::parseToman(Request::field('direct_reward'));
             if ($reward !== null && $reward >= 0) {
                 $current = CommissionSettings::current(db(), true);
                 CommissionSettings::saveVersion([
@@ -424,7 +781,7 @@ final class InstallerController
             }
 
             // حداقل برداشت
-            $minWithdraw = Money::parseToman($_POST['min_withdraw_amount'] ?? null);
+            $minWithdraw = Money::parseToman(Request::field('min_withdraw_amount'));
             if ($minWithdraw !== null && $minWithdraw >= 1000) {
                 SettingsService::set('min_withdraw_amount', (string) $minWithdraw, 'withdrawal');
             }
@@ -442,27 +799,48 @@ final class InstallerController
         }
     }
 
+    /**
+     * مرحلهٔ پایانی: نوشتن .env، ثبت installed_at و ساخت قفل نصب.
+     *
+     * ترتیب امن (مهم):
+     *   ۱) نوشتن .env (اتمیک) — اگر شکست بخورد، هیچ‌چیز قفل نمی‌شود
+     *   ۲) ثبت installed_at در دیتابیس
+     *   ۳) ساخت فایل قفل
+     * اگر مرحلهٔ ۲ موفق و مرحلهٔ ۳ شکست بخورد، نصب در حالت «نیمه‌قفل»
+     * می‌ماند؛ ولی چون Middleware::isInstalled() هم فایل قفل و هم
+     * installed_at را بررسی می‌کند، اجرای مجدد همین مرحله آن را کامل می‌کند
+     * (idempotent). پس ویزارد هرگز برای همیشه قفل نمی‌شود.
+     */
     public function finish(): void
     {
         $this->guard();
         \RB\Support\Csrf::verify();
         try {
             $db = $this->resolveDatabase();
+
+            // ---- ۱) .env (fail fast: اگر نوشته نشود، نصب قفل نمی‌شود)
+            $this->writeEnv(installed: true);
+
+            // ---- ۲) ثبت نصب در دیتابیس
             SettingsService::set('installed_at', now(), 'system');
 
-            // قفل نصب: فایل قفل + تنظیم
+            // ---- ۳) فایل قفل
             $lockFile = RB_STORAGE . '/installed.lock';
-            @file_put_contents($lockFile, json_encode([
+            $lockPayload = (string) json_encode([
                 'installed_at' => now(),
                 'php' => PHP_VERSION,
                 'host' => Request::origin(),
-            ], JSON_UNESCAPED_UNICODE), LOCK_EX);
+            ], JSON_UNESCAPED_UNICODE);
+            if (@file_put_contents($lockFile, $lockPayload, LOCK_EX) === false) {
+                // قفل فایل ضروری نیست؛ installed_at در دیتابیس کافی است.
+                // اما باید به مدیر گزارش شود و نصب نباید شکست بخورد.
+                ErrorHandler::write('warning', 'فایل قفل نصب نوشته نشد: ' . $lockFile);
+            }
 
-            $this->writeEnv(installed: true);
             AuditService::log('system.installed', 'system', null, ['host' => Request::origin()]);
 
             Session::start();
-            unset($_SESSION['_install_db'], $_SESSION['_install_step']);
+            unset($_SESSION['_install_db'], $_SESSION['_install_step'], $_SESSION['_install_rate_post'], $_SESSION['_install_rate_test_db']);
             $this->setStep(7);
             json_out([
                 'ok' => true,
@@ -470,7 +848,14 @@ final class InstallerController
                 'redirect' => url('admin/login'),
             ]);
         } catch (\Throwable $e) {
-            json_out(['ok' => false, 'error' => ErrorHandler::redact($e->getMessage())], 500);
+            ErrorHandler::logException($e);
+            json_out([
+                'ok' => false,
+                'code' => 'finish_failed',
+                'error' => 'تکمیل نصب ناموفق بود: ' . ErrorHandler::redact($e->getMessage()),
+                'recoverable' => true,
+                'retry' => 'می‌توانید دوباره دکمهٔ «پایان نصب» را بزنید؛ هیچ‌چیز قفل نشده است.',
+            ], 500);
         }
     }
 
@@ -502,6 +887,17 @@ final class InstallerController
         return $db;
     }
 
+    /**
+     * نوشتن اتمیک .env با کنترل کامل خطا.
+     *
+     * مشکلات نسخهٔ قبلی که رفع شده:
+     *   • @file_put_contents خطا را می‌بلعید؛ نصب «موفق» گزارش می‌شد در حالی
+     *     که .env خالی یا ناقص بود و بعد از رفرش همه‌چیز از کار می‌افتاد.
+     *   • نوشتن مستقیم روی فایل موجود: اگر نوشتن در میانه قطع می‌شد، فایل
+     *     معتبر قبلی از بین می‌رفت. حالا اول فایل موقت نوشته می‌شود و فقط
+     *     در صورت موفقیت با rename (اتمیک) جایگزین می‌شود.
+     *   • نقل‌قول/بک‌اسلش در رمز دیتابیس درست مدیریت نمی‌شد (round-trip).
+     */
     private function writeEnv(bool $installed = false): void
     {
         Session::start();
@@ -511,9 +907,9 @@ final class InstallerController
 
         $appKey = '';
         if (preg_match('~^APP_KEY=(.*)$~m', $existing, $m)) {
-            $appKey = trim($m[1]);
+            $appKey = trim($m[1], " \t\"'");
         }
-        if ($appKey === '') {
+        if ($appKey === '' || !preg_match('~^[0-9a-f]{64}$~i', $appKey)) {
             $appKey = bin2hex(random_bytes(32));
         }
 
@@ -525,24 +921,67 @@ final class InstallerController
             'APP_BASE_PATH' => (string) SettingsService::get('app_base_path', ''),
             'RB_INSTALLED' => $installed ? 'true' : 'false',
         ];
-        if ($db !== null) {
+        if (is_array($db)) {
             $values['DB_DRIVER'] = 'mysql';
-            $values['DB_HOST'] = $db['host'];
-            $values['DB_PORT'] = $db['port'];
-            $values['DB_DATABASE'] = $db['name'];
-            $values['DB_USERNAME'] = $db['user'];
-            $values['DB_PASSWORD'] = $db['pass'];
+            $values['DB_HOST'] = (string) ($db['host'] ?? 'localhost');
+            $values['DB_PORT'] = (string) ($db['port'] ?? '3306');
+            $values['DB_DATABASE'] = (string) ($db['name'] ?? '');
+            $values['DB_USERNAME'] = (string) ($db['user'] ?? '');
+            $values['DB_PASSWORD'] = (string) ($db['pass'] ?? '');
         }
 
-        $lines = ["# RefrallBot — فایل تنظیمات (محرمانه — در Git قرار ندهید)", '# ساخته‌شده در ' . now(), ''];
+        $lines = [
+            '# RefrallBot — فایل تنظیمات (محرمانه — در Git قرار ندهید)',
+            '# ساخته‌شده در ' . now(),
+            '',
+        ];
         foreach ($values as $key => $value) {
-            $needsQuote = preg_match('~[\s#"\'\\\\]~', (string) $value) || $value === '';
-            $lines[] = $key . '=' . ($needsQuote ? '"' . addcslashes((string) $value, '"\\') . '"' : $value);
+            $lines[] = $key . '=' . self::envValue($value);
         }
-        @file_put_contents($envFile, implode("\n", $lines) . "\n", LOCK_EX);
+        $content = implode("\n", $lines) . "\n";
+
+        // ---- بررسی قابل نوشتن بودن قبل از تلاش
+        $dir = RB_ROOT;
+        if (!is_writable($dir)) {
+            throw new \RuntimeException(
+                'پوشهٔ پروژه قابل نوشتن نیست، بنابراین فایل .env ساخته نمی‌شود. '
+                . 'دسترسی پوشهٔ ریشه را در File Manager به 755 (یا 775) تغییر دهید.'
+            );
+        }
+
+        // ---- نوشتن اتمیک: فایل موقت + rename
+        $tmp = $envFile . '.tmp' . bin2hex(random_bytes(4));
+        $bytes = @file_put_contents($tmp, $content, LOCK_EX);
+        if ($bytes === false || $bytes !== strlen($content)) {
+            @unlink($tmp);
+            $error = error_get_last()['message'] ?? 'نامشخص';
+            throw new \RuntimeException(
+                'نوشتن فایل .env ناموفق بود (' . ErrorHandler::redact($error) . '). '
+                . 'فضای دیسک و دسترسی نوشتن پوشهٔ ریشه را بررسی کنید.'
+            );
+        }
+        @chmod($tmp, 0640);
+        if (!@rename($tmp, $envFile)) {
+            // rename ممکن است روی برخی فایل‌سیستم‌ها (SD کارت اندروید/FAT) کار نکند
+            if (@file_put_contents($envFile, $content, LOCK_EX) === false) {
+                @unlink($tmp);
+                throw new \RuntimeException(
+                    'جایگزینی فایل .env ناموفق بود. دسترسی نوشتن فایل .env را بررسی کنید.'
+                );
+            }
+            @unlink($tmp);
+        }
+
+        // ---- تأیید نهایی: فایل باید خوانده شود و کلیدهای ضروری را داشته باشد
+        $check = (string) @file_get_contents($envFile);
+        foreach (['APP_KEY', 'DB_DRIVER', 'DB_DATABASE'] as $required) {
+            if (!str_contains($check, $required . '=')) {
+                throw new \RuntimeException('فایل .env ناقص نوشته شد (کلید ' . $required . ' پیدا نشد).');
+            }
+        }
         @chmod($envFile, 0640);
 
-        // فایل .htaccess محافظ در ریشه
+        // ---- فایل .htaccess محافظ در ریشه
         $htaccess = RB_ROOT . '/.htaccess';
         if (!is_file($htaccess)) {
             @file_put_contents($htaccess, implode("\n", [
@@ -562,6 +1001,28 @@ final class InstallerController
                 'RedirectMatch 403 ^/?(storage|src|config|database|tests|bin|docs)/',
             ]) . "\n");
         }
+    }
+
+    /**
+     * آماده‌سازی یک مقدار برای نوشتن در .env به‌گونه‌ای که Env::load()
+     * دقیقاً همان مقدار را بازخوانی کند.
+     *
+     * مقادیر ساده بی‌نقل‌قول نوشته می‌شوند؛ هر مقدار دارای فاصله، #،
+     * نقل‌قول یا بک‌اسلش داخل "..." قرار می‌گیرد و کاراکترهای خاص escape
+     * می‌شوند تا رمز دیتابیس با کاراکترهای عجیب هم سالم بماند.
+     */
+    private static function envValue(string $value): string
+    {
+        if ($value !== '' && preg_match('~^[A-Za-z0-9_.:/@+-]+$~', $value)) {
+            return $value; // بدون نیاز به نقل‌قول
+        }
+        // escape برای رشتهٔ دوتایی‌نقل‌قولی
+        $escaped = str_replace(
+            ['\\', '"', "\n", "\r", "\t"],
+            ['\\\\', '\\"', '\\n', '\\r', '\\t'],
+            $value
+        );
+        return '"' . $escaped . '"';
     }
 
     public static function defaultSettings(): array

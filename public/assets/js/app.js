@@ -57,27 +57,95 @@
   };
 
   /* ------------------------------ درخواست AJAX ------------------------------ */
+  /*
+   * نکات مهمی که در نسخهٔ قبلی رعایت نشده بود و باعث می‌شد خطاهای واقعی سرور
+   * (مثل 422 نصب یا 429 محدودیت) به پیام مبهم «پاسخ نامعتبر» تبدیل شوند:
+   *   • کد وضعیت HTTP بررسی نمی‌شد.
+   *   • بدنهٔ غیر JSON (HTML خطا یا متن ساده) کامل دور ریخته می‌شد.
+   *   • هیچ راهی برای دیدن متن واقعی پاسخ در عیب‌یابی نبود.
+   *
+   * حالا: بدنهٔ خام نگه‌داری می‌شود، متن HTML به متن خوانا تبدیل می‌شود،
+   * و برای 429 پیام با زمان تلاش مجدد ساخته می‌شود. هیچ مقدار حساسی
+   * (رمز دیتابیس، توکن CSRF) هرگز چاپ نمی‌شود.
+   */
   RB.request = async function (url, options) {
     options = options || {};
     const headers = Object.assign({
       'X-Requested-With': 'XMLHttpRequest',
       'Accept': 'application/json'
     }, options.headers || {});
-    if (options.body && !(options.body instanceof FormData)) {
+    const isForm = options.body instanceof FormData;
+    if (options.body && !isForm) {
       headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(options.body);
     }
-    headers['X-CSRF-Token'] = RB.csrf();
+    if (!isForm) { headers['X-CSRF-Token'] = RB.csrf(); }
 
+    let response;
     try {
-      const response = await fetch(url, Object.assign({}, options, { headers, credentials: 'same-origin' }));
-      let data;
-      const text = await response.text();
-      try { data = JSON.parse(text); } catch (e) { data = { ok: false, error: 'پاسخ نامعتبر از سرور (کد ' + response.status + ')' }; }
-      if (response.status === 401 && data.redirect) { window.location.href = data.redirect; }
-      return data;
+      response = await fetch(url, Object.assign({}, options, { headers, credentials: 'same-origin' }));
     } catch (err) {
-      return { ok: false, error: 'خطای ارتباط با سرور. اتصال اینترنت را بررسی کنید.' };
+      return { ok: false, code: 'network', error: 'خطای ارتباط با سرور. اتصال اینترنت یا آدرس سایت را بررسی کنید.' };
+    }
+
+    const status = response.status;
+    const text = await response.text();
+    const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+    let data = null;
+
+    if (text) {
+      try { data = JSON.parse(text); } catch (e) { data = null; }
+    }
+
+    // ---- پاسخ JSON معتبر
+    if (data && typeof data === 'object') {
+      if (status === 401 && data.redirect) { window.location.href = data.redirect; }
+      if (status === 419) { data.restart = true; }
+      if (!data.ok && !data.error) { data.error = RB.statusMessage(status); }
+      data.status = status;
+      return data;
+    }
+
+    // ---- پاسخ غیر JSON: متن خوانا بساز
+    let readable = '';
+    if (contentType.indexOf('text/html') !== -1) {
+      const doc = new DOMParser().parseFromString(text, 'text/html');
+      const body = doc.body ? (doc.body.textContent || '') : '';
+      readable = body.replace(/\s+/g, ' ').trim().slice(0, 300);
+    } else {
+      readable = text.replace(/\s+/g, ' ').trim().slice(0, 300);
+    }
+
+    const message = RB.statusMessage(status, readable);
+    // در حالت توسعه (پارامتر ?debug=1) جزئیات امن در کنسول ثبت می‌شود
+    if (/[?&]debug=1\b/.test(location.search)) {
+      console.warn('[RB] پاسخ غیر JSON', { url: url, status: status, contentType: contentType, excerpt: readable });
+    }
+
+    return {
+      ok: false,
+      status: status,
+      code: 'non_json',
+      error: message + (readable ? ' — ' + readable : ''),
+      retry_after: parseInt(response.headers.get('Retry-After') || '0', 10) || null
+    };
+  };
+
+  /* پیام قابل فهم برای کدهای خطای HTTP */
+  RB.statusMessage = function (status, detail) {
+    const retryAfter = arguments.length > 2 ? arguments[2] : null;
+    switch (status) {
+      case 401: return 'نشست شما منقضی شده است. دوباره وارد شوید.';
+      case 403: return 'دسترسی به این عملیات مجاز نیست.';
+      case 409: return 'این عملیات با وضعیت فعلی سیستم سازگار نیست.';
+      case 419: return 'توکن امنیتی نامعتبر یا منقضی شده است. صفحه را دوباره بارگذاری کنید.';
+      case 422: return detail ? 'اطلاعات وارد شده معتبر نیست: ' + detail : 'اطلاعات وارد شده معتبر نیست.';
+      case 429: return 'تعداد درخواست‌ها بیش از حد مجاز است. لطفاً کمی صبر کنید و دوباره تلاش کنید.';
+      case 500: return 'خطای داخلی سرور. اگر ادامه داشت با پشتیبانی تماس بگیرید.';
+      case 502:
+      case 503:
+      case 504: return 'سرور موقتاً در دسترس نیست. کمی بعد دوباره تلاش کنید.';
+      default: return 'خطای سرور (کد ' + status + ').';
     }
   };
 

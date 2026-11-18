@@ -48,23 +48,41 @@ final class Session
             $_SESSION['_created'] = time();
             $_SESSION['_fingerprint'] = self::fingerprint();
         } elseif (($_SESSION['_fingerprint'] ?? '') !== self::fingerprint()) {
-            // نشست مشکوک — شروع مجدد
-            session_unset();
-            session_destroy();
-            @session_start();
-            $_SESSION['_created'] = time();
+            // تغییر مرورگر/دستگاه.
+            //
+            // نسخهٔ قبلی اینجا نشست را کامل نابود می‌کرد و اثر انگشت شامل
+            // پیشوند IP هم بود. روی اندروید/Termux و شبکهٔ همراه، IP عمومی
+            // مرتب عوض می‌شود؛ نتیجه این بود که در میانهٔ نصب، اطلاعات
+            // دیتابیس، مرحلهٔ ویزارد و توکن CSRF از بین می‌رفت و کاربر با
+            // 419/422 در حلقه گیر می‌کرد.
+            //
+            // حالا: فقط شناسهٔ نشست بازتولید می‌شود (ضد Session Fixation)
+            // و دادهٔ نشست حفظ می‌ماند.
+            \RB\Support\Session::regenerate();
             $_SESSION['_fingerprint'] = self::fingerprint();
         }
     }
 
+    /**
+     * اثر انگشت مرورگر — عمداً بدون IP.
+     *
+     * IP در شبکهٔ همراه/Termux ناپایدار است و نباید باعث از دست رفتن
+     * نشست شود. User-Agent برای تشخیص تغییر دستگاه کافی است و اگر عوض
+     * شود، فقط شناسهٔ نشست بازتولید می‌شود (نه نابودی داده).
+     */
     private static function fingerprint(): string
     {
         $ua = (string) ($_SERVER['HTTP_USER_AGENT'] ?? '');
-        return hash('sha256', $ua . '|' . substr(Request::ip(), 0, 7));
+        $lang = (string) ($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '');
+        return hash('sha256', $ua . '|' . $lang);
     }
+
+    /** شمارندهٔ بازتولید شناسه (برای تست‌ها؛ در SAPI غیروب session_id خالی است) */
+    public static int $regenerateCount = 0;
 
     public static function regenerate(): void
     {
+        self::$regenerateCount++;
         if (session_status() === PHP_SESSION_ACTIVE) {
             @session_regenerate_id(true);
         }

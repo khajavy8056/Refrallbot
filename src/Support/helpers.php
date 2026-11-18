@@ -18,6 +18,11 @@ if (!function_exists('e')) {
 if (!function_exists('json_out')) {
     function json_out(array $data, int $status = 200): void
     {
+        // در SAPI غیروب (CLI/تست) کد وضعیت قابل خواندن نیست؛ برای تست‌ها
+        // آن را در یک متغیر سراسری ثبت می‌کنیم.
+        if (defined('RB_TEST_MODE')) {
+            $GLOBALS['RB_LAST_JSON_STATUS'] = $status;
+        }
         if (!headers_sent()) {
             http_response_code($status);
             header('Content-Type: application/json; charset=utf-8');

@@ -29,9 +29,19 @@ final class Env
             [$key, $value] = explode('=', $line, 2);
             $key = trim($key);
             $value = trim($value);
-            if (strlen($value) >= 2
-                && (($value[0] === '"' && str_ends_with($value, '"'))
-                    || ($value[0] === "'" && str_ends_with($value, "'")))) {
+            if (strlen($value) >= 2 && $value[0] === '"' && str_ends_with($value, '"')) {
+                $inner = substr($value, 1, -1);
+                // بازگردانی escapeها — مکمل InstallerController::envValue()
+                // تا رمز دیتابیس با کاراکترهای خاص (", \\, newline) دقیقاً
+                // همان‌طور که وارد شده بازخوانی شود.
+                $value = strtr($inner, [
+                    '\\n' => "\n",
+                    '\\r' => "\r",
+                    '\\t' => "\t",
+                    '\\"' => '"',
+                    '\\\\' => '\\',
+                ]);
+            } elseif (strlen($value) >= 2 && $value[0] === "'" && str_ends_with($value, "'")) {
                 $value = substr($value, 1, -1);
             }
             self::$values[$key] = $value;
@@ -45,6 +55,23 @@ final class Env
             return $default;
         }
         return (string) $value;
+    }
+
+    /**
+     * مقدار خام بدون تبدیل «تهی → پیش‌فرض».
+     *
+     * Env::get() عمداً مقدار خالی را «تعریف‌نشده» حساب می‌کند تا مقادیر
+     * پیش‌فرض (مثل APP_TIMEZONE) کار کنند. اما برای مقادیری که خالی بودنشان
+     * معنادار است (مثلاً DB_PASSWORD بدون رمز) باید بتوان رشتهٔ خالی را از
+     * «کلید موجود نیست» تشخیص داد.
+     */
+    public static function getRaw(string $key): ?string
+    {
+        if (array_key_exists($key, self::$values)) {
+            return (string) self::$values[$key];
+        }
+        $env = getenv($key);
+        return $env === false ? null : (string) $env;
     }
 
     public static function bool(string $key, bool $default = false): bool
