@@ -16,7 +16,12 @@ final class Database
     private static ?Database $instance = null;
     private ?PDO $pdo = null;
     private int $txLevel = 0;
+    private bool $emulatePrepares = false;
     private array $config;
+
+    /** مجموعه کاراکتر و Collation واحد در کل سامانه (پشتیبانی کامل فارسی + ایموجی ۴ بایتی) */
+    public const MYSQL_CHARSET = 'utf8mb4';
+    public const MYSQL_COLLATION = 'utf8mb4_unicode_ci';
 
     public function __construct(?array $config = null)
     {
@@ -81,15 +86,43 @@ final class Database
                 $this->pdo->exec('PRAGMA foreign_keys = ON');
                 $this->pdo->exec('PRAGMA busy_timeout = 8000');
             } else {
-                $dsn = sprintf(
-                    'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
-                    $this->config['host'],
-                    $this->config['port'] ?: '3306',
-                    $this->config['database']
-                );
-                $this->pdo = new PDO($dsn, $this->config['username'], $this->config['password'], $options);
-                // charset در DSN تنظیم شده؛ SET NAMES فقط برای اطمینان از
-                // collation است و اگر هاست اجازه نداد نباید اتصال را بشکند.
+                $port = (string) ($this->config['port'] ?? '');
+                $port = $port !== '' ? $port : '3306';
+                $dbName = (string) ($this->config['database'] ?? '');
+                $dsn = $dbName !== ''
+                    ? sprintf('mysql:host=%s;port=%s;dbname=%s;charset=%s', $this->config['host'], $port, $dbName, self::MYSQL_CHARSET)
+                    : sprintf('mysql:host=%s;port=%s;charset=%s', $this->config['host'], $port, self::MYSQL_CHARSET);
+
+                // روی برخی هاست‌های اشتراکی (cPanel/DirectAdmin با MySQL 8)، تنظیم
+                // skip-character-set-client-handshake یا init_connect='SET NAMES utf8'
+                // باعث می‌شود charset داخل DSN نادیده گرفته شود و character_set_client
+                // روی utf8mb3_general_ci بماند؛ در نتیجه هنگام درج متن دارای ایموجی
+                // ۴ بایتی (مثل تنظیمات اولیه و منوهای ربات در مرحلهٔ نصب) خطای
+                // SQLSTATE[HY000]: 3988 (Conversion from utf8mb3_general_ci into
+                // utf8mb4_general_ci impossible for parameter) رخ می‌دهد.
+                $mysqlOptions = $options;
+                if (defined('PDO::MYSQL_ATTR_INIT_COMMAND')) {
+                    $mysqlOptions[PDO::MYSQL_ATTR_INIT_COMMAND] = sprintf(
+                        "SET NAMES '%s' COLLATE '%s'",
+                        self::MYSQL_CHARSET,
+                        self::MYSQL_COLLATION
+                    );
+                }
+                if ($this->emulatePrepares) {
+                    $mysqlOptions[PDO::ATTR_EMULATE_PREPARES] = true;
+                }
+
+                try {
+                    $this->pdo = new PDO($dsn, $this->config['username'], $this->config['password'], $mysqlOptions);
+                } catch (PDOException $initErr) {
+                    // اگر پروکسی خاصی MYSQL_ATTR_INIT_COMMAND را نپذیرفت، بدون آن وصل شویم و بلافاصله SET NAMES بزنیم
+                    if (!isset($mysqlOptions[PDO::MYSQL_ATTR_INIT_COMMAND])) {
+                        throw $initErr;
+                    }
+                    $this->pdo = new PDO($dsn, $this->config['username'], $this->config['password'], $options);
+                }
+
+                $this->applyUtf8mb4(true);
 
                 // تنظیم sql_mode نباید هرگز اتصال را بشکند. بعضی هاست‌های
                 // اشتراکی اجازهٔ تغییر SESSION sql_mode را نمی‌دهند و خطای
@@ -108,21 +141,263 @@ final class Database
         return $this->pdo;
     }
 
+    /**
+     * تضمین utf8mb4 روی تمام متغیرهای نشست MySQL/MariaDB.
+     *
+     * هم SET NAMES (برای سازگاری با ProxySQL / MySQL Governor) و هم تنظیم صریح
+     * character_set_client / character_set_connection / character_set_results /
+     * collation_connection اجرا می‌شود تا خطای 3988 و 1267 رخ ندهد.
+     */
+    public function applyUtf8mb4(bool $explicitSessionVars = false): void
+    {
+        if ($this->isSqlite() || !($this->pdo instanceof PDO)) {
+            return;
+        }
+        try {
+            $this->pdo->exec(sprintf("SET NAMES '%s' COLLATE '%s'", self::MYSQL_CHARSET, self::MYSQL_COLLATION));
+        } catch (PDOException) {
+            try {
+                $this->pdo->exec(sprintf("SET NAMES '%s'", self::MYSQL_CHARSET));
+            } catch (PDOException $e) {
+                ErrorHandler::write('warning', 'SET NAMES utf8mb4 تنظیم نشد (بی‌خطر): ' . $e->getMessage());
+            }
+        }
+        if ($explicitSessionVars) {
+            try {
+                $this->pdo->exec(sprintf(
+                    "SET SESSION character_set_client = '%1\$s', character_set_connection = '%1\$s', character_set_results = '%1\$s', collation_connection = '%2\$s'",
+                    self::MYSQL_CHARSET,
+                    self::MYSQL_COLLATION
+                ));
+            } catch (PDOException) {
+                // بی‌خطر؛ SET NAMES در خط بالا کافی است
+            }
+        }
+    }
+
     public function run(string $sql, array $params = []): \PDOStatement
     {
-        $stmt = $this->pdo()->prepare($sql);
+        $pdo = $this->pdo();
+        try {
+            return $this->prepareAndExecute($pdo, $sql, $params);
+        } catch (PDOException $e) {
+            if ($this->isSqlite() || !self::isCollationOrCharsetError($e)) {
+                throw $e;
+            }
+            return $this->recoverCharsetAndRetry($pdo, $sql, $params, $e);
+        }
+    }
+
+    private function prepareAndExecute(PDO $pdo, string $sql, array $params): \PDOStatement
+    {
+        $stmt = $pdo->prepare($sql);
         foreach ($params as $key => $value) {
-            $name = is_int($key) ? $key + 1 : (str_starts_with($key, ':') ? $key : ':' . $key);
-            $type = match (true) {
-                is_int($value) => PDO::PARAM_INT,
-                is_bool($value) => PDO::PARAM_BOOL,
-                is_null($value) => PDO::PARAM_NULL,
-                default => PDO::PARAM_STR,
-            };
-            $stmt->bindValue($name, $value, $type);
+            $name = is_int($key) ? $key + 1 : (str_starts_with((string) $key, ':') ? (string) $key : ':' . $key);
+            if (is_bool($value)) {
+                $stmt->bindValue($name, $value ? 1 : 0, PDO::PARAM_INT);
+            } elseif (is_int($value)) {
+                $stmt->bindValue($name, $value, PDO::PARAM_INT);
+            } elseif ($value === null) {
+                $stmt->bindValue($name, null, PDO::PARAM_NULL);
+            } else {
+                $stmt->bindValue($name, (string) $value, PDO::PARAM_STR);
+            }
         }
         $stmt->execute();
         return $stmt;
+    }
+
+    /**
+     * تشخیص خطاهای تبدیل charset/collation در MySQL 8 و MariaDB
+     *   - 3988: Conversion from collation X into Y impossible for parameter
+     *   - 1267/1270/1271: Illegal mix of collations
+     *   - 1366: Incorrect string value (مثلاً ایموجی ۴ بایتی روی ستون utf8mb3)
+     */
+    public static function isCollationOrCharsetError(PDOException $e): bool
+    {
+        $driverCode = (int) ($e->errorInfo[1] ?? 0);
+        $msg = $e->getMessage();
+        if (in_array($driverCode, [3988, 1267, 1270, 1271], true)) {
+            return true;
+        }
+        if ($driverCode === 1366 && stripos($msg, 'Incorrect string value') !== false) {
+            return true;
+        }
+        return (bool) preg_match('~\b(3988|Conversion from collation|Illegal mix of collations)\b~i', $msg);
+    }
+
+    /**
+     * بازیابی خودکار در برابر خطای 3988 / 1267 / 1366 روی هاست‌های MySQL 8:
+     *   ۱) اعمال مجدد SET NAMES utf8mb4 + متغیرهای نشست (برای ProxySQL و init_connect)
+     *   ۲) اگر ستون مقصد utf8mb3/latin1 مانده و بیرون از تراکنش هستیم، تبدیل امن جدول به utf8mb4
+     *   ۳) تلاش مجدد با Prepared Statement بومی
+     *   ۴) اگر کلاینت C سرور (libmysqlclient 8.0.26+ با [client] default-character-set=utf8)
+     *      همچنان در پروتکل باینری COM_STMT_EXECUTE پارامتر را utf8mb3 برچسب بزند و خطای 3988
+     *      بدهد، فعال‌سازی Emulated Prepares روی اتصال utf8mb4 (ایمن با mysql_real_escape_string)
+     */
+    private function recoverCharsetAndRetry(PDO $pdo, string $sql, array $params, PDOException $firstError): \PDOStatement
+    {
+        $this->applyUtf8mb4(true);
+
+        $msg = $firstError->getMessage();
+        $driverCode = (int) ($firstError->errorInfo[1] ?? 0);
+        $legacyTarget = $driverCode === 1366
+            || (bool) preg_match('~into\s+(?:collation\s+)?(?:utf8mb3|utf8_|latin1)~i', $msg);
+
+        if ($legacyTarget && !$this->inTransaction()) {
+            $targetTable = self::extractWriteTable($sql);
+            if ($targetTable !== null) {
+                $this->convertTableToUtf8mb4($targetTable);
+            }
+        }
+
+        try {
+            return $this->prepareAndExecute($pdo, $sql, $params);
+        } catch (PDOException $secondError) {
+            $code2 = (int) ($secondError->errorInfo[1] ?? 0);
+            $is3988 = $code2 === 3988 || stripos($secondError->getMessage(), 'Conversion from collation') !== false;
+            if (!$is3988 || $this->emulatePrepares) {
+                throw $secondError;
+            }
+            // عقب‌نشینی امن به Emulated Prepares بعد از تثبیت SET NAMES utf8mb4
+            $this->applyUtf8mb4(true);
+            $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, true);
+            $this->emulatePrepares = true;
+            return $this->prepareAndExecute($pdo, $sql, $params);
+        }
+    }
+
+    /** استخراج نام جدول مقصد در INSERT/UPDATE (فقط شناسه‌های معتبر پروژه) */
+    private static function extractWriteTable(string $sql): ?string
+    {
+        if (preg_match('~^\s*(?:INSERT(?:\s+IGNORE)?\s+INTO|UPDATE)\s+`?([a-z0-9_]{1,64})`?\b~i', $sql, $m)) {
+            $table = strtolower($m[1]);
+            if ($table !== 'information_schema') {
+                return $table;
+            }
+        }
+        return null;
+    }
+
+    /** تبدیل امن یک جدول به utf8mb4_unicode_ci (فقط خارج از تراکنش) */
+    public function convertTableToUtf8mb4(string $table): bool
+    {
+        if ($this->isSqlite() || $this->inTransaction() || !preg_match('~^[a-z0-9_]{1,64}$~', $table)) {
+            return false;
+        }
+        try {
+            $this->pdo()->exec(sprintf(
+                'ALTER TABLE `%s` CONVERT TO CHARACTER SET %s COLLATE %s',
+                $table,
+                self::MYSQL_CHARSET,
+                self::MYSQL_COLLATION
+            ));
+            return true;
+        } catch (\Throwable $e) {
+            ErrorHandler::write('warning', 'تبدیل collation جدول ' . $table . ' ممکن نشد: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /** تنظیم پیش‌فرض دیتابیس به utf8mb4_unicode_ci (در صورت داشتن مجوز ALTER) */
+    public function ensureDatabaseUtf8mb4(): void
+    {
+        if ($this->isSqlite() || $this->inTransaction()) {
+            return;
+        }
+        $this->applyUtf8mb4(true);
+        $dbName = (string) ($this->config['database'] ?? '');
+        if ($dbName === '' || !preg_match('~^[A-Za-z0-9_$]{1,64}$~', $dbName)) {
+            return;
+        }
+        try {
+            $stmt = $this->pdo()->query('SELECT @@collation_database');
+            $collation = $stmt !== false ? (string) ($stmt->fetchColumn() ?: '') : '';
+            if ($collation !== '' && strtolower($collation) !== self::MYSQL_COLLATION) {
+                $safe = str_replace('`', '', $dbName);
+                $this->pdo()->exec(sprintf(
+                    'ALTER DATABASE `%s` CHARACTER SET %s COLLATE %s',
+                    $safe,
+                    self::MYSQL_CHARSET,
+                    self::MYSQL_COLLATION
+                ));
+            }
+        } catch (\Throwable) {
+            // روی هاست اشتراکی بدون مجوز ALTER DATABASE بی‌صدا رد می‌شود
+        }
+    }
+
+    /**
+     * یکسان‌سازی charset/collation جدول‌های خود پروژه به utf8mb4_unicode_ci.
+     * از SHOW TABLE STATUS استفاده می‌کند تا درگیر utf8mb3 بودن information_schema نشود
+     * و هرگز به جدول‌های متفرقه در دیتابیس مشترک دست نمی‌زند.
+     *
+     * @param string[] $appTables
+     */
+    public function ensureTablesUtf8mb4(array $appTables): void
+    {
+        if ($this->isSqlite() || $this->inTransaction() || $appTables === []) {
+            return;
+        }
+        $allowed = [];
+        foreach ($appTables as $t) {
+            if (is_string($t) && preg_match('~^[a-z0-9_]{1,64}$~', $t)) {
+                $allowed[strtolower($t)] = $t;
+            }
+        }
+        if ($allowed === []) {
+            return;
+        }
+
+        $toConvert = [];
+        $pdo = $this->pdo();
+        try {
+            $stmt = $pdo->query('SHOW TABLE STATUS');
+            $rows = $stmt !== false ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+            foreach ($rows as $row) {
+                $name = strtolower((string) ($row['Name'] ?? $row['name'] ?? ''));
+                // رد کردن VIEWها (در SHOW TABLE STATUS مقدار Engine و Collation برای VIEW تهی است)
+                $coll = strtolower((string) ($row['Collation'] ?? $row['collation'] ?? ''));
+                if ($name === '' || !isset($allowed[$name]) || $coll === '') {
+                    continue;
+                }
+                if ($coll !== self::MYSQL_COLLATION) {
+                    $toConvert[$name] = $allowed[$name];
+                    continue;
+                }
+                // بررسی ستون‌های متنی احتمالی که با utf8mb3/latin1 ساخته شده باشند
+                $colStmt = $pdo->query('SHOW FULL COLUMNS FROM ' . $this->quoteIdent($allowed[$name]));
+                $cols = $colStmt !== false ? $colStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+                foreach ($cols as $col) {
+                    $cColl = strtolower((string) ($col['Collation'] ?? $col['collation'] ?? ''));
+                    if ($cColl !== '' && !str_starts_with($cColl, 'utf8mb4_')) {
+                        $toConvert[$name] = $allowed[$name];
+                        break;
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            return;
+        }
+
+        if ($toConvert === []) {
+            return;
+        }
+
+        try {
+            $pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
+        } catch (\Throwable) {
+        }
+        try {
+            foreach ($toConvert as $table) {
+                $this->convertTableToUtf8mb4($table);
+            }
+        } finally {
+            try {
+                $pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
+            } catch (\Throwable) {
+            }
+        }
     }
 
     public function all(string $sql, array $params = []): array
@@ -227,8 +502,42 @@ final class Database
     }
 
     /**
+     * فهرست نام جدول‌های دیتابیس فعلی.
+     * در MySQL از SHOW FULL TABLES استفاده می‌شود (سریع روی هاست اشتراکی و بدون
+     * درگیری با collation ستون‌های utf8mb3 در information_schema).
+     *
+     * @return string[]
+     */
+    public function listTables(): array
+    {
+        try {
+            if ($this->isSqlite()) {
+                $rows = $this->column(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                );
+                return array_values(array_map('strval', $rows));
+            }
+            $stmt = $this->pdo()->query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'");
+            if ($stmt === false) {
+                return [];
+            }
+            $names = [];
+            while (($row = $stmt->fetch(PDO::FETCH_NUM)) !== false) {
+                if (isset($row[0]) && (string) $row[0] !== '') {
+                    $names[] = (string) $row[0];
+                }
+            }
+            sort($names, SORT_STRING);
+            return $names;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /**
      * آیا ایندکس با این نام روی این جدول وجود دارد؟
-     * (برای MySQL لازم است چون CREATE INDEX IF NOT EXISTS ندارد)
+     * از SHOW INDEX استفاده می‌شود تا هیچ پارامتر Prepared Statement با ستون‌های
+     * utf8mb3 در information_schema.statistics مقایسه نشود (رفع خطای 3988/1267).
      */
     public function indexExists(string $table, string $index): bool
     {
@@ -239,11 +548,20 @@ final class Database
                     ['i' => $index]
                 );
             }
-            return (bool) $this->value(
-                'SELECT index_name FROM information_schema.statistics
-                  WHERE table_schema = DATABASE() AND table_name = :t AND index_name = :i LIMIT 1',
-                ['t' => $table, 'i' => $index]
-            );
+            if (!preg_match('~^[A-Za-z0-9_]{1,64}$~', $table) || !preg_match('~^[A-Za-z0-9_]{1,64}$~', $index)) {
+                return false;
+            }
+            $stmt = $this->pdo()->query('SHOW INDEX FROM ' . $this->quoteIdent($table));
+            if ($stmt === false) {
+                return false;
+            }
+            while (($row = $stmt->fetch(PDO::FETCH_ASSOC)) !== false) {
+                $keyName = (string) ($row['Key_name'] ?? $row['key_name'] ?? '');
+                if ($keyName !== '' && strcasecmp($keyName, $index) === 0) {
+                    return true;
+                }
+            }
+            return false;
         } catch (\Throwable) {
             return false;
         }
@@ -258,10 +576,20 @@ final class Database
                     ['t' => $table]
                 );
             }
-            return (bool) $this->value(
-                'SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t',
-                ['t' => $table]
-            );
+            if (!preg_match('~^[A-Za-z0-9_]{1,64}$~', $table)) {
+                return false;
+            }
+            $like = str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $table);
+            $stmt = $this->pdo()->query('SHOW TABLES LIKE ' . $this->quote($like));
+            if ($stmt === false) {
+                return false;
+            }
+            while (($row = $stmt->fetch(PDO::FETCH_NUM)) !== false) {
+                if (isset($row[0]) && strcasecmp((string) $row[0], $table) === 0) {
+                    return true;
+                }
+            }
+            return false;
         } catch (\Throwable) {
             return false;
         }

@@ -133,15 +133,6 @@ final class BackupController extends AdminController
     /** فهرست جدول‌های دیتابیس */
     private function tables(Database $db): array
     {
-        try {
-            if ($db->isSqlite()) {
-                $rows = $db->all("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
-                return array_map(static fn($r) => (string) $r['name'], $rows);
-            }
-            $rows = $db->all('SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name');
-            return array_map(static fn($r) => (string) $r['name'], $rows);
-        } catch (\Throwable) {
-            return [];
-        }
+        return $db->listTables();
     }
 }

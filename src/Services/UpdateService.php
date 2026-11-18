@@ -1230,20 +1230,7 @@ final class UpdateService
     /** فهرست همهٔ جدول‌های دیتابیس (شامل migrations) */
     private function dbTables(): array
     {
-        try {
-            if ($this->db->isSqlite()) {
-                $rows = $this->db->column(
-                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-                );
-            } else {
-                $rows = $this->db->column(
-                    'SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name'
-                );
-            }
-            return array_values(array_map('strval', $rows));
-        } catch (\Throwable) {
-            return [];
-        }
+        return $this->db->listTables();
     }
 
     /**

@@ -381,10 +381,19 @@ final class InstallerController
             $root = $config('');
             $pdo = $root->pdo();
             $version = (string) $root->value('SELECT VERSION()');
-            $exists = (bool) $root->value(
-                'SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = :n',
-                ['n' => $in['name']]
-            );
+            // از SHOW DATABASES LIKE به‌جای information_schema.SCHEMATA استفاده
+            // می‌کنیم تا در MySQL 8 خطای 3988/1267 روی ستون utf8mb3 رخ ندهد.
+            $likeDb = str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], (string) $in['name']);
+            $dbStmt = $pdo->query('SHOW DATABASES LIKE ' . $root->quote($likeDb));
+            $exists = false;
+            if ($dbStmt !== false) {
+                while (($r = $dbStmt->fetch(\PDO::FETCH_NUM)) !== false) {
+                    if (isset($r[0]) && strcasecmp((string) $r[0], (string) $in['name']) === 0) {
+                        $exists = true;
+                        break;
+                    }
+                }
+            }
         } catch (\Throwable $e) {
             $serverError = $e;
         }
@@ -631,7 +640,7 @@ final class InstallerController
             json_out([
                 'ok' => true,
                 'message' => 'جداول با موفقیت ساخته شدند.',
-                'tables' => count($db->column("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()")),
+                'tables' => count($db->listTables()),
                 'applied' => $result['applied'],
             ]);
         } catch (\Throwable $e) {
