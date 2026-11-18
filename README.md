@@ -278,6 +278,7 @@ storage/         لاگ‌ها، پشتیبان‌ها، فایل قفل نصب
 
 ## مستندات
 
+- [`docs/HOSTING.md`](docs/HOSTING.md) — **چه هاستی بخرم؟** (cPanel یا DirectAdmin، تست روی گوشی)
 - [`docs/INSTALL.md`](docs/INSTALL.md) — نصب گام‌به‌گام
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — معماری و طراحی دیتابیس
 - [`docs/ADMIN-GUIDE.md`](docs/ADMIN-GUIDE.md) — راهنمای پنل مدیریت
