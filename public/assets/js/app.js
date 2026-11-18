@@ -71,15 +71,19 @@
   RB.request = async function (url, options) {
     options = options || {};
     const token = RB.csrf();
-    const isFormData = options.body instanceof FormData;
-    const baseHeaders = isFormData
-      ? { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json', 'X-CSRF-Token': token }
-      : { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json', 'X-CSRF-Token': token };
-    const headers = Object.assign(baseHeaders, options.headers || {});
+    const isFormData = (typeof FormData !== 'undefined') && (options.body instanceof FormData);
+    const isUrlParams = (typeof URLSearchParams !== 'undefined') && (options.body instanceof URLSearchParams);
+    const headers = Object.assign(
+      { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json', 'X-CSRF-Token': token },
+      options.headers || {}
+    );
     if (isFormData) {
       // برای FormData هرگز Content-Type دستی ست نمی‌شود تا مرورگر boundary صحیح multipart را بگذارد
       delete headers['Content-Type'];
       delete headers['content-type'];
+    } else if (isUrlParams) {
+      headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+      options.body = options.body.toString();
     } else if (options.body !== undefined && options.body !== null) {
       headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(options.body);
@@ -257,8 +261,12 @@
       if (!formData.has('_csrf')) { formData.append('_csrf', RB.csrf()); }
       payload = formData;
     } else {
-      payload = {};
-      formData.forEach((value, key) => { if (key !== '_csrf') payload[key] = value; });
+      // ارسال استاندارد فرم تا PHP آرایه‌ها (levels[1][percent]، menus[1][title])
+      // و چک‌باکس‌های چندگانه (conditions[]) و فیلدهای $_POST را کامل بسازد
+      const params = new URLSearchParams();
+      formData.forEach((value, key) => { params.append(key, String(value)); });
+      if (!params.has('_csrf')) { params.append('_csrf', RB.csrf()); }
+      payload = params;
     }
 
     const result = await RB.post(form.getAttribute('action') || window.location.pathname, payload);

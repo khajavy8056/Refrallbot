@@ -148,7 +148,7 @@ final class Request
         if (str_contains($accept, 'application/json')) {
             return true;
         }
-        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
+        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ($_SERVER['HTTP_CONTENT_TYPE'] ?? '')));
         if (str_contains($contentType, 'json')) {
             return true;
         }
@@ -211,7 +211,7 @@ final class Request
         // فقط وقتی به‌عنوان JSON تفسیر می‌کنیم که هدر Content-Type این را بگوید
         // یا بدنه شبیه JSON باشد. (multipart/form-data و x-www-form-urlencoded
         // توسط PHP در $_POST پر می‌شوند و نباید دوباره پارس شوند.)
-        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
+        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ($_SERVER['HTTP_CONTENT_TYPE'] ?? '')));
         $looksJson = str_starts_with(ltrim($raw), '{') || str_starts_with(ltrim($raw), '[');
         if (!str_contains($contentType, 'json') && !($contentType === '' && $looksJson)) {
             return null;
@@ -224,6 +224,83 @@ final class Request
         }
         self::$jsonCache = $data;
         return $data;
+    }
+
+    /**
+     * همگام‌سازی بدنهٔ JSON با $_POST برای کنترلرهای پنل مدیریت و Mini App.
+     *
+     * وقتی فرانت‌اند (مثل RB.post یا miniapp.js یا نسخهٔ کش‌شدهٔ app.js) داده‌ها
+     * را با Content-Type: application/json بفرستد، PHP به‌صورت خودکار $_POST را
+     * پر نمی‌کند و تمام کنترلرهایی که $_POST می‌خوانند مقدار خالی می‌گیرند
+     * (مثلاً «توکن ربات را وارد کنید»). این متد $_POST را از JSON پر می‌کند و
+     * نام‌های براکت‌دار فرم (مثل levels[1][percent] و menus[2][title] و conditions[])
+     * را هم به آرایهٔ استاندارد PHP تبدیل می‌کند.
+     */
+    public static function hydratePostFromJson(): void
+    {
+        if ($_POST !== [] || !in_array(self::method(), ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+            return;
+        }
+        $json = self::json();
+        if ($json === []) {
+            return;
+        }
+        $_POST = self::expandBracketKeys($json);
+    }
+
+    /**
+     * تبدیل کلیدهای براکت‌دار HTML (مثل a[b][c] یا items[]) به آرایهٔ تودرتو
+     *
+     * @param array<string|int,mixed> $data
+     * @return array<string|int,mixed>
+     */
+    public static function expandBracketKeys(array $data): array
+    {
+        $out = [];
+        foreach ($data as $key => $value) {
+            if (!is_string($key) || !str_contains($key, '[')
+                || !preg_match('~^([^\[\]]+)((?:\[[^\[\]]*\]){1,6})$~', $key, $m)) {
+                $out[$key] = $value;
+                continue;
+            }
+            $root = $m[1];
+            preg_match_all('~\[([^\[\]]*)\]~', $m[2], $sm);
+            $segments = $sm[1];
+            if (!isset($out[$root]) || !is_array($out[$root])) {
+                $out[$root] = [];
+            }
+            $cursor = &$out[$root];
+            $lastIdx = count($segments) - 1;
+            foreach ($segments as $idx => $seg) {
+                $isLast = $idx === $lastIdx;
+                if ($seg === '') {
+                    if ($isLast) {
+                        if (is_array($value)) {
+                            foreach ($value as $item) {
+                                $cursor[] = $item;
+                            }
+                        } else {
+                            $cursor[] = $value;
+                        }
+                    } else {
+                        $cursor[] = [];
+                        $newKey = array_key_last($cursor);
+                        $cursor = &$cursor[$newKey];
+                    }
+                } else {
+                    if ($isLast) {
+                        $cursor[$seg] = $value;
+                    } else {
+                        if (!isset($cursor[$seg]) || !is_array($cursor[$seg])) {
+                            $cursor[$seg] = [];
+                        }
+                        $cursor = &$cursor[$seg];
+                    }
+                }
+            }
+            unset($cursor);
+        }
+        return $out;
     }
 
     /**
@@ -243,7 +320,7 @@ final class Request
     {
         $json = self::json();
         if ($json !== []) {
-            return $json;
+            return self::expandBracketKeys($json);
         }
         if ($_POST !== []) {
             return $_POST;

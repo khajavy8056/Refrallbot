@@ -59,12 +59,14 @@ final class TelegramController extends AdminController
 
     public function saveToken(): void
     {
-        $token = trim((string) ($_POST['bot_token'] ?? ''));
+        // حذف فاصله‌ها و کاراکترهای نامرئی جهت‌دهی (LRM/RLM/BOM) هنگام کپی از BotFather
+        $rawToken = Request::string('bot_token', '');
+        $token = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', $rawToken) ?? trim($rawToken));
         if ($token === '') {
             $this->fail('توکن ربات را وارد کنید.');
             return;
         }
-        if (!preg_match('~^\d{6,12}:[A-Za-z0-9_-]{30,50}$~', $token)) {
+        if (!preg_match('~^\d{6,15}:[A-Za-z0-9_-]{25,80}$~', $token)) {
             $this->fail('قالب توکن معتبر نیست. توکن باید شبیه 123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxx باشد.');
             return;
         }
@@ -80,7 +82,7 @@ final class TelegramController extends AdminController
             $bot = $result['bot'];
 
             // ذخیره آدرس Webhook و Mini App پیشنهادی
-            $base = rtrim((string) ($_POST['base_url'] ?? ''), '/');
+            $base = rtrim(Request::string('base_url', ''), '/');
             if ($base !== '') {
                 if (!preg_match('~^https?://~i', $base)) {
                     $base = 'https://' . $base;
@@ -197,7 +199,7 @@ final class TelegramController extends AdminController
             $this->fail('ابتدا توکن ربات را ذخیره کنید.');
             return;
         }
-        $url = trim((string) ($_POST['webhook_url'] ?? ''));
+        $url = Request::string('webhook_url', '');
         if ($url === '') {
             $url = $tg->suggestedWebhookUrl();
         }
@@ -452,8 +454,9 @@ final class TelegramController extends AdminController
     public function saveMenus(): void
     {
         $db = db();
-        $items = $_POST['menus'] ?? [];
-        if (!is_array($items)) {
+        $rawMenus = Request::field('menus', []);
+        $items = is_array($rawMenus) ? $rawMenus : [];
+        if ($items === []) {
             $this->fail('داده نامعتبر است.');
             return;
         }

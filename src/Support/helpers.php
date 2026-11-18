@@ -52,7 +52,16 @@ if (!function_exists('url')) {
 if (!function_exists('asset')) {
     function asset(string $path): string
     {
-        return url('assets/' . ltrim($path, '/'));
+        $clean = ltrim($path, '/');
+        $base = url('assets/' . $clean);
+        if (str_ends_with($clean, '.js') || str_ends_with($clean, '.css')) {
+            $file = RB_ROOT . '/public/assets/' . $clean;
+            $mtime = is_file($file) ? @filemtime($file) : false;
+            if ($mtime !== false && $mtime > 0) {
+                return $base . '?v=' . $mtime;
+            }
+        }
+        return $base;
     }
 }
 
@@ -179,6 +188,6 @@ if (!function_exists('request_is_post')) {
 if (!function_exists('input')) {
     function input(string $key, mixed $default = null): mixed
     {
-        return $_POST[$key] ?? $_GET[$key] ?? $default;
+        return \RB\Support\Request::field($key, $default);
     }
 }

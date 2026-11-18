@@ -80,7 +80,7 @@ $webhookActive = !empty($settings['webhook_active']);
                     <label class="form-label">آدرس پایه سامانه (اختیاری)</label>
                     <input type="text" name="base_url" class="form-control ltr" dir="ltr"
                            placeholder="<?= e(\RB\Support\Request::origin()) ?>"
-                           value="<?= e((string) ($settings['webhook_base_url'] ?? '')) ?>">
+                           value="<?= e((string) (setting('webhook_base_url', '') ?: '')) ?>">
                     <div class="form-hint">برای ساخت خودکار آدرس Webhook و لینک Mini App استفاده می‌شود. باید با HTTPS در دسترس عموم باشد.</div>
                 </div>
             </div>
