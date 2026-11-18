@@ -219,9 +219,16 @@ final class TableDefinition
     {
         $parts = [];
         foreach ($this->columns as $name => $definition) {
-            if (!in_array($name, $this->primary, true) || $this->driver === 'sqlite' && $name === 'id') {
-                $parts[] = '`' . $name . '` ' . $definition;
-            }
+            // همهٔ ستون‌ها باید در CREATE TABLE بیایند.
+            //
+            // باگ قبلی: ستون‌هایی که در PRIMARY KEY بودند (یعنی همیشه `id`)
+            // از تعریف جدول حذف می‌شدند، در حالی که MySQL نوع id را
+            // «BIGINT UNSIGNED NOT NULL AUTO_INCREMENT» می‌سازد و کلید اصلی را
+            // جداگانه با PRIMARY KEY (`id`) اعلام می‌کند. نتیجه: خطای 1072
+            // («Key column 'id' doesn't exist in table») و شکست ساخت همهٔ
+            // جدول‌ها روی MySQL. در SQLite اتفاقی نمی‌افتاد چون نوع id خودش
+            // شامل PRIMARY KEY است.
+            $parts[] = '`' . $name . '` ' . $definition;
         }
         if ($this->driver === 'mysql' && $this->primary) {
             $parts[] = 'PRIMARY KEY (`' . implode('`, `', $this->primary) . '`)';

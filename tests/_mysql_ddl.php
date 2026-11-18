@@ -49,7 +49,38 @@ foreach ($statements as $sql) {
 
 T::eq([], $badIndex, 'هیچ «CREATE INDEX IF NOT EXISTS» در MySQL استفاده نمی‌شود');
 
-// ---- سه: ترتیب ساخت جدول‌ها
+// ---- سه: هر جدول باید ستون id داشته باشد (باگ ۱۰۷۲ MySQL)
+$missingId = [];
+foreach ($order as $sql) {
+    preg_match('~CREATE TABLE(?: IF NOT EXISTS)? `([^`]+)`~i', $sql, $m);
+    $table = $m[1] ?? '?';
+    if (!preg_match('~^\s+`id`\s+BIGINT UNSIGNED NOT NULL AUTO_INCREMENT~mi', $sql)) {
+        $missingId[] = $table . ' (ستون id نیست)';
+    }
+    if (stripos($sql, 'PRIMARY KEY (`id`)') === false) {
+        $missingId[] = $table . ' (PRIMARY KEY (id) نیست)';
+    }
+}
+T::eq([], $missingId, 'همهٔ جدول‌ها ستون id با AUTO_INCREMENT و PRIMARY KEY دارند (جلوگیری از خطای 1072)');
+
+// ---- دو: ON DELETE SET NULL روی ستون NOT NULL (خطای 1830 MySQL)
+$setNullOnNotNull = [];
+foreach ($order as $sql) {
+    preg_match('~CREATE TABLE(?: IF NOT EXISTS)? `([^`]+)`~i', $sql, $m);
+    $table = $m[1] ?? '?';
+    preg_match_all('~`([a-z_]+)` BIGINT UNSIGNED NOT NULL~i', $sql, $nn);
+    $notNull = $nn[1];
+    if (preg_match_all('~FOREIGN KEY \(`([^`]+)`\)[^\n]*ON DELETE SET NULL~i', $sql, $fks)) {
+        foreach ($fks[1] as $column) {
+            if (in_array($column, $notNull, true)) {
+                $setNullOnNotNull[] = $table . '.' . $column;
+            }
+        }
+    }
+}
+T::eq([], $setNullOnNotNull, 'هیچ کلید خارجی «SET NULL» روی ستون NOT NULL نیست (خطای 1830 MySQL)');
+
+// ---- چهار: ترتیب ساخت جدول‌ها
 $tableNames = [];
 foreach ($order as $sql) {
     if (preg_match('~CREATE TABLE(?: IF NOT EXISTS)? `([^`]+)`~i', $sql, $m)) {
@@ -73,35 +104,48 @@ foreach ($order as $sql) {
 }
 T::eq([], $badFk, 'همهٔ کلیدهای خارجی به جدول‌های قبلاً ساخته‌شده اشاره می‌کنند');
 
-// ---- دو: SET NULL روی ستون NOT NULL
-$setNullOnNotNull = [];
-foreach ($order as $sql) {
-    preg_match('~CREATE TABLE(?: IF NOT EXISTS)? `([^`]+)`~i', $sql, $m);
-    $table = $m[1] ?? '?';
-    preg_match_all('~`([a-z_]+)` BIGINT UNSIGNED NOT NULL~i', $sql, $nn);
-    $notNull = $nn[1];
-    if (preg_match_all('~FOREIGN KEY \(`([^`]+)`\)[^\n]*ON DELETE SET NULL~i', $sql, $fks)) {
-        foreach ($fks[1] as $column) {
-            if (in_array($column, $notNull, true)) {
-                $setNullOnNotNull[] = $table . '.' . $column;
-            }
-        }
-    }
-}
-T::eq([], $setNullOnNotNull, 'هیچ کلید خارجی «SET NULL» روی ستون NOT NULL نیست (خطای 1830 MySQL)');
-
-// ---- چهار: استفاده از دستورات سازگار
+// ---- پنج: استفاده از دستورات سازگار
 $sqlAll = implode("\n", $statements);
 T::ok(stripos($sqlAll, 'AUTOINCREMENT') === false, 'هیچ AUTOINCREMENT مخصوص SQLite در DDL مای‌اس‌کیوال نیست');
 T::ok(stripos($sqlAll, 'PRAGMA') === false, 'هیچ PRAGMA مخصوص SQLite در DDL مای‌اس‌کیوال نیست');
 T::ok(substr_count($sqlAll, 'ENGINE=InnoDB') >= count($order), 'همهٔ جدول‌ها با ENGINE=InnoDB و utf8mb4 ساخته می‌شوند');
 
-// ---- پنج: ایندکس existence-check قابل تشخیص باشد (Migrator به آن وابسته است)
+// ---- شش: ایندکس existence-check قابل تشخیص باشد (Migrator به آن وابسته است)
 $probe = 'CREATE INDEX `idx_test` ON `users` (`id`)';
 T::ok(
     (bool) preg_match('~^CREATE\s+(?:UNIQUE\s+)?INDEX\s+`([^`]+)`\s+ON\s+`([^`]+)`~i', $probe, $m)
     && $m[1] === 'idx_test' && $m[2] === 'users',
     'الگوی تشخیص ایندکس در Migrator با DDL تولیدی می‌خواند'
 );
+
+// ---- هفت: کلمات رزروشدهٔ MySQL نباید بدون backtick در کوئری‌ها بیایند
+//
+// باگ واقعی: 'SELECT key, value FROM system_settings' در MySQL خطای سینتکس
+// می‌داد و چون داخل try/catch بود، همهٔ تنظیمات بی‌صدا خالی می‌شدند
+// (نام سامانه، کمیسیون‌ها، توکن کرون، حداقل برداشت...).
+$reservedWords = ['key', 'rank', 'keys', 'groups', 'system', 'range'];
+$sqlFiles = array_merge(
+    glob(dirname(__DIR__) . '/src/*.php') ?: [],
+    glob(dirname(__DIR__) . '/src/*/*.php') ?: [],
+    glob(dirname(__DIR__) . '/src/*/*/*.php') ?: []
+);
+$unquoted = [];
+foreach ($sqlFiles as $file) {
+    foreach (preg_split('~\n~', (string) file_get_contents($file)) as $no => $line) {
+        if (!preg_match('~\b(SELECT|INSERT INTO|UPDATE|DELETE FROM)\b~i', $line)) {
+            continue;
+        }
+        if (preg_match('~\b(PRIMARY|FOREIGN|UNIQUE)\s+KEY\b~i', $line)) {
+            continue;
+        }
+        foreach ($reservedWords as $word) {
+            if (preg_match('~(?<![\w`.:$])\b' . $word . '\b(?![\w`])~i', $line)
+                && !preg_match('~`' . $word . '`~i', $line)) {
+                $unquoted[] = basename($file) . ':' . ($no + 1) . ' → ' . trim($line);
+            }
+        }
+    }
+}
+T::eq([], $unquoted, 'ستون‌های هم‌نام با کلمات رزروشدهٔ MySQL با backtick نوشته می‌شوند');
 
 exit(T::summary());

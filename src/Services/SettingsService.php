@@ -18,7 +18,10 @@ final class SettingsService
             return self::$cache;
         }
         try {
-            $rows = Database::instance()->all('SELECT key, value FROM system_settings');
+            // `key` در MySQL کلمهٔ رزروشده است و بدون backtick خطای سینتکس
+            // می‌دهد؛ چون خطا در catch بلعیده می‌شد، همهٔ تنظیمات بی‌صدا خالی
+            // می‌شدند (نام سامانه، کمیسیون‌ها، توکن کرون، حداقل برداشت...).
+            $rows = Database::instance()->all('SELECT `key`, `value` FROM system_settings');
         } catch (\Throwable) {
             return self::$cache = [];
         }

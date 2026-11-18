@@ -88,8 +88,18 @@ final class Database
                     $this->config['database']
                 );
                 $this->pdo = new PDO($dsn, $this->config['username'], $this->config['password'], $options);
-                $this->pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
-                $this->pdo->exec("SET sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'");
+                // charset در DSN تنظیم شده؛ SET NAMES فقط برای اطمینان از
+                // collation است و اگر هاست اجازه نداد نباید اتصال را بشکند.
+
+                // تنظیم sql_mode نباید هرگز اتصال را بشکند. بعضی هاست‌های
+                // اشتراکی اجازهٔ تغییر SESSION sql_mode را نمی‌دهند و خطای
+                // «Access denied» می‌دهند؛ در آن حالت به تنظیمات پیش‌فرض
+                // سرور تکیه می‌کنیم (کد ما با ONLY_FULL_GROUP_BY هم سازگار است).
+                try {
+                    $this->pdo->exec("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'");
+                } catch (\PDOException $e) {
+                    ErrorHandler::write('warning', 'sql_mode تنظیم نشد (بی‌خطر): ' . $e->getMessage());
+                }
             }
         } catch (PDOException $e) {
             throw new RuntimeException('اتصال به پایگاه داده ناموفق بود: ' . ErrorHandler::redact($e->getMessage()), 0, $e);
@@ -181,6 +191,9 @@ final class Database
             $conditions[] = $this->quoteIdent($column) . ' = :u' . $i;
             $params['u' . $i] = $data[$column] ?? null;
         }
+        // مسابقهٔ همزمانی: در MySQL دو درخواست هم‌زمان می‌توانند هر دو «وجود
+        // ندارد» ببینند و دومی خطای Duplicate key بدهد. برای اینکه رفتار
+        // «درج بی‌صدا» تضمین شود، خطای 1062 را می‌بلعیم و false برمی‌گردانیم.
         $existing = $this->value(
             'SELECT 1 FROM ' . $this->quoteIdent($table) . ' WHERE ' . implode(' AND ', $conditions) . ' LIMIT 1',
             $params
@@ -188,7 +201,15 @@ final class Database
         if ($existing !== null) {
             return false;
         }
-        $this->insert($table, $data);
+        try {
+            $this->insert($table, $data);
+        } catch (\PDOException $e) {
+            // 23000 = نقض قید یکتایی (هم در MySQL و هم SQLite)
+            if (($e->getCode() === '23000' || (int) ($e->errorInfo[1] ?? 0) === 1062)) {
+                return false;
+            }
+            throw $e;
+        }
         return true;
     }
 
