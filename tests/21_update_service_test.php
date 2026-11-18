@@ -99,8 +99,8 @@ $makePackageZip = static function (
 $svc = new UpdateService($db, $copyTarget, $storageTarget);
 
 // ---------------------------------------------------------------- ۱) VERSION و ALLOWED_PATHS (اصلاح ۱)
-T::eq('1.1.0', trim((string) file_get_contents(RB_ROOT . '/VERSION')), 'فایل VERSION پروژه برابر 1.1.0 است');
-T::eq('1.1.0', RB_VERSION, 'ثابت RB_VERSION از فایل VERSION مقدار 1.1.0 گرفته است');
+T::ok(UpdateService::isValidVersion(trim((string) file_get_contents(RB_ROOT . '/VERSION'))), 'فایل VERSION پروژه نسخهٔ استاندارد X.Y.Z دارد');
+T::eq(trim((string) file_get_contents(RB_ROOT . '/VERSION')), RB_VERSION, 'ثابت RB_VERSION دقیقاً مطابق فایل VERSION است');
 T::ok(in_array('VERSION', UpdateService::ALLOWED_PATHS, true), 'VERSION در UpdateService::ALLOWED_PATHS قرار دارد');
 T::ok(in_array('README.md', UpdateService::ALLOWED_PATHS, true), 'README.md در UpdateService::ALLOWED_PATHS قرار دارد');
 T::ok(UpdateService::isAllowedPath('VERSION') && UpdateService::isAllowedPath('src/bootstrap.php'), 'مسیرهای مجاز تأیید می‌شوند');

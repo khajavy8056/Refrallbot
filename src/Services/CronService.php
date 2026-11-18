@@ -104,10 +104,22 @@ final class CronService
                 }
                 $file = $dir . '/refrallbot-db-' . date('Ymd') . '.sql';
                 if (!is_file($file)) {
-                    $handle = fopen($file, 'wb');
+                    $handle = @fopen($file, 'wb');
                     if ($handle !== false) {
                         fwrite($handle, '-- RefrallBot automatic backup ' . date('c') . "\n");
+                        fwrite($handle, '-- driver: ' . $db->driver() . "\n\n");
+                        foreach ($db->listTables() as $table) {
+                            $qTable = $db->quoteIdent($table);
+                            $rows = $db->all('SELECT * FROM ' . $qTable);
+                            fwrite($handle, "\n-- table: {$table} (" . count($rows) . " rows)\n");
+                            foreach ($rows as $row) {
+                                $cols = array_map([$db, 'quoteIdent'], array_keys($row));
+                                $vals = array_map(static fn(mixed $v): string => $v === null ? 'NULL' : $db->quote((string) $v), array_values($row));
+                                fwrite($handle, 'INSERT INTO ' . $qTable . ' (' . implode(', ', $cols) . ') VALUES (' . implode(', ', $vals) . ");\n");
+                            }
+                        }
                         fclose($handle);
+                        @chmod($file, 0640);
                         $emit('پشتیبان روزانه ساخته شد: ' . basename($file));
                     }
                 }

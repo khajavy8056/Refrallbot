@@ -82,15 +82,23 @@ final class TelegramController extends AdminController
             $bot = $result['bot'];
 
             // ذخیره آدرس Webhook و Mini App پیشنهادی
-            $base = rtrim(Request::string('base_url', ''), '/');
+            $rawBase = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', Request::string('base_url', '')) ?? '');
+            $base = rtrim($rawBase, '/');
             if ($base !== '') {
                 if (!preg_match('~^https?://~i', $base)) {
                     $base = 'https://' . $base;
                 }
+                // اگر کاربر به اشتباه /webhook/telegram یا زیرپوشهٔ app.base_path را هم چسبانده بود، دو بار تکرار نشود
+                $base = (string) (preg_replace('~/webhook/telegram$~i', '', $base) ?? $base);
+                $appBasePath = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+                if ($appBasePath !== '' && str_ends_with($base, $appBasePath)) {
+                    $base = substr($base, 0, -strlen($appBasePath));
+                }
+                $base = rtrim($base, '/');
                 SettingsService::set('webhook_base_url', $base, 'telegram');
                 SettingsService::set('panel_url', $base, 'telegram');
                 // تلگرام Mini App را فقط روی https می‌پذیرد
-                if (str_starts_with($base, 'https://')) {
+                if (str_starts_with(strtolower($base), 'https://')) {
                     SettingsService::set('miniapp_url', $base . url('app'), 'telegram');
                 }
             }
@@ -199,7 +207,8 @@ final class TelegramController extends AdminController
             $this->fail('ابتدا توکن ربات را ذخیره کنید.');
             return;
         }
-        $url = Request::string('webhook_url', '');
+        $rawUrl = Request::string('webhook_url', '');
+        $url = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', $rawUrl) ?? trim($rawUrl));
         if ($url === '') {
             $url = $tg->suggestedWebhookUrl();
         }

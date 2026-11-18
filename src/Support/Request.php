@@ -30,10 +30,18 @@ final class Request
         if (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') {
             return true;
         }
-        if (($_SERVER['SERVER_PORT'] ?? '') === '443') {
+        if ((string) ($_SERVER['SERVER_PORT'] ?? '') === '443') {
             return true;
         }
-        if (strtolower((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https') {
+        $proto = strtolower(trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))[0]));
+        if ($proto === 'https') {
+            return true;
+        }
+        if (strtolower((string) ($_SERVER['HTTP_X_FORWARDED_SSL'] ?? '')) === 'on') {
+            return true;
+        }
+        $cfVisitor = (string) ($_SERVER['HTTP_CF_VISITOR'] ?? '');
+        if ($cfVisitor !== '' && str_contains(strtolower($cfVisitor), '"https"')) {
             return true;
         }
         return false;
@@ -199,7 +207,7 @@ final class Request
         self::$jsonCache = null;
         self::$jsonInvalid = false;
 
-        if (self::method() !== 'POST' && self::method() !== 'PUT' && self::method() !== 'PATCH') {
+        if (!in_array(self::method(), ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
             return null;
         }
 

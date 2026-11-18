@@ -28,22 +28,33 @@ final class ChannelController extends AdminController
     public function save(): void
     {
         $db = Database::instance();
-        $id = (int) ($_POST['id'] ?? 0);
+        $id = (int) en_digits((string) ($_POST['id'] ?? '0'));
         $title = trim((string) ($_POST['title'] ?? ''));
-        $chatId = trim((string) ($_POST['chat_id'] ?? ''));
-        $invite = trim((string) ($_POST['invite_link'] ?? ''));
-        $order = (int) ($_POST['sort_order'] ?? 0);
+        $stripInvis = static fn(string $s): string => (string) (preg_replace('~[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', trim($s)) ?? trim($s));
+        $chatId = en_digits($stripInvis((string) ($_POST['chat_id'] ?? '')));
+        $invite = $stripInvis((string) ($_POST['invite_link'] ?? ''));
+        $order = (int) en_digits((string) ($_POST['sort_order'] ?? '0'));
         $active = !empty($_POST['is_active']);
+
+        // اگر مدیر لینک عمومی کانال (https://t.me/channel) را در فیلد شناسه وارد کرد، خودکار به @channel تبدیل شود
+        if (preg_match('~^(?:https?://)?(?:t|telegram)\.me/([A-Za-z0-9_]{4,32})/?$~i', $chatId, $cm)) {
+            $chatId = '@' . $cm[1];
+        } elseif (preg_match('~^[A-Za-z][A-Za-z0-9_]{3,31}$~', $chatId)) {
+            $chatId = '@' . $chatId;
+        }
+        if (str_starts_with($invite, 't.me/')) {
+            $invite = 'https://' . $invite;
+        }
 
         if ($title === '' || $chatId === '') {
             $this->back(null, 'عنوان و شناسه کانال الزامی است.');
             return;
         }
-        if (!preg_match('~^(@[A-Za-z0-9_]{4,32}|-100\d{6,15})$~', $chatId)) {
+        if (!preg_match('~^(@[A-Za-z0-9_]{4,32}|-100\d{6,16})$~', $chatId)) {
             $this->back(null, 'شناسه کانال باید با @ شروع شود (کانال عمومی) یا شناسه عددی -100... باشد.');
             return;
         }
-        if ($invite !== '' && !preg_match('~^https://t\.me/~', $invite)) {
+        if ($invite !== '' && !preg_match('~^https://(?:t|telegram)\.me/~i', $invite)) {
             $this->back(null, 'لینک دعوت باید با https://t.me/ شروع شود.');
             return;
         }

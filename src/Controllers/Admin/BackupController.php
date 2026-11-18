@@ -31,7 +31,7 @@ final class BackupController extends AdminController
             return;
         }
         $files = [];
-        foreach (glob($this->dir() . '/*') ?: [] as $path) {
+        foreach (glob($this->dir() . '/*.sql') ?: [] as $path) {
             if (!is_file($path)) {
                 continue;
             }
@@ -79,18 +79,18 @@ final class BackupController extends AdminController
             fwrite($handle, '-- tables: ' . count($this->tables($db)) . "\n\n");
 
             foreach ($this->tables($db) as $table) {
-                $rows = $db->all('SELECT * FROM ' . $this->quote($table, $driver));
+                $quotedTable = $this->quote($table, $driver);
+                $rows = $db->all('SELECT * FROM ' . $quotedTable);
                 fwrite($handle, "\n-- table: {$table} (" . count($rows) . " rows)\n");
                 foreach ($rows as $row) {
-                    $columns = array_map(static fn($c) => $this->quote($c, $driver), array_keys($row));
+                    $columns = array_map(fn($c) => $this->quote((string) $c, $driver), array_keys($row));
                     $values = array_map(static function ($v) use ($db): string {
                         if ($v === null) {
                             return 'NULL';
                         }
-                        $quoted = $db->quote((string) $v);
-                        return $quoted;
+                        return $db->quote((string) $v);
                     }, array_values($row));
-                    fwrite($handle, 'INSERT INTO ' . $this->quote($table, $driver)
+                    fwrite($handle, 'INSERT INTO ' . $quotedTable
                         . ' (' . implode(', ', $columns) . ') VALUES (' . implode(', ', $values) . ");\n");
                 }
             }

@@ -7,6 +7,15 @@
   const RB = window.RB = window.RB || {};
 
   /* ------------------------------ ابزارها ------------------------------ */
+  RB.enNum = function (value) {
+    const map = {
+      '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+      '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'
+    };
+    return String(value === null || value === undefined ? '' : value)
+      .replace(/[۰-۹٠-٩]/g, d => map[d] || d);
+  };
+
   RB.faNum = function (value) {
     const fa = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
     return String(value === null || value === undefined ? '' : value)
@@ -249,11 +258,13 @@
     const form = e.target;
     if (!form.hasAttribute('data-ajax')) return;
     e.preventDefault();
-    const btn = form.querySelector('[type=submit]');
+    const btn = (e.submitter && e.submitter.type === 'submit') ? e.submitter : form.querySelector('[type=submit]');
     const original = btn ? btn.innerHTML : '';
     if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px"></span>'; }
 
-    const formData = new FormData(form);
+    let formData;
+    try { formData = e.submitter ? new FormData(form, e.submitter) : new FormData(form); }
+    catch (_) { formData = new FormData(form); }
     const isMultipart = (form.getAttribute('enctype') || '').toLowerCase() === 'multipart/form-data'
       || form.querySelector('input[type="file"]') !== null;
     let payload;
@@ -562,12 +573,12 @@
   document.addEventListener('input', function (e) {
     const el = e.target;
     if (el.hasAttribute && el.hasAttribute('data-money')) {
-      const raw = el.value.replace(/[^\d]/g, '');
+      const raw = RB.enNum(el.value).replace(/[^\d]/g, '');
       el.value = raw ? Number(raw).toLocaleString('en-US') : '';
     }
   });
 
   RB.unformatMoney = function (value) {
-    return String(value).replace(/[^\d]/g, '');
+    return RB.enNum(value).replace(/[^\d]/g, '');
   };
 })();

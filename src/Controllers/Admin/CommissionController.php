@@ -37,13 +37,22 @@ final class CommissionController extends AdminController
     {
         $levels = [];
         $postedLevels = $_POST['levels'] ?? [];
-        $maxLevels = max(1, min(8, (int) ($_POST['max_levels'] ?? 1)));
+        $maxLevels = max(1, min(8, (int) en_digits((string) ($_POST['max_levels'] ?? '1'))));
         // فقط لایه‌های داخل محدوده انتخاب‌شده ذخیره می‌شوند
         for ($level = 1; $level <= 8; $level++) {
-            $percent = trim((string) ($postedLevels[$level]['percent'] ?? '0'));
+            $rawPercent = trim(en_digits((string) ($postedLevels[$level]['percent'] ?? '0')));
+            $percent = str_replace(['٪', '%', ' ', '٬', '،', ','], '', str_replace('٫', '.', $rawPercent));
+            if ($percent === '') {
+                $percent = '0';
+            }
             $enabled = !empty($postedLevels[$level]['enabled']) && $level <= $maxLevels;
             if (!is_numeric($percent) || (float) $percent < 0 || (float) $percent > 100) {
-                $this->flash('error', 'درصد لایه ' . $level . ' نامعتبر است.');
+                $errMsg = 'درصد لایه ' . fa_digits($level) . ' نامعتبر است.';
+                if ($this->wantsJson()) {
+                    $this->fail($errMsg);
+                    return;
+                }
+                $this->flash('error', $errMsg);
                 Request::redirect(url('admin/commissions'));
                 return;
             }
@@ -70,6 +79,10 @@ final class CommissionController extends AdminController
 
         [$valid, $errors] = CommissionSettingsService::validate($data);
         if (!$valid) {
+            if ($this->wantsJson()) {
+                $this->fail(implode(' ', $errors), 422, ['errors' => $errors]);
+                return;
+            }
             $this->flash('error', implode(' ', $errors));
             Request::redirect(url('admin/commissions'));
             return;

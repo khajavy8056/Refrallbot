@@ -16,14 +16,14 @@ $totalTargets = array_sum($counts);
     <span class="alert-icon">⏱</span>
     <div>
         ارسال به‌صورت دسته‌ای و با تأخیر انجام می‌شود تا تلگرام محدودیت نگذارد.
-        برای اجرای واقعی، Cron را تنظیم کنید: <span class="ltr mono text-xs">*/2 * * * * php <?= e(dirname(RB_ROOT)) ?>/bin/cron.php</span>
+        برای اجرای واقعی، Cron را تنظیم کنید: <span class="ltr mono text-xs">*/2 * * * * php <?= e(RB_ROOT) ?>/bin/cron.php</span>
     </div>
 </div>
 
 <div class="grid-2 mb-3">
     <div class="card">
         <div class="card-header"><h2 class="card-title">ایجاد کمپین ارسال</h2></div>
-        <form id="broadcast-form" method="post" action="<?= url('admin/broadcast/send') ?>">
+        <form id="broadcast-form" method="post" action="<?= url('admin/broadcast/send') ?>" data-ajax>
             <?= csrf_field() ?>
             <div class="card-body">
                 <div class="form-group">

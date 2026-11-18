@@ -210,7 +210,14 @@ $webhookActive = !empty($settings['webhook_active']);
                 آدرس شامل توکن است؛ آن را در اختیار کسی قرار ندهید.
             </div>
         </div>
-        <?php $cronUrl = url('cron/run') . '?token=' . ($cronToken ?? '') . '&task=all'; ?>
+        <?php
+        $cronBase = rtrim((string) (setting('webhook_base_url', '') ?: \RB\Support\Request::origin()), '/');
+        $cronAppPath = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+        if ($cronAppPath !== '' && str_ends_with($cronBase, $cronAppPath)) {
+            $cronBase = substr($cronBase, 0, -strlen($cronAppPath));
+        }
+        $cronUrl = rtrim($cronBase, '/') . url('cron/run') . '?token=' . ($cronToken ?? '') . '&task=all';
+        ?>
         <label class="form-label">آدرس اجرای کامل وظایف</label>
         <div class="copy-field">
             <span class="ltr text-xs"><?= e($cronUrl) ?></span>

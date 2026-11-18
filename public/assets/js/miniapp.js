@@ -85,6 +85,15 @@
     return (window.RB ? RB.money(n) : Number(n || 0).toLocaleString('en-US') + ' تومان');
   }
 
+  function enNum(v) {
+    if (window.RB && RB.enNum) return RB.enNum(v);
+    const map = {
+      '۰':'0','۱':'1','۲':'2','۳':'3','۴':'4','۵':'5','۶':'6','۷':'7','۸':'8','۹':'9',
+      '٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'
+    };
+    return String(v === null || v === undefined ? '' : v).replace(/[۰-۹٠-٩]/g, d => map[d] || d);
+  }
+
   function faNum(n) { return window.RB ? RB.faNum(n) : String(n); }
 
   function loadingList(host, text) {
@@ -132,6 +141,7 @@
         showGate((data && data.error) || 'احراز هویت تلگرام ناموفق بود.');
         return false;
       }
+      if (data.csrf) state.csrf = data.csrf;
       return true;
     } catch (e) {
       showGate('خطای شبکه در احراز هویت.');
@@ -450,8 +460,8 @@
     if (form.id === 'withdraw-form') {
       e.preventDefault();
       const data = formData(form);
-      data.amount = String(data.amount || '').replace(/[^\d]/g, '');
-      data.card_number = String(data.card_number || '').replace(/[^\d]/g, '');
+      data.amount = enNum(data.amount || '').replace(/[^\d]/g, '');
+      data.card_number = enNum(data.card_number || '').replace(/[^\d]/g, '');
       if (!data.amount || !data.card_number) { toast('مبلغ و شماره کارت الزامی است.', 'error'); return; }
       const btn = $('#withdraw-submit');
       const original = btn.textContent;

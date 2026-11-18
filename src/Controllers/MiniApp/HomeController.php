@@ -73,6 +73,7 @@ final class HomeController extends Controller
         $user = $result['user'];
         $this->json([
             'ok' => true,
+            'csrf' => \RB\Support\Csrf::token(),
             'user' => [
                 'id' => (int) $user['id'],
                 'telegram_id' => (string) $user['telegram_id'],

@@ -40,6 +40,8 @@ final class UpdateService
         'api.github.com',
         'objects.githubusercontent.com',
         'release-assets.githubusercontent.com',
+        'github-releases.githubusercontent.com',
+        'pkg-containers.githubusercontent.com',
         'codeload.github.com',
     ];
 

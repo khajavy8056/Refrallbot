@@ -126,9 +126,10 @@ final class UserController extends AdminController
         $users = new UserService();
         $newId = null;
         if ($newReferrerInput !== '') {
+            $digits = en_digits($newReferrerInput);
             $found = str_starts_with($newReferrerInput, '@')
                 ? null
-                : ($users->findByTelegramId((int) en_digits($newReferrerInput)) ?? $users->findByCode($newReferrerInput));
+                : ((ctype_digit($digits) ? $users->findByTelegramId((int) $digits) : null) ?? $users->findByCode($newReferrerInput));
             if ($found === null) {
                 $found = Database::instance()->first('SELECT * FROM users WHERE username = :u', ['u' => ltrim($newReferrerInput, '@')]);
             }

@@ -630,8 +630,10 @@ final class TelegramService
     {
         $stored = (string) (SettingsService::get('webhook_base_url', '') ?: '');
         $base = $stored !== '' ? rtrim($stored, '/') : \RB\Support\Request::origin();
-        $path = (string) \RB\Support\Config::get('app.base_path', '');
-        $path = rtrim($path, '/');
+        $path = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+        if ($path !== '' && str_ends_with($base, $path)) {
+            return $base . '/webhook/telegram';
+        }
         return $base . $path . '/webhook/telegram';
     }
 

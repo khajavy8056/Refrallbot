@@ -184,6 +184,68 @@ T::eq(['joined', 'channel'], $expanded['conditions'] ?? null, 'expandBracketKeys
 T::eq('20', $expanded['order']['5'] ?? null, 'expandBracketKeys کلید عددی را درست می‌سازد');
 T::eq('ok', $expanded['simple'] ?? null, 'expandBracketKeys کلید ساده را حفظ می‌کند');
 
+// ۹) ممیز و هزارگان فارسی در Money (۲٫۵٪ = 2.5 نه 25؛ ۵۰٬۰۰۰ = 50000)
+T::eq('2.5', \RB\Support\Money::fromMicro(\RB\Support\Money::toMicro('۲٫۵٪')), 'ممیز فارسی ۲٫۵٪ دقیقاً ۲.۵ محاسبه می‌شود (نه ۲۵)');
+T::eq(250, \RB\Support\Money::percentOf(10000, '۲٫۵'), '۲٫۵٪ از ۱۰٬۰۰۰ تومان برابر ۲۵۰ تومان است');
+T::eq(50000, \RB\Support\Money::parseToman('۵۰٬۰۰۰'), 'جداکنندهٔ هزارگان فارسی ۵۰٬۰۰۰ درست خوانده می‌شود');
+
+// ۱۰) ذخیرهٔ پورسانت با ارقام و ممیز فارسی + خطای اعتبارسنجی برداشت در حالت AJAX
+$resComFa = $dispatchJsonPost('/admin/commissions', [
+    'direct_enabled' => '1',
+    'direct_reward' => '۲۰٬۰۰۰',
+    'multi_level_enabled' => '1',
+    'max_levels' => '۲',
+    'percent_base' => 'direct_reward',
+    'levels[1][enabled]' => '1',
+    'levels[1][percent]' => '۱۲٫۵',
+    'levels[2][enabled]' => '1',
+    'levels[2][percent]' => '۵',
+]);
+T::eq(true, $resComFa['ok'] ?? false, 'ذخیرهٔ پورسانت با ارقام و ممیز فارسی موفق شد');
+T::eq('12.5', \RB\Services\CommissionSettings::current($db, true)->level(1)['percent'] ?? null, 'درصد لایه ۱ برابر ۱۲.۵ ثبت شد');
+
+$resBadWd = $dispatchJsonPost('/admin/settings/withdrawal', ['min_withdraw_amount' => '۵۰۰']);
+T::eq(false, $resBadWd['ok'] ?? true, 'خطای حداقل برداشت در فرم AJAX به شکل JSON برمی‌گردد (نه Redirect HTML)');
+T::ok(str_contains((string) ($resBadWd['error'] ?? ''), '۱٬۰۰۰'), 'پیام خطای حداقل برداشت دقیق است');
+
+$resGoodWd = $dispatchJsonPost('/admin/settings/withdrawal', [
+    'withdrawal_enabled' => '1',
+    'min_withdraw_amount' => '۴۵٬۰۰۰',
+    'max_open_withdrawals' => '۳',
+    'max_daily_withdrawal' => '۵۰۰٬۰۰۰',
+]);
+T::eq(true, $resGoodWd['ok'] ?? false, 'ذخیرهٔ تنظیمات برداشت با ارقام فارسی موفق شد');
+T::eq(45000, SettingsService::int('min_withdraw_amount'), 'حداقل برداشت ۴۵٬۰۰۰ تومان ثبت شد');
+T::eq(3, SettingsService::int('max_open_withdrawals'), 'حداکثر درخواست باز ۳ ثبت شد');
+
+// ۱۱) ساخت نسخهٔ پشتیبان دیتابیس از پنل مدیریت (رفع باگ static fn -> $this)
+$resBackup = $dispatchJsonPost('/admin/backup/create', []);
+T::eq(true, $resBackup['ok'] ?? false, 'ساخت پشتیبان دیتابیس از /admin/backup/create بدون خطا انجام شد');
+$backupFile = (string) ($resBackup['file'] ?? '');
+T::ok($backupFile !== '' && is_file(RB_STORAGE . '/backups/' . $backupFile), 'فایل پشتیبان SQL واقعاً روی دیسک ساخته شد');
+T::ok(str_contains((string) file_get_contents(RB_STORAGE . '/backups/' . $backupFile), 'INSERT INTO'), 'فایل پشتیبان شامل دستورات INSERT جداول است');
+@unlink(RB_STORAGE . '/backups/' . $backupFile);
+
+// ۱۲) ارسال پیام همگانی (پیش‌نمایش + ساخت کمپین)
+$resPrev = $dispatchJsonPost('/admin/broadcast/preview', ['message_text' => 'سلام {name}', 'segment' => 'all']);
+T::eq(true, $resPrev['ok'] ?? false, 'پیش‌نمایش پیام همگانی با JSON موفق شد');
+$resSend = $dispatchJsonPost('/admin/broadcast/send', ['title' => 'تست همگانی', 'message_text' => 'سلام {name}', 'segment' => 'all']);
+T::eq(true, $resSend['ok'] ?? false, 'ساخت کمپین پیام همگانی با AJAX موفق شد');
+
+// ۱۳) جستجوی نام کاربر در شبکه (سازگاری CONCAT با MySQL ANSI_QUOTES و SQLite)
+$netFound = (new \ReflectionMethod(\RB\Controllers\Admin\NetworkController::class, 'findUser'))
+    ->invoke(new \RB\Controllers\Admin\NetworkController(), 'سارا جدید');
+T::eq($userId, (int) ($netFound['id'] ?? 0), 'جستجوی نام و نام خانوادگی در شبکه بدون خطای SQL کار می‌کند');
+
+// ۱۴) جلوگیری از تکرار پسوند در آدرس Webhook و Mini App
+$resSub = $dispatchJsonPost('/admin/telegram/save', [
+    'bot_token' => $fakeToken,
+    'base_url' => 'https://bot.example.com/webhook/telegram',
+]);
+T::eq(true, $resSub['ok'] ?? false, 'ذخیرهٔ توکن حتی با آدرس کامل webhook در فیلد base_url موفق شد');
+T::eq('https://bot.example.com', (string) SettingsService::get('webhook_base_url', ''), 'پسوند اضافی /webhook/telegram خودکار حذف شد');
+T::eq('https://bot.example.com/app', (string) SettingsService::get('miniapp_url', ''), 'آدرس Mini App تمیز ساخته شد');
+
 TelegramService::$fakeTransport = null;
 Request::setRawBody('');
 $_POST = [];

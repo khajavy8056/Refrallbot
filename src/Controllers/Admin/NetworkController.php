@@ -125,8 +125,11 @@ final class NetworkController extends AdminController
         if ($found) {
             return $found;
         }
+        $fullNameExpr = $db->driver() === 'mysql'
+            ? "CONCAT(first_name, ' ', COALESCE(last_name, ''))"
+            : "(first_name || ' ' || COALESCE(last_name, ''))";
         return $db->first(
-            'SELECT * FROM users WHERE username = :u OR CONCAT(first_name, " ", COALESCE(last_name, "")) LIKE :n LIMIT 1',
+            "SELECT * FROM users WHERE username = :u OR {$fullNameExpr} LIKE :n LIMIT 1",
             ['u' => ltrim($q, '@'), 'n' => '%' . $q . '%']
         );
     }

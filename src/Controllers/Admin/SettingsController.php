@@ -41,11 +41,16 @@ final class SettingsController extends AdminController
     {
         $min = Money::parseToman($_POST['min_withdraw_amount'] ?? null);
         if ($min === null || $min < 1000) {
-            $this->flash('error', 'حداقل مبلغ برداشت باید عددی بزرگ‌تر از ۱٬۰۰۰ تومان باشد.');
+            $errMsg = 'حداقل مبلغ برداشت باید عددی بزرگ‌تر از ۱٬۰۰۰ تومان باشد.';
+            if ($this->wantsJson()) {
+                $this->fail($errMsg);
+                return;
+            }
+            $this->flash('error', $errMsg);
             Request::redirect(url('admin/settings') . '#withdrawal');
             return;
         }
-        $maxOpen = (int) ($_POST['max_open_withdrawals'] ?? 1);
+        $maxOpen = (int) en_digits((string) ($_POST['max_open_withdrawals'] ?? '1'));
         $daily = Money::parseToman($_POST['max_daily_withdrawal'] ?? null) ?? 0;
 
         SettingsService::set('min_withdraw_amount', (string) $min, 'withdrawal');

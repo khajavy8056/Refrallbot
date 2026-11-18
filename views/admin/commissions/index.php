@@ -228,7 +228,8 @@ foreach ($stats['by_level'] as $row) {
             const level = i + 1;
             const percentInput = row.querySelector('[data-level-percent]');
             const enabled = row.querySelector('[data-level-enabled]');
-            const percent = parseFloat(String(percentInput.value).replace(/[^\d.]/g, '')) || 0;
+            const rawVal = (RB.enNum ? RB.enNum(percentInput.value) : String(percentInput.value)).replace(/٫/g, '.');
+            const percent = parseFloat(rawVal.replace(/[^\d.]/g, '')) || 0;
             if (enabled.checked && level <= limit) total += percent;
             const approx = Math.round(base * percent / 100);
             const approxEl = row.querySelector('[data-approx]');
