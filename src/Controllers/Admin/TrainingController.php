@@ -13,17 +13,7 @@ final class TrainingController extends AdminController
 {
     public function index(): void
     {
-        $svc = new TrainingVideoService();
-        $this->render('admin/training/index', [
-            'title' => 'آموزش پنل مدیریت',
-            'localVideo' => $svc->hasLocalVideo(),
-            'canUpload' => AdminAuth::requireSuperAdmin(),
-            'previewUrl' => TrainingVideoService::previewUrl(),
-            'downloadUrl' => TrainingVideoService::downloadUrl(),
-            'viewUrl' => TrainingVideoService::viewUrl(),
-            'uploadMax' => (string) ini_get('upload_max_filesize'),
-            'postMax' => (string) ini_get('post_max_size'),
-        ]);
+        $this->render('admin/training/index', ['title' => 'آموزش پنل']);
     }
 
     public function upload(): void

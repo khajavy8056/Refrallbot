@@ -897,22 +897,117 @@
   };
 })();
 
-// Warn before PHP discards an oversized multipart request (and its CSRF token).
+// Keep the same player node when changing between modal and floating modes so playback continues.
 (function () {
-  const form = document.getElementById('training-upload');
-  if (!form) return;
-  const limit = value => {
-    const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*([KMG]?)$/i);
-    if (!match) return 0;
-    return Number(match[1]) * ({ K: 1024, M: 1048576, G: 1073741824 }[match[2].toUpperCase()] || 1);
-  };
-  form.addEventListener('submit', event => {
-    const file = document.getElementById('training-file').files[0];
-    if (!file) return;
-    const upload = limit(form.dataset.uploadMax), post = limit(form.dataset.postMax);
-    if (file.size > 524288000 || (upload && file.size > upload) || (post && file.size + 65536 > post)) {
-      event.preventDefault();
-      alert('حجم فایل از سقف آپلود هاست بیشتر است. محدودیت PHP را افزایش دهید یا از روش انتقال دستی استفاده کنید.');
+  const overlay = document.querySelector('[data-training-overlay]');
+  const panel = document.querySelector('[data-training-window]');
+  const media = document.querySelector('[data-training-media]');
+  const toggle = document.querySelector('[data-training-float]');
+  const opener = document.querySelector('[data-training-open]');
+  const close = document.querySelector('[data-training-close]');
+  const toolbar = document.querySelector('[data-training-drag]');
+  if (!overlay || !panel || !media || !toggle || !opener || !close || !toolbar) return;
+  // In floating mode the panel navigates inside a same-origin frame while the player
+  // remains in its parent document. This avoids restarting the Drive iframe on navigation.
+  try {
+    if (window.parent !== window && window.parent.RBTrainingShell) {
+      opener.addEventListener('click', () => window.parent.RBTrainingShell.open());
+      return;
     }
+  } catch (_) { /* not our same-origin shell */ }
+  const stateKey = 'rb_training_float_v1';
+  const timeKey = 'rb_training_time_v1';
+  const save = (key, value) => { try { sessionStorage.setItem(key, value); } catch (_) {} };
+  const read = key => { try { return sessionStorage.getItem(key); } catch (_) { return null; } };
+  const remove = key => { try { sessionStorage.removeItem(key); } catch (_) {} };
+  let player = null;
+  let workspace = null;
+  window.RBTrainingShell = { open: () => open(false) };
+  function keepPanelNavigable() {
+    if (workspace) return;
+    const layout = document.querySelector('.layout');
+    if (!layout) return;
+    workspace = document.createElement('iframe');
+    workspace.className = 'training-workspace';
+    workspace.title = 'پنل مدیریت';
+    // A fresh GET is needed only once, when the user first makes the player float.
+    workspace.src = window.location.href;
+    workspace.addEventListener('load', () => {
+      try {
+        const child = workspace.contentWindow.location;
+        if (child.origin !== window.location.origin) return;
+        if (/\/admin\/login\/?$/.test(child.pathname)) {
+          window.location.assign(child.href);
+          return;
+        }
+        // Refreshing the browser should return to the page currently shown in the frame.
+        window.history.replaceState(window.history.state, '', child.pathname + child.search + child.hash);
+      } catch (_) { /* a cross-origin page cannot be inspected */ }
+    });
+    document.body.insertBefore(workspace, overlay);
+    layout.hidden = true;
+    layout.style.display = 'none';
+  }
+
+  function setFloating(floating) {
+    overlay.classList.toggle('is-floating', floating);
+    panel.setAttribute('aria-modal', floating ? 'false' : 'true');
+    toggle.title = floating ? 'نمایش بزرگ' : 'معلق روی پنل';
+    toggle.setAttribute('aria-label', toggle.title);
+    toggle.textContent = floating ? '□' : '▣';
+    if (!floating) { overlay.style.left = ''; overlay.style.top = ''; overlay.style.bottom = ''; remove(stateKey); }
+    else { save(stateKey, '1'); keepPanelNavigable(); }
+  }
+  function open(floating) {
+    if (!player) {
+      player = document.createElement(panel.dataset.local === '1' ? 'video' : 'iframe');
+      if (panel.dataset.local === '1') {
+        player.controls = true;
+        player.playsInline = true;
+        player.preload = 'metadata';
+        player.addEventListener('loadedmetadata', () => {
+          const saved = Number(read(timeKey));
+          if (floating && Number.isFinite(saved) && saved > 0 && saved < player.duration) player.currentTime = saved;
+        });
+        player.addEventListener('timeupdate', () => { if (overlay.classList.contains('is-floating')) save(timeKey, String(player.currentTime)); });
+      } else {
+        player.title = 'ویدیوی آموزش پنل';
+        player.allow = 'autoplay; fullscreen';
+        player.allowFullscreen = true;
+        player.referrerPolicy = 'no-referrer';
+      }
+      player.src = panel.dataset.source;
+      media.appendChild(player);
+    }
+    overlay.hidden = false;
+    setFloating(floating);
+    if (panel.dataset.local === '1') { const promise = player.play(); if (promise && promise.catch) promise.catch(() => {}); }
+  }
+  opener.addEventListener('click', () => open(false));
+  toggle.addEventListener('click', () => setFloating(!overlay.classList.contains('is-floating')));
+  close.addEventListener('click', () => {
+    overlay.hidden = true;
+    remove(stateKey); remove(timeKey);
+    if (player) { if (panel.dataset.local === '1') player.pause(); player.removeAttribute('src'); player.remove(); player = null; }
+    if (workspace) workspace.focus(); else opener.focus();
   });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden && !overlay.classList.contains('is-floating')) close.click(); });
+  // Drag the compact window using the toolbar, without intercepting player controls.
+  toolbar.addEventListener('pointerdown', e => {
+    if (!overlay.classList.contains('is-floating') || e.target.closest('button, a')) return;
+    const rect = overlay.getBoundingClientRect();
+    const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
+    toolbar.setPointerCapture(e.pointerId);
+    const move = event => {
+      const x = Math.max(0, Math.min(window.innerWidth - overlay.offsetWidth, event.clientX - dx));
+      const y = Math.max(0, Math.min(window.innerHeight - overlay.offsetHeight, event.clientY - dy));
+      overlay.style.left = x + 'px'; overlay.style.top = y + 'px'; overlay.style.bottom = 'auto';
+    };
+    const stop = () => { toolbar.removeEventListener('pointermove', move); toolbar.removeEventListener('pointerup', stop); toolbar.removeEventListener('pointercancel', stop); };
+    toolbar.addEventListener('pointermove', move);
+    toolbar.addEventListener('pointerup', stop);
+    toolbar.addEventListener('pointercancel', stop);
+  });
+  if (read(stateKey) === '1') open(true);
+  else if (panel.dataset.autoOpen === '1') open(false);
 })();

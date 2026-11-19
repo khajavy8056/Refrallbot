@@ -1199,9 +1199,24 @@ html:not([data-theme="dark"]) .text-accent { color: #0891b2 !important; }
 }
 
 /* Training link is visible throughout the admin panel. */
-.training-button { display: inline-flex; align-items: center; white-space: nowrap; border-radius: 8px; padding: 8px 11px; color: #fff; background: #a21caf; font-weight: 700; font-size: .82rem; text-decoration: none; animation: training-pulse 1.6s ease-in-out infinite; }
+.training-button { border: 0; cursor: pointer; display: inline-flex; align-items: center; white-space: nowrap; border-radius: 8px; padding: 8px 11px; color: #fff; background: #a21caf; font-weight: 700; font-size: .82rem; text-decoration: none; animation: training-pulse 1.6s ease-in-out infinite; }
 .training-button:hover, .training-button:focus-visible { color: #fff; background: #86198f; outline: 2px solid #e879f9; outline-offset: 2px; }
 @keyframes training-pulse { 50% { background: #be185d; box-shadow: 0 0 0 5px rgba(190,24,93,.18); } }
-.training-player { display: block; width: 100%; max-width: 960px; aspect-ratio: 16 / 9; border: 0; border-radius: 8px; background: #000; }
+[hidden].training-overlay { display: none !important; }
+.training-workspace { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; z-index: 1; background: var(--bg); }
+.training-overlay { position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.76); padding: 16px; }
+.training-window { width: min(960px, 100%); background: #111827; border: 1px solid #64748b; border-radius: 10px; overflow: hidden; box-shadow: 0 12px 38px rgba(0,0,0,.5); }
+.training-toolbar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; background: #172033; color: #fff; }
+.training-label { flex: 1; font-size: .85rem; font-weight: 700; }
+.training-grip { display: none; }
+.training-control { display: inline-flex; align-items: center; justify-content: center; min-width: 38px; min-height: 38px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: white; cursor: pointer; font: inherit; text-decoration: none; font-size: 1.1rem; }
+.training-control:hover, .training-control:focus-visible { background: #334155; color: #fff; outline: 2px solid #a5b4fc; }
+.training-media { width: 100%; aspect-ratio: 16 / 9; background: #000; }
+.training-media video, .training-media iframe { display: block; width: 100%; height: 100%; border: 0; }
+.training-overlay.is-floating { display: block; inset: auto; left: 16px; bottom: 16px; padding: 0; background: transparent; width: min(400px, calc(100vw - 32px)); }
+.training-overlay.is-floating .training-window { width: 100%; }
+.training-overlay.is-floating .training-toolbar { cursor: move; touch-action: none; user-select: none; }
+.training-overlay.is-floating .training-grip { display: inline; }
+@media print { .training-overlay { display: none !important; } }
 @media (prefers-reduced-motion: reduce) { .training-button { animation: none; } }
 @media (max-width: 640px) { .training-button { font-size: .72rem; padding: 7px; } .topbar-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }

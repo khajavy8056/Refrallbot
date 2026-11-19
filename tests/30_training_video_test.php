@@ -32,6 +32,8 @@ T::eq(416, Video::range(100, 'bytes=0-1,3-4')['status'], 'بازه چندگان�
 T::eq(416, Video::range(100, 'bytes=-0')['status'], 'بازه صفر رد می‌شود');
 $routes = file_get_contents(RB_ROOT . '/src/routes.php');
 T::ok(str_contains($routes, "'video'], ['admin']") && str_contains($routes, "'upload'], ['admin', 'csrf']"), 'پخش نیازمند ورود و بارگذاری نیازمند ورود و CSRF است');
-T::ok(str_contains(file_get_contents(RB_ROOT . '/views/layouts/app.php'), "url('admin/training')"), 'دکمه در قالب مشترک پنل است');
+$layout = file_get_contents(RB_ROOT . '/views/layouts/app.php');
+T::ok(str_contains($layout, 'data-training-open') && str_contains($layout, 'data-training-float') && str_contains($layout, 'data-training-close'), 'پخش‌کننده و کنترل شناور در قالب مشترک پنل است');
+T::ok(!str_contains(file_get_contents(RB_ROOT . '/views/admin/training/index.php'), '<form'), 'صفحه قدیمی تنها پخش‌کننده را باز می‌کند');
 unlink($service->path()); unlink($valid); unlink($invalid); rmdir($dir);
 exit(T::summary());

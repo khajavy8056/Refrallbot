@@ -99,7 +99,7 @@ $isActive = static function (array $item) use ($path): bool {
                 <small><?= fa_date(date('Y-m-d H:i:s')) ?></small>
             </div>
             <div class="topbar-spacer"></div>
-            <a href="<?= url('admin/training') ?>" class="training-button" aria-label="آموزش پنل">▶ آموزش پنل</a>
+            <button type="button" class="training-button" data-training-open aria-label="آموزش پنل">▶ آموزش پنل</button>
 
             <?php if (!empty($navBadges['withdrawals'])): ?>
                 <a href="<?= url('admin/withdrawals?status=open') ?>" class="btn btn-secondary btn-sm hide-xs">
@@ -136,6 +136,23 @@ $isActive = static function (array $item) use ($path): bool {
     </div>
 </div>
 
+<?php
+$trainingLocal = (new \RB\Services\TrainingVideoService())->hasLocalVideo();
+$trainingSource = $trainingLocal ? url('admin/training/video') : \RB\Services\TrainingVideoService::previewUrl();
+$trainingDownload = $trainingLocal ? url('admin/training/video?download=1') : \RB\Services\TrainingVideoService::downloadUrl();
+?>
+<div class="training-overlay" data-training-overlay hidden>
+    <section class="training-window" data-training-window role="dialog" aria-label="ویدیوی آموزش پنل" aria-modal="true" data-source="<?= e($trainingSource) ?>" data-local="<?= $trainingLocal ? '1' : '0' ?>" data-auto-open="<?= $path === '/admin/training' ? '1' : '0' ?>">
+        <div class="training-toolbar" data-training-drag>
+            <span class="training-grip" aria-hidden="true">⋮⋮</span>
+            <span class="training-label">آموزش پنل</span>
+            <a class="training-control" href="<?= e($trainingDownload) ?>" target="_blank" rel="noopener noreferrer" title="دانلود ویدیو" aria-label="دانلود ویدیو">⬇</a>
+            <button class="training-control" type="button" data-training-float title="معلق روی پنل" aria-label="معلق روی پنل">▣</button>
+            <button class="training-control" type="button" data-training-close title="بستن" aria-label="بستن آموزش">✕</button>
+        </div>
+        <div class="training-media" data-training-media></div>
+    </section>
+</div>
 <div class="toasts"></div>
 <script src="<?= asset('js/app.js') ?>?v=<?= e(RB_VERSION) ?>"></script>
 <?= $scripts ?? '' ?>
