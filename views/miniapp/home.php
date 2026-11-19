@@ -2,7 +2,7 @@
 <div class="miniapp-shell">
     <header class="mini-topbar">
         <div class="mini-user">
-            <div class="avatar" id="mini-avatar">؟</div>
+            <div class="mini-avatar-wrap"><div class="avatar" id="mini-avatar">؟</div><span class="mini-avatar-medal hidden" id="mini-avatar-medal" aria-label="نشان سطح"></span></div>
             <div class="mini-user-meta">
                 <div class="mini-name" id="mini-name">در حال اتصال…</div>
                 <div class="mini-sub" id="mini-sub">احراز هویت امن پیام‌رسان</div>
@@ -212,7 +212,7 @@
         <section class="mini-panel hidden" data-panel="profile">
             <div class="mini-profile-hero">
                 <div class="mini-profile-top">
-                    <div class="mini-profile-avatar" id="prof-avatar">؟</div>
+                    <div class="mini-avatar-wrap"><div class="mini-profile-avatar" id="prof-avatar">؟</div><span class="mini-avatar-medal hidden" id="prof-avatar-medal" aria-label="نشان سطح"></span></div>
                     <div class="mini-profile-info">
                         <div class="mini-profile-name" id="prof-name">—</div>
                         <div class="mini-profile-meta" id="prof-meta">—</div>
@@ -222,6 +222,7 @@
                         </div>
                     </div>
                 </div>
+                <div id="prof-tier-benefits" class="text-xs text-muted"></div>
                 <div class="mini-tier-progress">
                     <div class="flex justify-between text-xs mb-1">
                         <span id="prof-tier-next">پیشرفت تا سطح بعدی</span>

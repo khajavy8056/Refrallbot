@@ -13,6 +13,7 @@ $navItems = [
     ['path' => '/admin/withdrawals', 'label' => 'درخواست برداشت', 'icon' => '🏦', 'badge' => $navBadges['withdrawals'] ?? 0],
     ['group' => 'درآمد و پورسانت'],
     ['path' => '/admin/commissions', 'label' => 'تنظیمات پورسانت', 'icon' => '💰'],
+    ['path' => '/admin/user-levels', 'label' => 'سطح‌بندی کاربران', 'icon' => '🏅', 'superadmin' => true],
     ['path' => '/admin/campaigns', 'label' => 'جشنواره‌ها', 'icon' => '🎁'],
     ['path' => '/admin/reports/layers', 'label' => 'گزارش‌ها و لایه‌ها', 'icon' => '📈', 'match_prefix' => '/admin/reports/'],
     ['group' => 'پیام‌رسان‌ها و دعوت'],

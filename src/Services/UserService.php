@@ -1182,6 +1182,8 @@ final class UserService
      */
     public function maybeQualify(array $user, bool $force = false, ?string $platform = null): bool
     {
+        try {
+        $qualified = $this->db->transaction(function () use ($user, $force, $platform): bool {
         if (empty($user['referred_by'])) {
             return false;
         }
@@ -1241,6 +1243,13 @@ final class UserService
         }
         SecurityService::evaluateUser($userId);
         return true;
+        });
+        } catch (\Throwable $e) {
+            Notifier::clearDeferred();
+            throw $e;
+        }
+        Notifier::flushDeferred();
+        return $qualified;
     }
 
     public function meetsConditions(array $user, array $conditions): bool

@@ -325,6 +325,9 @@ html[data-theme="dark"] .mini-profile-hero {
   border-color: rgba(129, 140, 248, .22);
 }
 .mini-profile-top { display: flex; align-items: center; gap: 13px; }
+.mini-avatar-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+.mini-avatar-medal { position: absolute; inset-inline-end: -6px; bottom: -5px; border-radius: 50%; background: var(--surface, #fff); border: 2px solid var(--brand-500); font-size: 16px; line-height: 1; padding: 3px; box-shadow: 0 2px 6px rgba(0,0,0,.2); }
+.mini-avatar-medal.hidden { display: none; }
 .mini-profile-avatar {
   width: 58px;
   height: 58px;

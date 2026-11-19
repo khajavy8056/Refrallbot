@@ -53,6 +53,12 @@ return static function (Router $router): void {
     $router->post('/admin/withdrawals/{id}/reject', [Admin\WithdrawalController::class, 'reject'], ['admin', 'csrf']);
     $router->post('/admin/withdrawals/{id}/pay', [Admin\WithdrawalController::class, 'pay'], ['admin', 'csrf']);
 
+    // سطح‌بندی کاربران (مدیریت مالی فقط مدیر کل)
+    $router->get('/admin/user-levels', [Admin\UserLevelController::class, 'index'], ['admin']);
+    $router->post('/admin/user-levels/config', [Admin\UserLevelController::class, 'config'], ['admin', 'csrf']);
+    $router->post('/admin/user-levels/save', [Admin\UserLevelController::class, 'save'], ['admin', 'csrf']);
+    $router->post('/admin/user-levels/delete', [Admin\UserLevelController::class, 'delete'], ['admin', 'csrf']);
+
     // تنظیمات پورسانت و لایه‌ها
     $router->get('/admin/commissions', [Admin\CommissionController::class, 'index'], ['admin']);
     $router->post('/admin/commissions', [Admin\CommissionController::class, 'save'], ['admin', 'csrf']);

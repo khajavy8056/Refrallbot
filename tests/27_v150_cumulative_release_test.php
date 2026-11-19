@@ -36,7 +36,7 @@ $withdrawals = new WithdrawalService($db);
 // =========================================================================
 // ۱) نسخه تجمیعی v1.5.0 و Migration 005 (سازگار با MySQL 8 Strict + utf8mb4)
 // =========================================================================
-T::eq('1.5.0', trim((string) file_get_contents(RB_ROOT . '/VERSION')), 'نسخه نهایی تجمیعی برابر 1.5.0 است');
+T::ok(version_compare(trim((string) file_get_contents(RB_ROOT . '/VERSION')), '1.5.0', '>='), 'نسخه فعلی شامل قابلیت‌های نسخه 1.5.0 است');
 T::ok($db->tableExists('user_channel_memberships'), 'جدول user_channel_memberships ایجاد شده است');
 T::ok($db->tableExists('messenger_error_logs'), 'جدول messenger_error_logs ایجاد شده است');
 T::ok($db->columnExists('telegram_channels', 'target_platforms'), 'ستون telegram_channels.target_platforms ایجاد شده است');
@@ -167,7 +167,8 @@ T::eq([
     '003_two_way_referral_and_bot_profile.php',
     '004_multi_messenger_invite_studio_and_layers.php',
     '005_cross_messenger_channels_and_error_logs.php',
-], $appliedUpgrade, 'ارتقای مستقیم تک‌مرحله‌ای از v1.2.0 به v1.5.0 هر ۳ Migration (003، 004، 005) را به ترتیب اجرا کرد');
+    '006_user_levels.php',
+], $appliedUpgrade, 'ارتقای مستقیم از v1.2.0 همه Migrationهای بعدی را به ترتیب اجرا کرد');
 
 // اجرای مجدد برای تضمین Idempotency کامل پس از ارتقا
 T::eq([], (new Migrator($dbV12, RB_ROOT . '/database/migrations'))->run()['applied'], 'اجرای مجدد پس از ارتقای v1.2.0→v1.5.0 بدون خطا و Idempotent است');

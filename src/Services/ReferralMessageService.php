@@ -13,6 +13,15 @@ use RB\Support\Database;
  */
 final class ReferralMessageService
 {
+    /** Current estimate only; qualification, caps and settings may change before payment. */
+    private static function estimatedDirectReward(array $user, CommissionSettings $settings, Database $db): int
+    {
+        $base = $settings->effectiveDirectReward();
+        if (!$settings->directEnabled || empty($user['id'])) return $base;
+        $profile = (new UserLevelService($db))->profile((int) $user['id']);
+        return (int) ($profile['next_invite_reward'] ?? $base);
+    }
+
     /** قالب پیش‌فرض قابل ویرایش پیام دعوت دوستان (برای نمایش در پنل مدیریت) */
     public static function defaultInviteTemplate(): string
     {
@@ -55,7 +64,7 @@ final class ReferralMessageService
         $settings ??= CommissionSettings::current($db);
         $custom = trim((string) (SettingsService::get('invite_message_text', '') ?? ''));
 
-        $inviterReward = $settings->effectiveDirectReward();
+        $inviterReward = self::estimatedDirectReward($user, $settings, $db);
         $inviteeReward = $settings->effectiveInviteeReward();
 
         if ($custom !== '') {
@@ -140,7 +149,7 @@ final class ReferralMessageService
         }
 
         $appName = (string) SettingsService::get('app_name', 'رفرال‌بات');
-        $inviterReward = $settings->effectiveDirectReward();
+        $inviterReward = self::estimatedDirectReward($user, $settings, $db);
         $inviteeReward = $settings->effectiveInviteeReward();
 
         if ($inviterReward > 0 && $inviteeReward > 0) {
@@ -200,7 +209,7 @@ final class ReferralMessageService
         $appName = e((string) SettingsService::get('app_name', 'رفرال‌بات'));
         $refName = $referrer !== null ? self::safeDisplayName($referrer, 'یکی از دوستانتان') : 'لینک دعوت';
         $inviteeReward = $settings->effectiveInviteeReward();
-        $inviterReward = $settings->effectiveDirectReward();
+        $inviterReward = self::estimatedDirectReward($user, $settings, $db);
 
         $lines = [];
         $lines[] = "🎉 سلام <b>{$name}</b> عزیز، به <b>{$appName}</b> خوش آمدید!";
@@ -304,7 +313,7 @@ final class ReferralMessageService
         $code = (string) ($user['referral_code'] ?? '');
         $minWithdraw = SettingsService::int('min_withdraw_amount', 30000);
 
-        $inviterReward = $settings->effectiveDirectReward();
+        $inviterReward = self::estimatedDirectReward($user, $settings, $db);
         $inviteeReward = $settings->effectiveInviteeReward();
         $totalReward = $inviterReward + $inviteeReward;
 

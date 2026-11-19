@@ -75,10 +75,18 @@ final class CommissionService
             : null;
         $payload = is_array($options['payload'] ?? null) ? $options['payload'] : [];
 
-        return $this->db->transaction(function () use (
+        try {
+        $result = $this->db->transaction(function () use (
             $eventKey, $type, $userId, $actorId, $baseAmount, $inviteeAmount,
             $appliesDirect, $appliesInvitee, $platform, $payload
         ) {
+            // Acquire the budget mutex before publishing a qualifying event. This serializes
+            // rank decisions and budget updates without locking newly registered user rows.
+            $levelService = new UserLevelService($this->db);
+            $levelConfig = null;
+            if ($type === 'referral_qualified' && $eventKey === 'referral_qualified:' . $userId && $actorId !== null) {
+                $levelConfig = $levelService->config(true);
+            }
             // ---- محافظت در برابر رویداد تکراری
             $existing = $this->db->first(
                 'SELECT * FROM referral_events WHERE event_key = :k LIMIT 1',
@@ -131,21 +139,32 @@ final class CommissionService
             ) ?? 0);
 
             $commissions = [];
+            $levelContext = null;
+            if ($type === 'referral_qualified' && $eventKey === 'referral_qualified:' . $userId && $directReferrerId > 0 && $actorId === $directReferrerId) {
+                $levelContext = $levelService->prepare($directReferrerId, $userId, $eventId, $levelConfig);
+            }
+            $userLevel = $levelContext['level'] ?? null;
+            $directAmount = $baseAmount;
+            if ($userLevel !== null) {
+                $directAmount = $levelService->allowance($levelContext, $userLevel, $directReferrerId, (int) $userLevel['invite_reward']);
+            }
 
             // ---- ۱) لایه ۰: پاداش معرفی مستقیم (دعوت‌کننده مستقیم — همیشه مبلغ ثابت تومان)
-            if ($appliesDirect && $this->settings->directEnabled && $directReferrerId > 0 && $baseAmount > 0) {
+            if ($appliesDirect && $this->settings->directEnabled && $directReferrerId > 0 && $directAmount > 0) {
                 $commissions[] = $this->credit(
                     $eventId,
                     $directReferrerId,
                     0,
                     'direct',
-                    $baseAmount,
+                    $directAmount,
                     '100',
-                    $baseAmount,
+                    $directAmount,
                     $userId,
                     [
+                        'user_level_id' => $userLevel['id'] ?? null,
+                        'user_level_name' => $userLevel['name'] ?? null,
                         'calc_type' => 'fixed',
-                        'fixed_amount' => $baseAmount,
+                        'fixed_amount' => $directAmount,
                         'max_amount' => 0,
                         'cap_applied' => false,
                         'platform' => $resolvedPlatform ?? 'telegram',
@@ -253,6 +272,17 @@ final class CommissionService
                 }
             }
 
+            if ($levelContext !== null) {
+                if ($userLevel !== null) {
+                    foreach ($commissions as $commission) {
+                        if (($commission['type'] ?? '') === 'direct' && ($commission['beneficiary_id'] ?? 0) === $directReferrerId) {
+                            $levelService->record($levelContext, $userLevel, $directReferrerId, $eventId, 'invite', (int) $commission['amount']);
+                        }
+                    }
+                }
+                $levelService->promote($levelContext, $directReferrerId, $eventId);
+            }
+
             $total = array_sum(array_map(static fn($c) => (int) ($c['amount'] ?? 0), $paid));
 
             return [
@@ -262,6 +292,12 @@ final class CommissionService
                 'duplicated' => false,
             ];
         });
+        } catch (\Throwable $e) {
+            Notifier::clearDeferred();
+            throw $e;
+        }
+        Notifier::flushDeferred();
+        return $result;
     }
 
     /**
@@ -452,14 +488,15 @@ final class CommissionService
 
         $totals = $this->db->first(
             "SELECT
-                COALESCE(SUM(CASE WHEN type IN ('commission_direct','commission_welcome','commission_level','campaign_reward') THEN amount ELSE 0 END), 0) AS total_earned,
+                COALESCE(SUM(CASE WHEN type IN ('commission_direct','commission_welcome','commission_level','campaign_reward','level_promotion') THEN amount ELSE 0 END), 0)
+                - COALESCE((SELECT SUM(r.amount) FROM wallet_transactions r JOIN wallet_transactions original ON original.id = r.reversal_of_id WHERE r.user_id = :reversal_user AND r.type = 'reversal' AND original.type = 'level_promotion'), 0) AS total_earned,
                 COALESCE(SUM(CASE WHEN type = 'commission_direct' THEN amount ELSE 0 END), 0) AS direct_earned,
                 COALESCE(SUM(CASE WHEN type = 'commission_welcome' THEN amount ELSE 0 END), 0) AS welcome_earned,
                 COALESCE(SUM(CASE WHEN type = 'commission_level' THEN amount ELSE 0 END), 0) AS layer_earned,
                 COALESCE(SUM(CASE WHEN type = 'campaign_reward' THEN amount ELSE 0 END), 0) AS campaign_earned
              FROM wallet_transactions
              WHERE user_id = :u AND direction = 'credit' AND status = 'completed'",
-            ['u' => $userId]
+            ['u' => $userId, 'reversal_user' => $userId]
         ) ?? [];
 
         $update = [
@@ -593,6 +630,26 @@ final class CommissionService
                     $this->db->update('users', $upd, 'id = :id', ['id' => (int) $commission['beneficiary_id']]);
                 }
                 $reverted++;
+            }
+            // Promotion awards caused by the invalidated event are reversed once;
+            // budgets are intentionally not refunded, so invalidation cannot reopen spending.
+            if ($this->db->tableExists('user_level_promotions')) {
+                foreach ($this->db->all('SELECT * FROM user_level_promotions WHERE event_id = :e AND amount > 0', ['e' => $eventId]) as $promotion) {
+                    $amount = (int) $promotion['amount'];
+                    $tx = $this->db->first('SELECT id FROM wallet_transactions WHERE source_type = :s AND source_id = :id AND direction = :d', ['s' => 'level_promotion', 'id' => (int) $promotion['id'], 'd' => 'credit']);
+                    if (!$tx) continue;
+                    $reversal = $this->wallet->debit((int) $promotion['user_id'], 'reversal', $amount, [
+                        'source_type' => 'reversal', 'source_id' => (int) $promotion['id'],
+                        'description' => 'برگشت جایزه ارتقا: ' . $reason,
+                        'idempotency_key' => 'reversal:level_promotion:' . $promotion['id'],
+                        'created_by_admin_id' => $adminId,
+                        'reversal_of_id' => (int) $tx['id'],
+                        'meta' => ['event_id' => $eventId, 'original_tx' => (int) $tx['id']],
+                    ], allowNegative: true);
+                    if ($reversal !== null) {
+                        $this->db->run('UPDATE users SET total_earned = CASE WHEN total_earned >= :a THEN total_earned - :b ELSE 0 END, updated_at = :n WHERE id = :u', ['a' => $amount, 'b' => $amount, 'n' => now(), 'u' => (int) $promotion['user_id']]);
+                    }
+                }
             }
             $this->db->update('referral_events', ['status' => 'reverted'], 'id = :id', ['id' => $eventId]);
             return $reverted;

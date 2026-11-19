@@ -583,9 +583,23 @@
 
     setText('#mini-tier-pill', tier.icon + ' ' + tier.name);
     setText('#prof-avatar', initial);
+    const currentLevel = data.user_level && data.user_level.current;
+    ['#mini-avatar-medal', '#prof-avatar-medal'].forEach(function (selector) {
+      const medal = $(selector);
+      if (!medal) return;
+      medal.classList.toggle('hidden', !currentLevel);
+      if (currentLevel) {
+        medal.textContent = currentLevel.icon || '🏅';
+        medal.title = (currentLevel.name || '') + (currentLevel.badge ? ' · ' + currentLevel.badge : '');
+        if (/^#[0-9a-f]{6}$/i.test(currentLevel.color || '')) medal.style.borderColor = currentLevel.color;
+      }
+    });
     setText('#prof-name', u.name || 'کاربر');
     setText('#prof-meta', (u.username ? '@' + u.username + ' · ' : '') + 'شناسه: ' + faNum(u.external_id || u.telegram_id));
-    setText('#prof-tier-badge', tier.icon + ' ' + tier.name);
+    setText('#prof-tier-badge', tier.icon + ' ' + tier.name + (tier.badge ? ' · ' + tier.badge : ''));
+    const tierBadge = $('#prof-tier-badge');
+    if (tierBadge && /^#[0-9a-f]{6}$/i.test(tier.color || '')) tierBadge.style.color = tier.color;
+    setText('#prof-tier-benefits', tier.benefits || '');
     setText('#prof-code-badge', 'کد دعوت: ' + (u.referral_code || '—'));
     setText('#prof-joined-date', u.joined_date_fa ? 'عضویت: ' + u.joined_date_fa : '');
 

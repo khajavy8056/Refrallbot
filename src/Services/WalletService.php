@@ -357,7 +357,7 @@ final class WalletService
                 ['u' => $userId]
             );
             $totalIn = (int) $this->db->value(
-                "SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions WHERE user_id = :u AND status = 'completed' AND direction = 'credit' AND type IN ('commission_direct','commission_welcome','commission_level','campaign_reward','adjustment','withdrawal_release')",
+                "SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions WHERE user_id = :u AND status = 'completed' AND direction = 'credit' AND type IN ('commission_direct','commission_welcome','commission_level','campaign_reward','level_promotion','adjustment','withdrawal_release')",
                 ['u' => $userId]
             );
             $totalOut = (int) $this->db->value(

@@ -435,6 +435,8 @@ final class BotHandler
         $template = (string) SettingsService::get($key, $default);
 
         $cs = CommissionSettings::current($this->db);
+        $levelProfile = (new \RB\Services\UserLevelService($this->db))->profile((int) ($user['id'] ?? 0));
+        $directReward = $cs->directEnabled ? (int) ($levelProfile['next_invite_reward'] ?? $cs->effectiveDirectReward()) : 0;
         $text = str_replace(
             [
                 '{name}', '{app_name}', '{username}', '{max_levels}', '{min_withdraw}',
@@ -447,12 +449,12 @@ final class BotHandler
                 !empty($user['username']) ? '@' . e((string) $user['username']) : e($name),
                 fa_digits($cs->maxLevels),
                 wtoman(SettingsService::int('min_withdraw_amount', 30000)),
-                wtoman($cs->effectiveDirectReward()),
-                wtoman($cs->effectiveDirectReward()),
+                wtoman($directReward),
+                wtoman($directReward),
                 wtoman($cs->effectiveInviteeReward()),
                 wtoman($cs->effectiveInviteeReward()),
                 e(MessengerCapabilities::label($this->platform)),
-                wtoman($cs->effectiveDirectReward()),
+                wtoman($directReward),
                 wtoman($cs->effectiveInviteeReward()),
             ],
             $template
@@ -911,6 +913,17 @@ final class BotHandler
             . '🌐 زیرمجموعه غیرمستقیم (لایه‌های ۱+): <b>' . fa_digits($indirect) . " نفر</b>\n"
             . '💰 مجموع درآمد: <b>' . wtoman($wallet['total_earned']) . "</b>\n"
             . '👛 موجودی قابل برداشت: <b>' . wtoman($wallet['balance']) . '</b>';
+
+        $userLevel = (new \RB\Services\UserLevelService($this->db))->profile((int) $user['id']);
+        if ($userLevel !== null) {
+            $current = $userLevel['current'];
+            $next = $userLevel['next'];
+            $text .= "\n\n🏅 سطح: " . e(($current['icon'] ?? '🌱') . ' ' . ($current['name'] ?? 'شروع‌کننده'));
+            if (!empty($current['badge'])) $text .= ' · ' . e($current['badge']);
+            $text .= "\nدعوت معتبر: " . fa_digits($userLevel['count']);
+            if ($next) $text .= "\nتا سطح " . e($next['name']) . ': ' . fa_digits(max(0, (int) $next['min_invites'] - $userLevel['count'])) . ' دعوت';
+            if (!empty($current['benefits'])) $text .= "\nمزایا: " . e($current['benefits']);
+        }
 
         $this->driver->sendMessage($chatId, $text, [
             'inline_rows' => [

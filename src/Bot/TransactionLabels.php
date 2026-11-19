@@ -13,6 +13,7 @@ final class TransactionLabels
         'commission_welcome' => 'پاداش خوش‌آمدگویی دعوت',
         'commission_level' => 'پورسانت لایه‌ای',
         'campaign_reward' => 'جایزه کمپین',
+        'level_promotion' => 'جایزه ارتقای سطح',
         'withdrawal_reserve' => 'رزرو برداشت',
         'withdrawal_release' => 'بازگشت مبلغ برداشت',
         'withdrawal_paid' => 'پرداخت برداشت',

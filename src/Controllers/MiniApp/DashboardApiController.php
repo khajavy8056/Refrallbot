@@ -111,6 +111,24 @@ final class DashboardApiController extends Controller
 
         $userSvc = new UserService($db);
         $analytics = self::buildUserAnalytics($db, $user, $summary, $userSvc);
+        $userLevel = (new \RB\Services\UserLevelService($db))->profile($uid);
+        if ($userLevel !== null) {
+            $current = $userLevel['current'];
+            $next = $userLevel['next'];
+            $start = (int) ($current['min_invites'] ?? 0);
+            $target = (int) ($next['min_invites'] ?? 0);
+            $analytics['tier'] = [
+                'name' => $current['name'] ?? 'شروع‌کننده',
+                'icon' => $current['icon'] ?? '🌱',
+                'badge' => $current['badge'] ?? '',
+                'color' => $current['color'] ?? '#6366f1',
+                'benefits' => $current['benefits'] ?? '',
+                'qualified_count' => $userLevel['count'],
+                'next_name' => $next['name'] ?? null,
+                'remaining' => $next ? max(0, $target - $userLevel['count']) : 0,
+                'progress_pct' => $next ? min(100, (int) round(100 * ($userLevel['count'] - $start) / max(1, $target - $start))) : 100,
+            ];
+        }
         $comSettings = CommissionSettings::current($db);
         $pendingReqs = (!empty($user['referred_by']) && empty($user['qualified_at']))
             ? $userSvc->pendingRequirements($user, $comSettings)
@@ -211,10 +229,11 @@ final class DashboardApiController extends Controller
                 'rank' => $rank,
             ],
             'wallet' => $summary,
+            'user_level' => $userLevel,
             'referral_rewards' => [
                 'inviter_enabled' => $comSettings->directEnabled,
-                'inviter_reward' => $comSettings->effectiveDirectReward(),
-                'inviter_reward_fa' => wtoman($comSettings->effectiveDirectReward()),
+                'inviter_reward' => $comSettings->directEnabled ? ($userLevel['next_invite_reward'] ?? $comSettings->effectiveDirectReward()) : 0,
+                'inviter_reward_fa' => wtoman($comSettings->directEnabled ? ($userLevel['next_invite_reward'] ?? $comSettings->effectiveDirectReward()) : 0),
                 'invitee_enabled' => $comSettings->inviteeEnabled,
                 'invitee_reward' => $comSettings->effectiveInviteeReward(),
                 'invitee_reward_fa' => wtoman($comSettings->effectiveInviteeReward()),
