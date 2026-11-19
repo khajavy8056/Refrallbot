@@ -146,7 +146,7 @@ $trainingDownload = $trainingLocal ? url('admin/training/video?download=1') : \R
         <div class="training-toolbar" data-training-drag>
             <span class="training-grip" aria-hidden="true">⋮⋮</span>
             <span class="training-label">آموزش پنل</span>
-            <a class="training-control" href="<?= e($trainingDownload) ?>" target="_blank" rel="noopener noreferrer" title="دانلود ویدیو" aria-label="دانلود ویدیو">⬇</a>
+            <a class="training-control" data-training-download href="<?= e($trainingDownload) ?>" target="_blank" rel="noopener noreferrer" title="دانلود ویدیو" aria-label="دانلود ویدیو">⬇</a>
             <button class="training-control" type="button" data-training-float title="معلق روی پنل" aria-label="معلق روی پنل">▣</button>
             <button class="training-control" type="button" data-training-close title="بستن" aria-label="بستن آموزش">✕</button>
         </div>

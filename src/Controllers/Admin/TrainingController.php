@@ -7,6 +7,7 @@ use RB\Http\AdminController;
 use RB\Services\AdminAuth;
 use RB\Services\AuditService;
 use RB\Services\TrainingVideoService;
+use RB\Services\TrainingDownloadService;
 use RB\Support\Request;
 
 final class TrainingController extends AdminController
@@ -27,6 +28,28 @@ final class TrainingController extends AdminController
             $this->flash('error', $e->getMessage());
         }
         Request::redirect(url('admin/training'));
+    }
+
+    public function startDownload(): void
+    {
+        if (!AdminAuth::requireSuperAdmin()) { $this->fail('فقط مدیر کل مجاز است.', 403); return; }
+        // Do not block other requests while Google transfers the file.
+        if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
+        @ignore_user_abort(true);
+        @set_time_limit(0);
+        try {
+            $result = (new TrainingDownloadService())->download();
+            $this->json(['ok'=>($result['state'] ?? '') !== 'error'] + $result);
+        } catch (\Throwable $e) {
+            $this->fail($e->getMessage(), 422);
+        }
+    }
+
+    public function downloadStatus(): void
+    {
+        if (!AdminAuth::requireSuperAdmin()) { $this->fail('فقط مدیر کل مجاز است.', 403); return; }
+        header('Cache-Control: no-store');
+        $this->json(['ok'=>true] + (new TrainingDownloadService())->status());
     }
 
     /** Protected streaming and download; range support lets browsers seek without buffering 265 MB. */

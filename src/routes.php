@@ -39,6 +39,8 @@ return static function (Router $router): void {
     $router->get('/admin/training', [Admin\TrainingController::class, 'index'], ['admin']);
     $router->get('/admin/training/video', [Admin\TrainingController::class, 'video'], ['admin']);
     $router->post('/admin/training/upload', [Admin\TrainingController::class, 'upload'], ['admin', 'csrf']);
+    $router->post('/admin/training/download/start', [Admin\TrainingController::class, 'startDownload'], ['admin', 'csrf']);
+    $router->get('/admin/training/download/status', [Admin\TrainingController::class, 'downloadStatus'], ['admin']);
 
     // کاربران و شبکه
     $router->get('/admin/users', [Admin\UserController::class, 'index'], ['admin']);

@@ -48,6 +48,18 @@ $statusBadges = [
     </form>
 </div>
 
+<?php if (!(new \RB\Services\TrainingVideoService())->hasLocalVideo()): ?>
+<div class="card mb-3" data-training-transfer data-start="<?= url('admin/training/download/start') ?>" data-status="<?= url('admin/training/download/status') ?>" data-video="<?= url('admin/training/video') ?>" data-download="<?= url('admin/training/video?download=1') ?>">
+    <div class="card-header"><h2 class="card-title">انتقال ویدیوی آموزش به هاست</h2></div>
+    <div class="card-body">
+        <p data-transfer-message role="status" aria-live="polite">آماده‌سازی انتقال ویدیوی آموزش از Google Drive…</p>
+        <progress data-transfer-progress max="100" value="0" style="width:100%" aria-label="پیشرفت انتقال ویدیوی آموزش"></progress>
+        <div class="form-hint">پس از نصب نسخه، ویدیو جداگانه دریافت می‌شود. پایان نصب نرم‌افزار به موفقیت این انتقال وابسته نیست. برای دیدن پیشرفت این صفحه را باز نگه دارید؛ در صورت قطع انتقال امکان تلاش مجدد وجود دارد.</div>
+        <button class="btn btn-secondary mt-2" type="button" data-transfer-retry hidden>تلاش مجدد انتقال</button>
+    </div>
+</div>
+<?php endif; ?>
+
 <div class="alert alert-info mb-3">
     <span class="alert-icon">🛡</span>
     <div>

@@ -922,7 +922,14 @@
   const remove = key => { try { sessionStorage.removeItem(key); } catch (_) {} };
   let player = null;
   let workspace = null;
-  window.RBTrainingShell = { open: () => open(false) };
+  window.RBTrainingShell = {
+    open: () => { open(false); fullscreen(); },
+    setLocalSource: (video, download) => {
+      panel.dataset.local = '1'; panel.dataset.source = video;
+      const link = document.querySelector('[data-training-download]');
+      if (link) link.href = download;
+    }
+  };
   function keepPanelNavigable() {
     if (workspace) return;
     const layout = document.querySelector('.layout');
@@ -949,7 +956,20 @@
     layout.style.display = 'none';
   }
 
+  function fullscreen() {
+    if (overlay.requestFullscreen && !document.fullscreenElement) {
+      const promise = overlay.requestFullscreen();
+      if (promise && promise.catch) promise.catch(() => {});
+    }
+  }
+  function exitFullscreen() {
+    if (document.fullscreenElement === overlay && document.exitFullscreen) {
+      const promise = document.exitFullscreen();
+      if (promise && promise.catch) promise.catch(() => {});
+    }
+  }
   function setFloating(floating) {
+    if (floating) exitFullscreen();
     overlay.classList.toggle('is-floating', floating);
     panel.setAttribute('aria-modal', floating ? 'false' : 'true');
     toggle.title = floating ? 'نمایش بزرگ' : 'معلق روی پنل';
@@ -981,14 +1001,15 @@
     }
     overlay.hidden = false;
     setFloating(floating);
-    if (panel.dataset.local === '1') { const promise = player.play(); if (promise && promise.catch) promise.catch(() => {}); }
+    if (player.tagName === 'VIDEO') { const promise = player.play(); if (promise && promise.catch) promise.catch(() => {}); }
   }
-  opener.addEventListener('click', () => open(false));
-  toggle.addEventListener('click', () => setFloating(!overlay.classList.contains('is-floating')));
+  opener.addEventListener('click', () => { open(false); fullscreen(); });
+  toggle.addEventListener('click', () => { const floating = !overlay.classList.contains('is-floating'); setFloating(floating); if (!floating) fullscreen(); });
   close.addEventListener('click', () => {
+    exitFullscreen();
     overlay.hidden = true;
     remove(stateKey); remove(timeKey);
-    if (player) { if (panel.dataset.local === '1') player.pause(); player.removeAttribute('src'); player.remove(); player = null; }
+    if (player) { if (player.tagName === 'VIDEO') player.pause(); player.removeAttribute('src'); player.remove(); player = null; }
     if (workspace) workspace.focus(); else opener.focus();
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden && !overlay.classList.contains('is-floating')) close.click(); });
@@ -1010,4 +1031,70 @@
   });
   if (read(stateKey) === '1') open(true);
   else if (panel.dataset.autoOpen === '1') open(false);
+})();
+
+// This starts only after the update page has reloaded with the new version.
+// The server downloads independently; polling does not hold the PHP session lock.
+(function () {
+  const box = document.querySelector('[data-training-transfer]');
+  if (!box || !window.RB) return;
+  const bar = box.querySelector('[data-transfer-progress]');
+  const message = box.querySelector('[data-transfer-message]');
+  const retry = box.querySelector('[data-transfer-retry]');
+  let running = false, timer = null, launches = 0;
+  const schedule = () => { clearTimeout(timer); timer = setTimeout(poll, 2000); };
+  function start() {
+    if (running) return;
+    running = true; launches++;
+    retry.hidden = true;
+    message.textContent = 'در حال اتصال هاست به Google Drive…';
+    // A proxy timeout does not necessarily stop PHP; rely on the status endpoint.
+    window.RB.post(box.dataset.start, {}).then(result => {
+      running = false;
+      if (result && !result.ok && !result.state && [401, 403, 419, 422].includes(result.status)) {
+        clearTimeout(timer);
+        message.textContent = result.error || 'انتقال آغاز نشد؛ دوباره تلاش کنید.';
+        retry.hidden = false;
+      }
+    }).catch(() => { running = false; });
+    schedule();
+  }
+  async function poll() {
+    const result = await window.RB.get(box.dataset.status);
+    if (!result || !result.ok) {
+      message.textContent = (result && result.error) || 'دریافت وضعیت انتقال ممکن نشد.';
+      retry.hidden = false; return;
+    }
+    const percent = result.total > 0 ? Math.min(100, Math.floor(result.bytes / result.total * 100)) : 0;
+    bar.value = percent;
+    if (result.state === 'done') {
+      bar.value = 100; message.textContent = 'ویدیوی آموزش با موفقیت روی هاست ذخیره شد.'; retry.hidden = true;
+      let notified = false;
+      try {
+        const shell = window.parent !== window ? window.parent.RBTrainingShell : window.RBTrainingShell;
+        if (shell && shell.setLocalSource) { shell.setLocalSource(box.dataset.video, box.dataset.download); notified = true; }
+      } catch (_) { /* not a same-origin training workspace */ }
+      if (!notified) {
+        const panel = document.querySelector('[data-training-window]');
+        const link = document.querySelector('[data-training-download]');
+        if (panel) { panel.dataset.local = '1'; panel.dataset.source = box.dataset.video; }
+        if (link) link.href = box.dataset.download;
+      }
+      return;
+    }
+    if (result.state === 'error') {
+      message.textContent = result.message || 'انتقال ویدیو ناموفق بود. پخش از Drive همچنان در دسترس است.';
+      retry.hidden = false; return;
+    }
+    if (result.state === 'running') {
+      message.textContent = 'در حال انتقال ویدیوی آموزش به هاست: ' + percent + '٪';
+      schedule(); return;
+    }
+    if (result.state === 'idle' && launches === 0) { start(); return; }
+    if (result.state === 'idle' && running) { schedule(); return; }
+    message.textContent = 'انتقال شروع نشد؛ دوباره تلاش کنید. ویدیو همچنان از Drive قابل پخش است.';
+    retry.hidden = false;
+  }
+  retry.addEventListener('click', start);
+  poll();
 })();
