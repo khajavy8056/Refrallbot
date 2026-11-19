@@ -66,6 +66,10 @@ final class Migrator
                     if ($existing !== null && $this->db->indexExists($existing[0], $existing[1])) {
                         continue;
                     }
+                    $existingCol = $this->existingAddedColumn($sql);
+                    if ($existingCol !== null && $this->db->columnExists($existingCol[0], $existingCol[1])) {
+                        continue;
+                    }
                     $this->db->pdo()->exec($sql);
                 } catch (\PDOException $e) {
                     throw new \RuntimeException('خطا در اجرای Migration ' . $name . ': ' . ErrorHandler::redact($e->getMessage()), 0, $e);
@@ -103,5 +107,18 @@ final class Migrator
             return null;
         }
         return [$m[2], $m[1]];
+    }
+
+    /**
+     * استخراج (جدول، ستون) از یک دستور ALTER TABLE ... ADD COLUMN برای idempotent بودن Migrationها.
+     *
+     * @return array{0:string,1:string}|null
+     */
+    private function existingAddedColumn(string $sql): ?array
+    {
+        if (!preg_match('~^ALTER\s+TABLE\s+[`"]([A-Za-z0-9_]+)[`"]\s+ADD\s+COLUMN\s+[`"]([A-Za-z0-9_]+)[`"]~i', trim($sql), $m)) {
+            return null;
+        }
+        return [$m[1], $m[2]];
     }
 }

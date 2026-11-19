@@ -4,9 +4,11 @@ declare(strict_types=1);
 namespace RB\Bot;
 
 use RB\Services\CampaignService;
+use RB\Services\CommissionSettings;
 use RB\Services\MembershipService;
 use RB\Services\MenuService;
 use RB\Services\Notifier;
+use RB\Services\ReferralMessageService;
 use RB\Services\SettingsService;
 use RB\Services\SupportService;
 use RB\Services\TelegramService;
@@ -162,6 +164,13 @@ final class BotHandler
         if (!$this->passGates($user, $chatId)) {
             return;
         }
+        if (!empty($user['referred_by']) && empty($user['qualified_at'])) {
+            $fresh = $this->users->find((int) $user['id']) ?? $user;
+            if ($this->users->maybeQualify($fresh)) {
+                Notifier::flushDeferred();
+                $user = $this->users->find((int) $user['id']) ?? $fresh;
+            }
+        }
 
         // ---- دکمه‌های منو
         $action = MenuService::actionByTitle($text);
@@ -213,7 +222,7 @@ final class BotHandler
             return;
         }
 
-        // اتصال پیام /start ثبت‌شده به شناسهٔ کاربر تازه و بررسی مجدد شرایط واجد شرایط شدن
+        // اتصال پیام /start ثبت‌شده به شناسهٔ کاربر تازه
         try {
             $this->db->run(
                 'UPDATE telegram_messages SET user_id = :u WHERE telegram_id = :t AND user_id IS NULL',
@@ -221,9 +230,6 @@ final class BotHandler
             );
         } catch (\Throwable) {
         }
-        $fresh = $this->users->find((int) $user['id']) ?? $user;
-        $this->users->maybeQualify($fresh);
-        $user = $this->users->find((int) $user['id']) ?? $fresh;
 
         // ثبت رویداد مشکوک: تلاش برای استفاده از لینک خود
         if ($payload !== null) {
@@ -238,7 +244,42 @@ final class BotHandler
         }
 
         $this->session->clear($telegramId);
-        $this->sendMainMenu($user, $chatId, $this->startText($isNew, $user));
+
+        $fresh = $this->users->find((int) $user['id']) ?? $user;
+        $isReferredStart = ($isNew || !empty($result['referral_applied'])) && !empty($fresh['referred_by']);
+        $settings = CommissionSettings::current($this->db, true);
+
+        // بررسی دروازه‌های اجباری ورود (شماره تماس و عضویت کانال) پیش از هرگونه پرداخت پاداش
+        $membership = new MembershipService($this->db);
+        $gate = $membership->gate($fresh);
+        $fresh = $this->users->find((int) $fresh['id']) ?? $fresh;
+
+        if (!$gate['passed']) {
+            // اگر کاربر از طریق لینک دعوت آمده است، ابتدا پیام خوش‌آمدگویی انگیزشی و راهنمای دریافت پاداش را نمایش بده
+            if ($isReferredStart) {
+                $welcomeText = $this->referredStartText($fresh, $settings);
+                $this->tg->sendMessage($chatId, $welcomeText);
+            }
+            $this->sendMembershipGate($fresh, $chatId, $gate);
+            Notifier::flushDeferred();
+            return;
+        }
+
+        // دروازه‌ها عبور شده‌اند؛ اکنون بررسی کن آیا تمام شرایط پرداخت پاداش تکمیل شده است
+        $this->users->maybeQualify($fresh);
+        Notifier::flushDeferred();
+        $user = $this->users->find((int) $fresh['id']) ?? $fresh;
+
+        $welcomeMessage = $isReferredStart
+            ? $this->referredStartText($user, $settings)
+            : $this->startText($isNew, $user);
+
+        $this->sendMainMenu($user, $chatId, $welcomeMessage);
+
+        // اگر کاربر دعوت‌شده هنوز شرط تکمیل‌نشده‌ای دارد (مثلاً پروفایل، شماره یا کانالِ شرط پاداش)، دکمه اقدام مستقیم بفرست
+        if ($isReferredStart && empty($user['qualified_at'])) {
+            $this->sendPendingConditionActions($user, $chatId, $settings);
+        }
     }
 
     /**
@@ -277,15 +318,25 @@ final class BotHandler
             : "سلام {name} عزیز 👋\nخوش برگشتید به <b>{app_name}</b>.\n\nاز منوی زیر بخش مورد نظر را انتخاب کنید 👇";
         $template = (string) SettingsService::get($key, $default);
 
+        $commissionSettings = CommissionSettings::current($this->db);
         $text = str_replace(
-            ['{name}', '{app_name}', '{username}', '{max_levels}', '{min_withdraw}', '{direct_reward}'],
             [
-                $name,
-                (string) SettingsService::get('app_name', 'رفرال‌بات'),
-                $user['username'] ? '@' . $user['username'] : $name,
+                '{name}', '{app_name}', '{username}', '{max_levels}', '{min_withdraw}',
+                '{direct_reward}', '{inviter_reward}', '{invitee_reward}', '{welcome_reward}',
+                '[پاداش دعوت‌کننده]', '[پاداش دعوت‌شده]',
+            ],
+            [
+                e($name),
+                e((string) SettingsService::get('app_name', 'رفرال‌بات')),
+                $user['username'] ? '@' . e((string) $user['username']) : e($name),
                 fa_digits($this->maxDepth),
                 wtoman(SettingsService::int('min_withdraw_amount', 30000)),
-                wtoman(\RB\Services\CommissionSettings::current($this->db)->directReward),
+                wtoman($commissionSettings->effectiveDirectReward()),
+                wtoman($commissionSettings->effectiveDirectReward()),
+                wtoman($commissionSettings->effectiveInviteeReward()),
+                wtoman($commissionSettings->effectiveInviteeReward()),
+                wtoman($commissionSettings->effectiveDirectReward()),
+                wtoman($commissionSettings->effectiveInviteeReward()),
             ],
             $template
         );
@@ -297,6 +348,60 @@ final class BotHandler
             }
         }
         return $text;
+    }
+
+    /** متن خوش‌آمدگویی و راهنمای تکمیل ثبت‌نام ویژه کاربرانی که با لینک دعوت وارد ربات شده‌اند */
+    private function referredStartText(array $user, ?CommissionSettings $settings = null): string
+    {
+        $settings ??= CommissionSettings::current($this->db);
+        $text = ReferralMessageService::renderReferredWelcomeMessage($user, null, $settings, $this->db);
+        if (SettingsService::bool('show_rules_in_start', true)) {
+            $rules = trim((string) SettingsService::get('start_rules_text', ''));
+            if ($rules !== '') {
+                $text .= "\n\n" . $rules;
+            }
+        }
+        return $text;
+    }
+
+    /** ارسال دکمه‌های تعاملی برای تکمیل شرایط باقی‌مانده دریافت پاداش دعوت */
+    private function sendPendingConditionActions(array $user, int|string $chatId, ?CommissionSettings $settings = null): void
+    {
+        $settings ??= CommissionSettings::current($this->db);
+        $pending = $this->users->pendingRequirements($user, $settings);
+        if ($pending === []) {
+            return;
+        }
+        $rows = [];
+        $membership = new MembershipService($this->db);
+        foreach ($pending as $item) {
+            $key = (string) ($item['key'] ?? '');
+            if ($key === 'channels') {
+                foreach ($membership->activeChannels() as $channel) {
+                    $url = $channel['invite_link'] ?: (str_starts_with((string) $channel['chat_id'], '@')
+                        ? 'https://t.me/' . ltrim((string) $channel['chat_id'], '@')
+                        : null);
+                    if ($url) {
+                        $rows[] = [['text' => '📢 عضویت در ' . $channel['title'], 'url' => $url]];
+                    }
+                }
+                $rows[] = [['text' => '✅ بررسی عضویت کانال و فعال‌سازی پاداش', 'callback_data' => 'gate:check']];
+            } elseif ($key === 'phone') {
+                $rows[] = [['text' => '📱 ثبت و تأیید شماره تماس', 'callback_data' => 'qualify:phone']];
+            } elseif ($key === 'profile') {
+                $rows[] = [['text' => '✏️ تکمیل نام و نام خانوادگی پروفایل', 'callback_data' => 'qualify:profile']];
+            }
+        }
+        if ($rows === []) {
+            return;
+        }
+        $inviteeReward = $settings->effectiveInviteeReward();
+        $prompt = $inviteeReward > 0
+            ? '👇 برای تکمیل مراحل و دریافت <b>' . wtoman($inviteeReward) . '</b> پاداش خوش‌آمدگویی، از گزینه‌های زیر استفاده کنید:'
+            : '👇 برای تکمیل مراحل ثبت‌نام از گزینه‌های زیر استفاده کنید:';
+        $this->tg->sendMessage($chatId, $prompt, [
+            'reply_markup' => TelegramService::inlineKeyboard($rows),
+        ]);
     }
 
     // ------------------------------------------------------------------ گیت‌ها
@@ -313,6 +418,7 @@ final class BotHandler
             $fresh = $this->users->find((int) $user['id']);
             if ($fresh !== null && !empty($fresh['channels_verified'])) {
                 $this->users->maybeQualify($fresh);
+                Notifier::flushDeferred();
             }
         }
         return true;
@@ -384,8 +490,27 @@ final class BotHandler
             return;
         }
         $this->users->setPhone((int) $user['id'], $phone);
+        Notifier::flushDeferred();
         $user = $this->users->find((int) $user['id']) ?? $user;
-        $this->sendMainMenu($user, $chatId, "✅ شماره تماس شما ثبت شد.\n\nاز منوی زیر گزینه مورد نظر را انتخاب کنید:");
+
+        // اگر پس از ثبت شماره تماس، عضویت اجباری کانال هم فعال باشد، بلافاصله مرحله بعد را نمایش بده
+        $gate = (new MembershipService($this->db))->gate($user);
+        $user = $this->users->find((int) $user['id']) ?? $user;
+        if (!$gate['passed']) {
+            $this->send($chatId, '✅ شماره تماس شما با موفقیت تأیید و ثبت شد. لطفاً مرحله بعدی را تکمیل کنید:');
+            $this->sendMembershipGate($user, $chatId, $gate);
+            return;
+        }
+
+        // اگر کاربر از قبل عضو کانال بوده، gate بالا channels_verified را فعال کرده است؛ شرایط پاداش را دوباره بررسی کن
+        $this->users->maybeQualify($user);
+        Notifier::flushDeferred();
+        $user = $this->users->find((int) $user['id']) ?? $user;
+
+        $this->sendMainMenu($user, $chatId, "✅ شماره تماس شما با موفقیت ثبت شد.\n\nاز منوی زیر گزینه مورد نظر را انتخاب کنید:");
+        if (!empty($user['referred_by']) && empty($user['qualified_at'])) {
+            $this->sendPendingConditionActions($user, $chatId);
+        }
     }
 
     // ------------------------------------------------------------------ وضعیت‌ها
@@ -465,6 +590,23 @@ final class BotHandler
                 $this->session->clear((int) $user['telegram_id']);
                 $this->send($chatId, "✅ پیام شما ثبت شد.\nتیم پشتیبانی در اسرع وقت پاسخ می‌دهد.");
                 return true;
+
+            case 'complete_profile_name':
+                $cleaned = trim((string) preg_replace('~\s+~u', ' ', $text));
+                $parts = explode(' ', $cleaned, 2);
+                if (count($parts) < 2 || mb_strlen($parts[0]) < 2 || mb_strlen(trim($parts[1])) < 2) {
+                    $this->send($chatId, '❌ لطفاً <b>نام و نام خانوادگی</b> خود را کامل و با یک فاصله وارد کنید (مثال: <code>علی رضایی</code>):');
+                    return true;
+                }
+                $this->users->updateProfile((int) $user['id'], $parts[0], trim($parts[1]));
+                Notifier::flushDeferred();
+                $this->session->clear((int) $user['telegram_id']);
+                $fresh = $this->users->find((int) $user['id']) ?? $user;
+                $this->sendMainMenu($fresh, $chatId, '✅ پروفایل شما (' . e($parts[0] . ' ' . trim($parts[1])) . ') با موفقیت تکمیل و ذخیره شد.');
+                if (!empty($fresh['referred_by']) && empty($fresh['qualified_at'])) {
+                    $this->sendPendingConditionActions($fresh, $chatId);
+                }
+                return true;
         }
         return false;
     }
@@ -511,16 +653,14 @@ final class BotHandler
     private function actInvite(array $user, int|string $chatId): void
     {
         $link = $this->referralLink($user);
-        $text = "🔗 <b>لینک دعوت اختصاصی شما</b>\n\n"
-            . "<code>" . e($link) . "</code>\n\n"
-            . "کد دعوت: <code>" . e($user['referral_code']) . "</code>\n\n"
-            . "این لینک را برای دوستان خود بفرستید. هر عضویت معتبر پاداش دارد!\n"
-            . "پاداش هر معرفی: <b>" . wtoman(\RB\Services\CommissionSettings::current($this->db)->directReward) . "</b>";
-        $share = 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode('با لینک من عضو شو و درآمد کسب کن!');
+        $settings = CommissionSettings::current($this->db);
+        $text = ReferralMessageService::renderInviteMessage($user, $link, $settings, $this->db);
+        $shareText = ReferralMessageService::renderShareText($user, $link, $settings, $this->db);
+        $share = 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode($shareText);
         $this->tg->sendMessage($chatId, $text, [
             'reply_markup' => TelegramService::inlineKeyboard([
-                [['text' => '📤 اشتراک‌گذاری لینک', 'url' => $share]],
-                [['text' => '🔄 دریافت مجدد', 'callback_data' => 'menu:invite']],
+                [['text' => '📤 ارسال و دعوت دوستان', 'url' => $share]],
+                [['text' => '🔄 بروزرسانی لینک و مبالغ', 'callback_data' => 'menu:invite']],
             ]),
         ]);
     }
@@ -547,8 +687,12 @@ final class BotHandler
     private function actIncome(array $user, int|string $chatId): void
     {
         $wallet = (new WalletService($this->db))->summary((int) $user['id']);
+        $welcomeLine = ($wallet['welcome_earned'] ?? 0) > 0 || CommissionSettings::current($this->db)->inviteeEnabled
+            ? "پاداش خوش‌آمدگویی دعوت: " . wtoman((int) ($wallet['welcome_earned'] ?? 0)) . "\n"
+            : '';
         $text = "💰 <b>درآمد من</b>\n\n"
             . "پاداش معرفی مستقیم: " . wtoman($wallet['direct_earned']) . "\n"
+            . $welcomeLine
             . "پورسانت لایه‌ای: " . wtoman($wallet['layer_earned']) . "\n"
             . "جایزه کمپین‌ها: " . wtoman($wallet['campaign_earned']) . "\n"
             . "─────────────────\n"
@@ -749,15 +893,76 @@ final class BotHandler
         if ($data === 'gate:check') {
             $membership = new MembershipService($this->db);
             $gate = $membership->gate($user);
+
+            // حتی اگر force_channel_membership خاموش ولی شرط channels در پورسانت فعال باشد، کانال‌های فعال را بررسی کن
+            if ($gate['passed'] && empty($user['channels_verified']) && !$membership->enforcementEnabled()) {
+                $activeChannels = $membership->activeChannels();
+                if ($activeChannels !== [] && $this->tg->isConfigured()) {
+                    $notJoined = [];
+                    $apiErrors = [];
+                    foreach ($activeChannels as $ch) {
+                        $chk = $this->tg->checkMembership($ch, (int) $user['telegram_id']);
+                        if (!$chk['ok']) {
+                            $apiErrors[] = $ch['title'];
+                            continue;
+                        }
+                        if ($chk['member'] === false) {
+                            $notJoined[] = $ch;
+                        }
+                    }
+                    if ($notJoined !== []) {
+                        $gate = ['passed' => false, 'reason' => 'channels', 'channels' => $notJoined, 'errors' => []];
+                    } elseif ($apiErrors === []) {
+                        $this->db->update('users', ['channels_verified' => 1, 'updated_at' => now()], 'id = :id', ['id' => (int) $user['id']]);
+                    }
+                } elseif ($activeChannels === []) {
+                    $this->db->update('users', ['channels_verified' => 1, 'updated_at' => now()], 'id = :id', ['id' => (int) $user['id']]);
+                }
+            }
+
             if ($gate['passed']) {
                 $fresh = $this->users->find((int) $user['id']) ?? $user;
                 $this->users->maybeQualify($fresh);
+                Notifier::flushDeferred();
+                $updated = $this->users->find((int) $user['id']) ?? $fresh;
                 $this->tg->answerCallbackQuery($callbackId, '✅ عضویت تأیید شد.');
                 if ($chatId !== null) {
-                    $this->sendMainMenu($this->users->find((int) $user['id']) ?? $fresh, $chatId, '✅ عضویت شما تأیید شد. اکنون می‌توانید از ربات استفاده کنید.');
+                    $this->sendMainMenu($updated, $chatId, '✅ عضویت شما در کانال‌ها تأیید شد. اکنون می‌توانید از تمامی امکانات ربات استفاده کنید.');
+                    if (!empty($updated['referred_by']) && empty($updated['qualified_at'])) {
+                        $this->sendPendingConditionActions($updated, $chatId);
+                    }
+                }
+            } elseif (($gate['reason'] ?? '') === 'contact') {
+                $this->tg->answerCallbackQuery($callbackId, '📱 ابتدا شماره تماس خود را ارسال کنید.', true);
+                if ($chatId !== null) {
+                    $this->sendMembershipGate($user, $chatId, $gate);
                 }
             } else {
-                $this->tg->answerCallbackQuery($callbackId, '❌ هنوز عضو کانال‌ها نیستید.', true);
+                $this->tg->answerCallbackQuery($callbackId, '❌ هنوز عضو همه کانال‌های اجباری نیستید.', true);
+            }
+            return;
+        }
+
+        if ($data === 'qualify:phone') {
+            $this->tg->answerCallbackQuery($callbackId, '');
+            if ($chatId !== null) {
+                $text = (string) SettingsService::get('contact_request_message', 'برای تکمیل ثبت‌نام و فعال‌سازی پاداش، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید:');
+                $this->tg->sendMessage($chatId, $text, [
+                    'reply_markup' => [
+                        'keyboard' => [[['text' => '📱 ارسال شماره تماس', 'request_contact' => true]]],
+                        'resize_keyboard' => true,
+                        'one_time_keyboard' => true,
+                    ],
+                ]);
+            }
+            return;
+        }
+
+        if ($data === 'qualify:profile') {
+            $this->tg->answerCallbackQuery($callbackId, '');
+            if ($chatId !== null) {
+                $this->session->setStep((int) $user['telegram_id'], (int) $user['id'], 'complete_profile_name', []);
+                $this->send($chatId, "✏️ لطفاً <b>نام و نام خانوادگی</b> خود را با یک فاصله ارسال کنید (مثال: <code>علی رضایی</code>):\n\n<i>برای انصراف /cancel را بفرستید.</i>");
             }
             return;
         }

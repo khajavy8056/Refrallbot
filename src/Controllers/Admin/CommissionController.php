@@ -27,6 +27,8 @@ final class CommissionController extends AdminController
             'versions' => $versions,
             'stats' => [
                 'total_commissions' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status = 'approved'"),
+                'direct_paid' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status = 'approved' AND type = 'direct'"),
+                'welcome_paid' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status = 'approved' AND type = 'welcome'"),
                 'by_level' => $db->all("SELECT level, COUNT(*) c, COALESCE(SUM(amount),0) s FROM referral_commissions WHERE status='approved' GROUP BY level ORDER BY level"),
                 'events' => (int) $db->value('SELECT COUNT(*) FROM referral_events'),
             ],
@@ -66,6 +68,8 @@ final class CommissionController extends AdminController
         $data = [
             'direct_reward' => Money::parseToman($_POST['direct_reward'] ?? null) ?? 0,
             'direct_enabled' => !empty($_POST['direct_enabled']),
+            'invitee_reward' => Money::parseToman($_POST['invitee_reward'] ?? null) ?? 0,
+            'invitee_enabled' => !empty($_POST['invitee_enabled']),
             'multi_level_enabled' => !empty($_POST['multi_level_enabled']),
             'max_levels' => $maxLevels,
             'levels' => $levels,
@@ -93,6 +97,9 @@ final class CommissionController extends AdminController
             AuditService::log('settings.commission_updated', 'commission_setting', $version->versionId, [
                 'version' => $version->version,
                 'direct_reward' => $data['direct_reward'],
+                'direct_enabled' => $data['direct_enabled'],
+                'invitee_reward' => $data['invitee_reward'],
+                'invitee_enabled' => $data['invitee_enabled'],
                 'max_levels' => $data['max_levels'],
                 'percent_base' => $data['percent_base'],
             ], current_admin_id());
@@ -111,6 +118,9 @@ final class CommissionController extends AdminController
             $this->ok($message, [
                 'version' => (int) $version->version,
                 'direct_reward' => (int) $data['direct_reward'],
+                'direct_enabled' => (bool) $data['direct_enabled'],
+                'invitee_reward' => (int) $data['invitee_reward'],
+                'invitee_enabled' => (bool) $data['invitee_enabled'],
                 'max_levels' => (int) $data['max_levels'],
             ]);
             return;

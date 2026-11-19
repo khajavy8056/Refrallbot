@@ -207,15 +207,21 @@ $stepLabels = [1 => 'پیش‌نیازها', 2 => 'پایگاه داده', 3 => 
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label class="form-label">💰 پاداش هر معرفی موفق (تومان)</label>
-                        <input type="text" class="form-control ltr" name="direct_reward" value="5000" inputmode="numeric">
-                        <div class="form-hint">مبلغی که با هر دعوت موفق به معرف پرداخت می‌شود. بعداً از پنل → پورسانت قابل تغییر است.</div>
+                        <label class="form-label">🎯 پاداش دعوت‌کننده (تومان)</label>
+                        <input type="text" class="form-control ltr" name="direct_reward" value="10000" inputmode="numeric">
+                        <div class="form-hint">مبلغ پاداش شخص معرف پس از تکمیل شرایط (قابل تغییر از پنل مدیریت).</div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">حداقل مبلغ برداشت (تومان)</label>
-                        <input type="text" class="form-control ltr" name="min_withdraw_amount" value="30000" inputmode="numeric">
-                        <div class="form-hint">کاربر تا رسیدن به این مبلغ نمی‌تواند درخواست برداشت ثبت کند.</div>
+                        <label class="form-label">🎁 پاداش دعوت‌شده / خوش‌آمدگویی (تومان)</label>
+                        <input type="text" class="form-control ltr" name="invitee_reward" value="5000" inputmode="numeric">
+                        <div class="form-hint">هدیه کاربر دعوت‌شده پس از تکمیل شرایط (۰ = غیرفعال، کاملاً قابل تغییر).</div>
                     </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">حداقل مبلغ برداشت (تومان)</label>
+                    <input type="text" class="form-control ltr" name="min_withdraw_amount" value="30000" inputmode="numeric">
+                    <div class="form-hint">کاربر تا رسیدن به این مبلغ نمی‌تواند درخواست برداشت ثبت کند.</div>
                 </div>
 
                 <div class="form-group">

@@ -615,6 +615,48 @@ final class Database
     }
 
     /**
+     * آیا ستون با این نام روی این جدول وجود دارد؟
+     * در MySQL از SHOW COLUMNS استفاده می‌شود تا از تداخل collation در information_schema جلوگیری شود.
+     */
+    public function columnExists(string $table, string $column): bool
+    {
+        try {
+            if (!preg_match('~^[A-Za-z0-9_]{1,64}$~', $table) || !preg_match('~^[A-Za-z0-9_]{1,64}$~', $column)) {
+                return false;
+            }
+            if (!$this->tableExists($table)) {
+                return false;
+            }
+            if ($this->isSqlite()) {
+                $stmt = $this->pdo()->query('PRAGMA table_info(' . $this->quoteIdent($table) . ')');
+                if ($stmt === false) {
+                    return false;
+                }
+                while (($row = $stmt->fetch(PDO::FETCH_ASSOC)) !== false) {
+                    if (isset($row['name']) && strcasecmp((string) $row['name'], $column) === 0) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            $like = str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $column);
+            $stmt = $this->pdo()->query('SHOW COLUMNS FROM ' . $this->quoteIdent($table) . ' LIKE ' . $this->quote($like));
+            if ($stmt === false) {
+                return false;
+            }
+            while (($row = $stmt->fetch(PDO::FETCH_ASSOC)) !== false) {
+                $field = (string) ($row['Field'] ?? $row['field'] ?? '');
+                if ($field !== '' && strcasecmp($field, $column) === 0) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
      * اجرای یک تراکنش؛ در صورت خطا همه‌چیز Rollback می‌شود.
      * از Savepoint برای تراکنش‌های تودرتویی استفاده می‌کند.
      */

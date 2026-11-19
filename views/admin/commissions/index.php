@@ -14,77 +14,122 @@ foreach ($stats['by_level'] as $row) {
 ?>
 <div class="flex items-center justify-between wrap gap-3 mb-3">
     <div>
-        <h1 class="mb-0">تنظیمات پورسانت و پاداش</h1>
+        <h1 class="mb-0">تنظیمات پورسانت و پاداش دوطرفه دعوت</h1>
         <p class="text-muted text-sm mb-0">
             نسخه فعال: <strong><?= fa_digits($settings->version) ?></strong>
-            · ذخیره هر تغییر، نسخه جدید می‌سازد و تراکنش‌های قبلی دست‌نخورده می‌مانند
+            · ذخیره هر تغییر، نسخه جدید می‌سازد و در پیام‌ها و محاسبات بعدی فوراً اعمال می‌شود (تراکنش‌های قبلی دست‌نخورده می‌مانند)
         </p>
     </div>
+    <a href="<?= url('admin/settings#messages') ?>" class="btn btn-outline btn-sm">✉️ ویرایش پیام دعوت و خوش‌آمدگویی</a>
 </div>
 
 <div class="stats-grid mb-3" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
-    <div class="stat purple"><div class="stat-head"><div class="stat-icon">💰</div><div class="stat-label">کل پورسانت پرداخت‌شده</div></div>
+    <div class="stat purple"><div class="stat-head"><div class="stat-icon">💰</div><div class="stat-label">کل پاداش پرداخت‌شده</div></div>
         <div class="stat-value" style="font-size:1.1rem"><?= wtoman($stats['total_commissions']) ?></div>
         <div class="stat-foot">در <?= fa_digits($stats['events']) ?> رویداد پاداش</div></div>
-    <div class="stat info"><div class="stat-head"><div class="stat-icon">🎯</div><div class="stat-label">پاداش مستقیم</div></div>
+    <div class="stat info"><div class="stat-head"><div class="stat-icon">🎯</div><div class="stat-label">پاداش دعوت‌کننده</div></div>
         <div class="stat-value" style="font-size:1.1rem"><?= $settings->directEnabled ? wtoman($settings->directReward) : 'غیرفعال' ?></div>
-        <div class="stat-foot">برای هر معرفی واجد شرایط</div></div>
-    <div class="stat success"><div class="stat-head"><div class="stat-icon">％</div><div class="stat-label">مجموع درصد لایه‌ها</div></div>
-        <div class="stat-value"><?= fa_digits($totalPercent) ?>٪</div>
-        <div class="stat-foot">حداکثر مجاز: ۱۰۰٪</div></div>
+        <div class="stat-foot">پرداخت‌شده: <?= wtoman((int) ($stats['direct_paid'] ?? 0)) ?></div></div>
+    <div class="stat success"><div class="stat-head"><div class="stat-icon">🎁</div><div class="stat-label">پاداش دعوت‌شده</div></div>
+        <div class="stat-value" style="font-size:1.1rem"><?= $settings->inviteeEnabled ? wtoman($settings->inviteeReward) : 'غیرفعال' ?></div>
+        <div class="stat-foot">پرداخت‌شده: <?= wtoman((int) ($stats['welcome_paid'] ?? 0)) ?></div></div>
     <div class="stat <?= $settings->multiLevelEnabled ? 'success' : 'warning' ?>"><div class="stat-head"><div class="stat-icon">🪜</div><div class="stat-label">سیستم چندلایه</div></div>
-        <div class="stat-value" style="font-size:1rem"><?= $settings->multiLevelEnabled ? 'فعال' : 'غیرفعال' ?></div>
-        <div class="stat-foot"><?= fa_digits($settings->maxLevels) ?> لایه فعال</div></div>
+        <div class="stat-value" style="font-size:1rem"><?= $settings->multiLevelEnabled ? 'فعال (' . fa_digits($totalPercent) . '٪)' : 'غیرفعال' ?></div>
+        <div class="stat-foot"><?= fa_digits($settings->maxLevels) ?> لایه پیکربندی‌شده</div></div>
 </div>
 
 <form method="post" action="<?= url('admin/commissions') ?>" id="commission-form">
     <?= csrf_field() ?>
     <div class="grid-2 mb-3">
         <div class="card">
-            <div class="card-header"><h2 class="card-title">پاداش مستقیم (سطح ۰)</h2></div>
+            <div class="card-header">
+                <h2 class="card-title">🎁 پاداش دوطرفه دعوت دوستان (مستقل)</h2>
+                <span class="card-subtitle">پس از تکمیل تمام شرایط واریز می‌شود</span>
+            </div>
             <div class="card-body">
-                <div class="form-group">
-                    <label class="checkbox">
-                        <input type="checkbox" name="direct_enabled" value="1" <?= $settings->directEnabled ? 'checked' : '' ?>>
-                        <span class="checkbox-text">پاداش مستقیم فعال باشد</span>
-                    </label>
+                <!-- ۱) پاداش دعوت‌کننده (شخص A) -->
+                <div style="padding:12px;border:1px solid var(--border);border-radius:10px;margin-bottom:12px;background:var(--surface-2,rgba(99,102,241,.05))">
+                    <div class="form-group mb-2">
+                        <label class="checkbox">
+                            <input type="checkbox" name="direct_enabled" id="direct-enabled" value="1" <?= $settings->directEnabled ? 'checked' : '' ?>>
+                            <span class="checkbox-text font-bold">🎯 پاداش دعوت‌کننده (معرف مستقیم) فعال باشد</span>
+                        </label>
+                    </div>
+                    <div class="form-group mb-0">
+                        <label class="form-label">مبلغ پاداش دعوت‌کننده (تومان)</label>
+                        <input type="text" name="direct_reward" id="direct-reward-input" class="form-control ltr" data-money inputmode="numeric"
+                               value="<?= e(number_format($settings->directReward)) ?>" placeholder="مثلاً 10,000" required>
+                        <div class="form-hint">این مبلغ پس از تکمیل شرایط کاربر جدید به کیف پول شخص دعوت‌کننده (A) واریز می‌شود.</div>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">مبلغ پاداش برای هر معرفی واجد شرایط (تومان)</label>
-                    <input type="text" name="direct_reward" class="form-control ltr" data-money inputmode="numeric"
-                           value="<?= e(number_format($settings->directReward)) ?>" required>
-                    <div class="form-hint">این مبلغ به معرفِ مستقیمِ کاربر جدید پرداخت می‌شود. معادل ریالی فقط برای نمایش است.</div>
+
+                <!-- ۲) پاداش دعوت‌شده / خوش‌آمدگویی (شخص B) -->
+                <div style="padding:12px;border:1px solid var(--border);border-radius:10px;margin-bottom:14px;background:var(--surface-2,rgba(16,185,129,.05))">
+                    <div class="form-group mb-2">
+                        <label class="checkbox">
+                            <input type="checkbox" name="invitee_enabled" id="invitee-enabled" value="1" <?= $settings->inviteeEnabled ? 'checked' : '' ?>>
+                            <span class="checkbox-text font-bold">🎁 پاداش دعوت‌شده (هدیه خوش‌آمدگویی) فعال باشد</span>
+                        </label>
+                    </div>
+                    <div class="form-group mb-0">
+                        <label class="form-label">مبلغ پاداش دعوت‌شده (تومان)</label>
+                        <input type="text" name="invitee_reward" id="invitee-reward-input" class="form-control ltr" data-money inputmode="numeric"
+                               value="<?= e(number_format($settings->inviteeReward)) ?>" placeholder="مثلاً 5,000">
+                        <div class="form-hint">این مبلغ به کاربری که از طریق لینک دعوت عضو شده (B) پس از تکمیل و تأیید تمام شرایط واریز می‌شود (کاملاً مستقل از مبلغ معرف).</div>
+                    </div>
                 </div>
+
+                <div class="alert alert-info mb-3" id="two-way-preview">
+                    <span class="alert-icon">✨</span>
+                    <div id="two-way-preview-text">
+                        در هر دعوت موفق و تأییدشده: دعوت‌کننده <b><?= $settings->directEnabled ? wtoman($settings->directReward) : '۰ تومان (غیرفعال)' ?></b>
+                        و دعوت‌شده <b><?= $settings->inviteeEnabled ? wtoman($settings->inviteeReward) : '۰ تومان (غیرفعال)' ?></b> دریافت می‌کنند.
+                    </div>
+                </div>
+
+                <div class="divider"></div>
                 <div class="form-group">
                     <label class="form-label">مبنای محاسبه درصد لایه‌ها</label>
-                    <select name="percent_base" class="form-select">
-                        <option value="direct_reward" <?= $settings->percentBase === 'direct_reward' ? 'selected' : '' ?>>مبلغ پاداش مستقیم</option>
+                    <select name="percent_base" class="form-select" id="percent-base-select">
+                        <option value="direct_reward" <?= $settings->percentBase === 'direct_reward' ? 'selected' : '' ?>>مبلغ پاداش دعوت‌کننده (مستقیم)</option>
                         <option value="fixed_base" <?= $settings->percentBase === 'fixed_base' ? 'selected' : '' ?>>مبلغ ثابت پایه (زیر)</option>
-                        <option value="event_amount" <?= $settings->percentBase === 'event_amount' ? 'selected' : '' ?>>مبلغ رویداد (همان پاداش مستقیم رویداد)</option>
+                        <option value="event_amount" <?= $settings->percentBase === 'event_amount' ? 'selected' : '' ?>>مبلغ رویداد (همان پاداش دعوت‌کننده)</option>
                     </select>
-                    <div class="form-hint">درصدهای هر لایه روی این مبنا محاسبه می‌شوند.</div>
+                    <div class="form-hint">درصدهای هر لایه چندسطحی روی این مبنا محاسبه می‌شوند.</div>
                 </div>
-                <div class="form-group">
+                <div class="form-group mb-0">
                     <label class="form-label">مبلغ ثابت پایه (تومان)</label>
-                    <input type="text" name="fixed_base_amount" class="form-control ltr" data-money inputmode="numeric"
+                    <input type="text" name="fixed_base_amount" id="fixed-base-input" class="form-control ltr" data-money inputmode="numeric"
                            value="<?= e(number_format($settings->fixedBaseAmount)) ?>">
                 </div>
             </div>
         </div>
 
         <div class="card">
-            <div class="card-header"><h2 class="card-title">شرایط واجد شرایط شدن</h2></div>
+            <div class="card-header"><h2 class="card-title">شرایط الزامی پیش از پرداخت هر دو پاداش</h2></div>
             <div class="card-body">
+                <?php
+                $normalizedActive = array_map(static fn($c) => match ((string) $c) {
+                    'contact' => 'phone',
+                    'channel' => 'channels',
+                    'profile_complete' => 'profile',
+                    'manual_approval' => 'approved',
+                    default => (string) $c,
+                }, $activeConditions);
+                ?>
                 <?php foreach ($conditions as $key => $label): ?>
                     <label class="checkbox" style="display:flex;margin-bottom:8px">
-                        <input type="checkbox" name="conditions[]" value="<?= e($key) ?>" <?= in_array($key, $activeConditions, true) ? 'checked' : '' ?>>
+                        <input type="checkbox" name="conditions[]" value="<?= e($key) ?>" <?= in_array($key, $normalizedActive, true) ? 'checked' : '' ?>>
                         <span class="checkbox-text"><?= e($label) ?></span>
                     </label>
                 <?php endforeach; ?>
-                <div class="form-hint">پاداش و پورسانت فقط زمانی پرداخت می‌شود که کاربر معرفی‌شده همه شرایط انتخاب‌شده را داشته باشد.</div>
+                <div class="form-hint">
+                    پاداش <b>هیچ‌یک از دو طرف (دعوت‌کننده و دعوت‌شده)</b> پیش از تکمیل و تأیید تمام شرایط بالا پرداخت نمی‌شود.
+                    همچنین در صورت فعال بودن «عضویت اجباری کانال» یا «شماره تماس اجباری» در تنظیمات ربات، تأیید آن‌ها نیز به‌صورت خودکار الزامی است.
+                </div>
                 <div class="divider"></div>
                 <div class="form-group">
-                    <label class="form-label">سقف پاداش هر رویداد (تومان — ۰ = بدون سقف)</label>
+                    <label class="form-label">سقف کل پاداش هر رویداد (تومان — ۰ = بدون سقف)</label>
                     <input type="text" name="max_payout_per_event" class="form-control ltr" data-money inputmode="numeric"
                            value="<?= e(number_format($settings->maxPayoutPerEvent)) ?>">
                 </div>
@@ -95,7 +140,7 @@ foreach ($stats['by_level'] as $row) {
                 </div>
                 <label class="checkbox">
                     <input type="checkbox" name="blocked_users_no_commission" value="1" <?= $settings->blockedUsersNoCommission ? 'checked' : '' ?>>
-                    <span class="checkbox-text">کاربران مسدود/مشکوک پورسانت نگیرند</span>
+                    <span class="checkbox-text">کاربران مسدود پاداش/پورسانت دریافت نکنند</span>
                 </label>
             </div>
         </div>
@@ -183,10 +228,10 @@ foreach ($stats['by_level'] as $row) {
     <div class="card-header"><h2 class="card-title">تاریخچه نسخه‌ها</h2></div>
     <div class="table-wrap">
         <table class="table">
-            <thead><tr><th>نسخه</th><th>پاداش مستقیم</th><th>چندلایه</th><th>لایه‌ها</th><th>مجموع درصد</th><th>مبنا</th><th>تاریخ</th></tr></thead>
+            <thead><tr><th>نسخه</th><th>پاداش دعوت‌کننده</th><th>پاداش دعوت‌شده</th><th>چندلایه</th><th>لایه‌ها</th><th>مجموع درصد</th><th>مبنا</th><th>تاریخ</th></tr></thead>
             <tbody>
             <?php if (empty($versions)): ?>
-                <tr><td colspan="7" class="text-center text-muted">هنوز نسخه‌ای ذخیره نشده — مقادیر پیش‌فرض اعمال است.</td></tr>
+                <tr><td colspan="8" class="text-center text-muted">هنوز نسخه‌ای ذخیره نشده — مقادیر پیش‌فرض اعمال است.</td></tr>
             <?php endif; ?>
             <?php foreach ($versions as $v): ?>
                 <?php
@@ -195,11 +240,14 @@ foreach ($stats['by_level'] as $row) {
                 foreach ($levels as $lv) {
                     if (!empty($lv['enabled'])) { $sum += (float) ($lv['percent'] ?? 0); }
                 }
-                $baseLabel = ['direct_reward' => 'پاداش مستقیم', 'fixed_base' => 'مبلغ ثابت', 'event_amount' => 'مبلغ رویداد'][$v['percent_base']] ?? $v['percent_base'];
+                $baseLabel = ['direct_reward' => 'پاداش دعوت‌کننده', 'fixed_base' => 'مبلغ ثابت', 'event_amount' => 'مبلغ رویداد'][$v['percent_base']] ?? $v['percent_base'];
+                $vInviteeEnabled = !empty($v['invitee_enabled']);
+                $vInviteeReward = (int) ($v['invitee_reward'] ?? 0);
                 ?>
                 <tr>
                     <td data-label="نسخه"><span class="badge badge-<?= (int) $v['id'] === $settings->versionId ? 'success' : 'muted' ?>"><?= fa_digits((int) $v['version']) ?><?= (int) $v['id'] === $settings->versionId ? ' (فعال)' : '' ?></span></td>
-                    <td data-label="پاداش" class="num"><?= wtoman($v['direct_reward']) ?></td>
+                    <td data-label="پاداش دعوت‌کننده" class="num"><?= !empty($v['direct_enabled']) ? wtoman($v['direct_reward']) : '<span class="text-muted">غیرفعال</span>' ?></td>
+                    <td data-label="پاداش دعوت‌شده" class="num"><?= $vInviteeEnabled && $vInviteeReward > 0 ? wtoman($vInviteeReward) : '<span class="text-muted">غیرفعال</span>' ?></td>
                     <td data-label="چندلایه"><?= !empty($v['multi_level_enabled']) ? 'فعال' : 'غیرفعال' ?></td>
                     <td data-label="لایه‌ها" class="num"><?= fa_digits((int) $v['max_levels']) ?></td>
                     <td data-label="مجموع" class="num"><?= fa_digits($sum) ?>٪</td>
@@ -216,12 +264,40 @@ foreach ($stats['by_level'] as $row) {
 (function () {
     const form = document.getElementById('commission-form');
     if (!form) return;
-    const base = <?= (int) ($settings->percentBase === 'fixed_base' ? $settings->fixedBaseAmount : $settings->directReward) ?>;
+    const directEnabled = document.getElementById('direct-enabled');
+    const directInput = document.getElementById('direct-reward-input');
+    const inviteeEnabled = document.getElementById('invitee-enabled');
+    const inviteeInput = document.getElementById('invitee-reward-input');
+    const baseSelect = document.getElementById('percent-base-select');
+    const fixedBaseInput = document.getElementById('fixed-base-input');
+    const previewEl = document.getElementById('two-way-preview-text');
     const maxLevels = document.getElementById('max-levels');
     const totalEl = document.getElementById('total-percent');
     const rows = Array.from(form.querySelectorAll('[data-level-row]'));
 
+    function parseMoney(el) {
+        if (!el) return 0;
+        const raw = (RB.enNum ? RB.enNum(el.value) : String(el.value)).replace(/[^\d]/g, '');
+        return parseInt(raw, 10) || 0;
+    }
+
+    function fmtToman(n) {
+        return RB.faNum((n || 0).toLocaleString('en-US')) + ' تومان';
+    }
+
     function recalc() {
+        const dAmt = parseMoney(directInput);
+        const iAmt = parseMoney(inviteeInput);
+        const dOn = directEnabled && directEnabled.checked;
+        const iOn = inviteeEnabled && inviteeEnabled.checked;
+
+        if (previewEl) {
+            const dTxt = dOn && dAmt > 0 ? fmtToman(dAmt) : '۰ تومان (غیرفعال)';
+            const iTxt = iOn && iAmt > 0 ? fmtToman(iAmt) : '۰ تومان (غیرفعال)';
+            previewEl.innerHTML = 'در هر دعوت موفق و تأییدشده: دعوت‌کننده <b>' + dTxt + '</b> و دعوت‌شده <b>' + iTxt + '</b> دریافت می‌کنند.';
+        }
+
+        const base = (baseSelect && baseSelect.value === 'fixed_base') ? parseMoney(fixedBaseInput) : dAmt;
         let total = 0;
         const limit = Number(maxLevels.value) || 8;
         rows.forEach(function (row, i) {
@@ -234,7 +310,7 @@ foreach ($stats['by_level'] as $row) {
             const approx = Math.round(base * percent / 100);
             const approxEl = row.querySelector('[data-approx]');
             if (approxEl) {
-                approxEl.textContent = RB.faNum(approx.toLocaleString('en-US')) + ' تومان';
+                approxEl.textContent = fmtToman(approx);
             }
             row.style.opacity = level <= limit ? '' : '.45';
             percentInput.disabled = !enabled.checked || level > limit;

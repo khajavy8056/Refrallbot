@@ -28,7 +28,7 @@ final class StatsService
         $totalCommissions = (int) $db->value(
             "SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions
              WHERE status = 'completed' AND direction = 'credit'
-               AND type IN ('commission_direct','commission_level','campaign_reward')"
+               AND type IN ('commission_direct','commission_welcome','commission_level','campaign_reward')"
         );
         $totalEarned = (int) $db->value('SELECT COALESCE(SUM(total_earned), 0) FROM users');
         $totalWithdrawn = (int) $db->value('SELECT COALESCE(SUM(total_withdrawn), 0) FROM users');
@@ -102,7 +102,7 @@ final class StatsService
         );
         $payouts = $db->all(
             "SELECT DATE(created_at) AS d, COALESCE(SUM(amount),0) AS s FROM wallet_transactions
-             WHERE type IN ('commission_direct','commission_level') AND created_at >= :s GROUP BY DATE(created_at)",
+             WHERE type IN ('commission_direct','commission_welcome','commission_level') AND status = 'completed' AND direction = 'credit' AND created_at >= :s GROUP BY DATE(created_at)",
             ['s' => $start]
         );
         $withdrawals = $db->all(

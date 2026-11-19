@@ -71,10 +71,14 @@ final class SettingsController extends AdminController
     public function saveStartMessage(): void
     {
         $fields = [
-            'start_message_new' => 'start_message_new',
-            'start_message_returning' => 'start_message_returning',
-            'start_rules_text' => 'start_rules_text',
-            'guide_text' => 'guide_text',
+            'invite_message_text',
+            'invite_share_text',
+            'start_message_referred',
+            'referral_joined_message',
+            'start_message_new',
+            'start_message_returning',
+            'start_rules_text',
+            'guide_text',
         ];
         foreach ($fields as $key) {
             if (isset($_POST[$key])) {
@@ -82,8 +86,14 @@ final class SettingsController extends AdminController
             }
         }
         SettingsService::set('show_rules_in_start', !empty($_POST['show_rules_in_start']) ? '1' : '0', 'messages');
+        if (isset($_POST['referred_welcome_append_checklist_present'])) {
+            SettingsService::set('referred_welcome_append_checklist', !empty($_POST['referred_welcome_append_checklist']) ? '1' : '0', 'messages');
+        }
+        if (isset($_POST['notify_referral_joined_present'])) {
+            SettingsService::set('notify_referral_joined', !empty($_POST['notify_referral_joined']) ? '1' : '0', 'messages');
+        }
         AuditService::log('settings.updated', 'system', null, ['group' => 'messages'], current_admin_id());
-        $this->respond(fn() => [], 'پیام‌های ربات ذخیره شد.', 'admin/settings#messages');
+        $this->respond(fn() => [], 'پیام‌های ربات و دعوت دوستان با موفقیت ذخیره شد.', 'admin/settings#messages');
     }
 
     public function saveGates(): void

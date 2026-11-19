@@ -62,11 +62,18 @@
                 <span class="mini-invite-title">🔗 لینک دعوت اختصاصی شما</span>
                 <span class="mini-tier-pill" id="mini-tier-pill">🌱 شروع‌کننده</span>
             </div>
+            <div class="text-xs hidden" id="invite-rewards-note" style="margin-bottom:8px;opacity:.92;line-height:1.7"></div>
             <div class="mini-link ltr" id="invite-link">—</div>
             <div class="mini-invite-actions">
                 <button class="btn btn-sm" type="button" id="copy-invite">📋 کپی لینک</button>
                 <button class="btn btn-sm btn-success" type="button" id="share-invite">📤 ارسال برای دوستان</button>
             </div>
+        </div>
+
+        <!-- راهنمای تکمیل شرایط پاداش خوش‌آمدگویی برای کاربر دعوت‌شده -->
+        <div class="alert alert-info hidden" id="mini-welcome-guide" style="margin-bottom:12px">
+            <span class="alert-icon">🎁</span>
+            <div id="mini-welcome-guide-body" class="text-sm"></div>
         </div>
 
         <!-- تب‌های ناوبری -->
@@ -216,7 +223,8 @@
                 <div class="mini-chart-body">
                     <div class="mini-chart-wrap" style="height:185px"><canvas id="mini-chart-earnings"></canvas></div>
                     <div class="mini-earn-split">
-                        <div><small>پاداش مستقیم</small><strong id="earn-direct">۰</strong></div>
+                        <div><small>پاداش معرفی</small><strong id="earn-direct">۰</strong></div>
+                        <div><small>خوش‌آمدگویی</small><strong id="earn-welcome">۰</strong></div>
                         <div><small>پورسانت لایه‌ای</small><strong id="earn-layer">۰</strong></div>
                         <div><small>جایزه کمپین</small><strong id="earn-campaign">۰</strong></div>
                     </div>
@@ -278,6 +286,7 @@
                     <select class="form-select" id="tx-filter" style="max-width:155px">
                         <option value="">همه تراکنش‌ها</option>
                         <option value="commission_direct">پاداش مستقیم</option>
+                        <option value="commission_welcome">پاداش خوش‌آمدگویی</option>
                         <option value="commission_level">پورسانت لایه‌ای</option>
                         <option value="campaign_reward">جایزه کمپین</option>
                         <option value="withdrawal_reserve">برداشت</option>

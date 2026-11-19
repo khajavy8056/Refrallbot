@@ -16,6 +16,8 @@ final class CommissionSettings
     public int $version = 1;
     public int $directReward = 0;
     public bool $directEnabled = true;
+    public int $inviteeReward = 0;
+    public bool $inviteeEnabled = false;
     public bool $multiLevelEnabled = false;
     public int $maxLevels = 3;
     /** @var array<int,array{level:int,percent:string,enabled:bool}> */
@@ -56,6 +58,8 @@ final class CommissionSettings
         $s->version = (int) $row['version'];
         $s->directReward = (int) $row['direct_reward'];
         $s->directEnabled = (bool) $row['direct_enabled'];
+        $s->inviteeReward = (int) ($row['invitee_reward'] ?? 0);
+        $s->inviteeEnabled = (bool) ($row['invitee_enabled'] ?? false);
         $s->multiLevelEnabled = (bool) $row['multi_level_enabled'];
         $s->maxLevels = max(1, min(8, (int) $row['max_levels']));
         $levels = json_decode((string) ($row['levels'] ?? '[]'), true);
@@ -119,32 +123,52 @@ final class CommissionSettings
         return Money::fromMicro($total);
     }
 
+    /** مبلغ مؤثر پاداش دعوت‌کننده (در صورت غیرفعال بودن صفر است) */
+    public function effectiveDirectReward(): int
+    {
+        return $this->directEnabled ? max(0, $this->directReward) : 0;
+    }
+
+    /** مبلغ مؤثر پاداش دعوت‌شده / خوش‌آمدگویی (در صورت غیرفعال بودن صفر است) */
+    public function effectiveInviteeReward(): int
+    {
+        return $this->inviteeEnabled ? max(0, $this->inviteeReward) : 0;
+    }
+
     /**
      * ذخیره نسخه جدید تنظیمات
      */
     public static function saveVersion(array $data, ?int $adminId = null, ?Database $db = null): self
     {
         $db ??= Database::instance();
-        return self::fromRow($db->transaction(function () use ($db, $data, $adminId) {
+        $hasInviteeCols = $db->columnExists('commission_setting_versions', 'invitee_reward')
+            && $db->columnExists('commission_setting_versions', 'invitee_enabled');
+
+        return self::fromRow($db->transaction(function () use ($db, $data, $adminId, $hasInviteeCols) {
             $maxVersion = (int) $db->value('SELECT COALESCE(MAX(version), 0) FROM commission_setting_versions');
-            $id = $db->insert('commission_setting_versions', [
+            $payload = [
                 'version' => $maxVersion + 1,
-                'direct_reward' => (int) ($data['direct_reward'] ?? 0),
+                'direct_reward' => max(0, (int) ($data['direct_reward'] ?? 0)),
                 'direct_enabled' => !empty($data['direct_enabled']) ? 1 : 0,
                 'multi_level_enabled' => !empty($data['multi_level_enabled']) ? 1 : 0,
                 'max_levels' => max(1, min(8, (int) ($data['max_levels'] ?? 1))),
                 'levels' => json_encode($data['levels'] ?? [], JSON_UNESCAPED_UNICODE),
                 'percent_base' => (string) ($data['percent_base'] ?? 'direct_reward'),
-                'fixed_base_amount' => (int) ($data['fixed_base_amount'] ?? 0),
-                'max_payout_per_event' => (int) ($data['max_payout_per_event'] ?? 0),
-                'daily_payout_cap' => (int) ($data['daily_payout_cap'] ?? 0),
+                'fixed_base_amount' => max(0, (int) ($data['fixed_base_amount'] ?? 0)),
+                'max_payout_per_event' => max(0, (int) ($data['max_payout_per_event'] ?? 0)),
+                'daily_payout_cap' => max(0, (int) ($data['daily_payout_cap'] ?? 0)),
                 'qualify_conditions' => json_encode($data['qualify_conditions'] ?? [], JSON_UNESCAPED_UNICODE),
                 'blocked_users_no_commission' => !empty($data['blocked_users_no_commission']) ? 1 : 0,
                 'created_by' => $adminId,
                 'effective_from' => $data['effective_from'] ?? now(),
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            if ($hasInviteeCols) {
+                $payload['invitee_reward'] = max(0, (int) ($data['invitee_reward'] ?? 0));
+                $payload['invitee_enabled'] = !empty($data['invitee_enabled']) ? 1 : 0;
+            }
+            $id = $db->insert('commission_setting_versions', $payload);
             self::$cached = null;
             return $db->first('SELECT * FROM commission_setting_versions WHERE id = :id', ['id' => $id]);
         }));

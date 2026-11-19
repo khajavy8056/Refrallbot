@@ -52,10 +52,14 @@ final class CommissionService
         $baseAmount = isset($options['base_amount'])
             ? (int) $options['base_amount']
             : $this->settings->directReward;
+        $inviteeAmount = isset($options['invitee_amount'])
+            ? (int) $options['invitee_amount']
+            : $this->settings->inviteeReward;
         $appliesDirect = (bool) ($options['applies_direct'] ?? true);
+        $appliesInvitee = (bool) ($options['applies_invitee'] ?? ($type === 'referral_qualified' && $appliesDirect));
         $payload = $options['payload'] ?? [];
 
-        return $this->db->transaction(function () use ($eventKey, $type, $userId, $actorId, $baseAmount, $appliesDirect, $payload) {
+        return $this->db->transaction(function () use ($eventKey, $type, $userId, $actorId, $baseAmount, $inviteeAmount, $appliesDirect, $appliesInvitee, $payload) {
             // ---- محافظت در برابر رویداد تکراری
             $existing = $this->db->first(
                 'SELECT * FROM referral_events WHERE event_key = :k LIMIT 1',
@@ -84,12 +88,19 @@ final class CommissionService
 
             $commissions = [];
 
-            // ---- ۱) پاداش معرفی مستقیم
+            // ---- ۱) پاداش معرفی مستقیم (دعوت‌کننده / معرف)
             if ($appliesDirect && $this->settings->directEnabled && $actorId && $baseAmount > 0) {
                 $commissions[] = $this->credit($eventId, $actorId, 0, 'direct', $baseAmount, '100', $baseAmount, $userId);
             }
 
-            // ---- ۲) پورسانت چندلایه
+            // ---- ۲) پاداش خوش‌آمدگویی کاربر دعوت‌شده (سیستم پاداش دوطرفه — مستقل از پاداش معرف)
+            if ($appliesInvitee && $this->settings->inviteeEnabled && $actorId && $userId > 0 && $actorId !== $userId && $inviteeAmount > 0) {
+                // اگر معرف نامعتبر/مسدود باشد؟ خیر: بررسی مسدود بودن خود ذی‌نفع (کاربر دعوت‌شده) در credit انجام می‌شود،
+                // اما رابطه دعوت واقعی (referred_by = actorId) باید معتبر باشد.
+                $commissions[] = $this->credit($eventId, $userId, 0, 'welcome', $inviteeAmount, '100', $inviteeAmount, $actorId);
+            }
+
+            // ---- ۳) پورسانت چندلایه
             if ($this->settings->multiLevelEnabled) {
                 $base = $this->settings->percentBaseAmount($baseAmount);
                 $ancestors = $this->ancestors($userId, $this->settings->maxLevels);
@@ -189,6 +200,7 @@ final class CommissionService
                 'max_levels' => $this->settings->maxLevels,
                 'multi_level_enabled' => $this->settings->multiLevelEnabled,
                 'direct_reward' => $this->settings->directReward,
+                'invitee_reward' => $this->settings->inviteeReward,
                 'calculated_at' => now(),
             ], JSON_UNESCAPED_UNICODE),
             'created_at' => now(),
@@ -196,8 +208,16 @@ final class CommissionService
 
         $walletType = match ($type) {
             'direct' => 'commission_direct',
+            'welcome' => 'commission_welcome',
             'campaign' => 'campaign_reward',
             default => 'commission_level',
+        };
+
+        $description = match ($type) {
+            'direct' => 'پاداش معرفی مستقیم',
+            'welcome' => 'پاداش خوش‌آمدگویی عضویت با لینک دعوت',
+            'campaign' => 'جایزه کمپین',
+            default => 'پورسانت لایه ' . fa_digits($level),
         };
 
         $txId = $this->wallet->credit($beneficiaryId, $walletType, $amount, [
@@ -206,7 +226,7 @@ final class CommissionService
             'event_id' => $eventId,
             'level' => $level,
             'related_user_id' => $sourceUserId,
-            'description' => $type === 'direct' ? 'پاداش معرفی مستقیم' : 'پورسانت لایه ' . fa_digits($level),
+            'description' => $description,
             'idempotency_key' => 'commission:' . $commissionId,
             'meta' => [
                 'settings_version' => $this->settings->version,
@@ -214,6 +234,8 @@ final class CommissionService
                 'percent' => $percent,
                 'level' => $level,
                 'type' => $type,
+                'direct_reward' => $this->settings->directReward,
+                'invitee_reward' => $this->settings->inviteeReward,
             ],
         ]);
 
@@ -221,15 +243,24 @@ final class CommissionService
             return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'status' => 'duplicate_tx'];
         }
 
+        $hasWelcomeCol = $type !== 'welcome' || $this->db->columnExists('users', 'welcome_earned');
         $column = match ($type) {
             'direct' => 'direct_earned',
+            'welcome' => $hasWelcomeCol ? 'welcome_earned' : null,
             'campaign' => 'campaign_earned',
             default => 'layer_earned',
         };
-        $this->db->run(
-            "UPDATE users SET {$column} = {$column} + :a1, total_earned = total_earned + :a2, updated_at = :now WHERE id = :id",
-            ['a1' => $amount, 'a2' => $amount, 'now' => now(), 'id' => $beneficiaryId]
-        );
+        if ($column !== null) {
+            $this->db->run(
+                "UPDATE users SET {$column} = {$column} + :a1, total_earned = total_earned + :a2, updated_at = :now WHERE id = :id",
+                ['a1' => $amount, 'a2' => $amount, 'now' => now(), 'id' => $beneficiaryId]
+            );
+        } else {
+            $this->db->run(
+                'UPDATE users SET total_earned = total_earned + :a, updated_at = :now WHERE id = :id',
+                ['a' => $amount, 'now' => now(), 'id' => $beneficiaryId]
+            );
+        }
 
         return [
             'commission_id' => $commissionId,
@@ -267,25 +298,41 @@ final class CommissionService
                 'UPDATE wallet_transactions SET amount = :a WHERE source_id = :sid AND source_type = :st AND user_id = :u',
                 ['a' => (int) $c['amount'], 'sid' => (int) $c['commission_id'], 'st' => 'referral_commission', 'u' => (int) $c['beneficiary_id']]
             );
-            // همگام‌سازی موجودی کیف پول و آمار کاربر
-            $this->db->run(
-                'UPDATE wallets SET balance = COALESCE((SELECT SUM(CASE WHEN direction = :cr THEN amount ELSE -amount END) FROM wallet_transactions wt WHERE wt.user_id = wallets.user_id AND wt.status = :ok), 0) WHERE user_id = :u2',
-                ['cr' => 'credit', 'ok' => 'completed', 'u2' => (int) $c['beneficiary_id']]
-            );
-            $this->db->run(
-                'UPDATE users SET total_earned = (SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions WHERE user_id = :u3 AND status = :ok2 AND direction = :cr2 AND type IN (:t1, :t2, :t3)),
-                 direct_earned = (SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions WHERE user_id = :u4 AND direction = :cr3 AND status = :ok3 AND type = :td),
-                 layer_earned = (SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions WHERE user_id = :u5 AND direction = :cr4 AND status = :ok4 AND type = :tl)
-                 WHERE id = :u6',
-                [
-                    'u3' => (int) $c['beneficiary_id'], 'ok2' => 'completed', 'cr2' => 'credit',
-                    't1' => 'commission_direct', 't2' => 'commission_level', 't3' => 'campaign_reward',
-                    'u4' => (int) $c['beneficiary_id'], 'cr3' => 'credit', 'ok3' => 'completed', 'td' => 'commission_direct',
-                    'u5' => (int) $c['beneficiary_id'], 'cr4' => 'credit', 'ok4' => 'completed', 'tl' => 'commission_level',
-                    'u6' => (int) $c['beneficiary_id'],
-                ]
-            );
+            // همگام‌سازی موجودی کیف پول و آمار کاربر (سازگار با MySQL 8 و SQLite)
+            $this->syncBeneficiaryFromLedger((int) $c['beneficiary_id']);
         }
+    }
+
+    /**
+     * همگام‌سازی دقیق کیف پول و ستون‌های درآمدی کاربر از روی دفتر کل تراکنش‌ها
+     */
+    private function syncBeneficiaryFromLedger(int $userId): void
+    {
+        $this->wallet->rebuildBalance($userId);
+
+        $totals = $this->db->first(
+            "SELECT
+                COALESCE(SUM(CASE WHEN type IN ('commission_direct','commission_welcome','commission_level','campaign_reward') THEN amount ELSE 0 END), 0) AS total_earned,
+                COALESCE(SUM(CASE WHEN type = 'commission_direct' THEN amount ELSE 0 END), 0) AS direct_earned,
+                COALESCE(SUM(CASE WHEN type = 'commission_welcome' THEN amount ELSE 0 END), 0) AS welcome_earned,
+                COALESCE(SUM(CASE WHEN type = 'commission_level' THEN amount ELSE 0 END), 0) AS layer_earned,
+                COALESCE(SUM(CASE WHEN type = 'campaign_reward' THEN amount ELSE 0 END), 0) AS campaign_earned
+             FROM wallet_transactions
+             WHERE user_id = :u AND direction = 'credit' AND status = 'completed'",
+            ['u' => $userId]
+        ) ?? [];
+
+        $update = [
+            'total_earned' => (int) ($totals['total_earned'] ?? 0),
+            'direct_earned' => (int) ($totals['direct_earned'] ?? 0),
+            'layer_earned' => (int) ($totals['layer_earned'] ?? 0),
+            'campaign_earned' => (int) ($totals['campaign_earned'] ?? 0),
+            'updated_at' => now(),
+        ];
+        if ($this->db->columnExists('users', 'welcome_earned')) {
+            $update['welcome_earned'] = (int) ($totals['welcome_earned'] ?? 0);
+        }
+        $this->db->update('users', $update, 'id = :id', ['id' => $userId]);
     }
 
     /**
@@ -332,18 +379,43 @@ final class CommissionService
                 if ($tx === null) {
                     continue;
                 }
+                $revDesc = ($commission['type'] ?? '') === 'welcome'
+                    ? 'برگشت پاداش خوش‌آمدگویی: ' . $reason
+                    : 'برگشت پورسانت: ' . $reason;
                 $this->wallet->debit((int) $commission['beneficiary_id'], 'reversal', (int) $commission['amount'], [
                     'source_type' => 'reversal',
                     'source_id' => (int) $commission['id'],
                     'related_user_id' => (int) $event['user_id'],
-                    'description' => 'برگشت پورسانت: ' . $reason,
+                    'description' => $revDesc,
                     'idempotency_key' => 'reversal:commission:' . $commission['id'],
                     'created_by_admin_id' => $adminId,
+                    'reversal_of_id' => (int) $tx['id'],
                     'level' => (int) $commission['level'],
-                    'meta' => ['reason' => $reason, 'original_tx' => (int) $tx['id'], 'event_id' => $eventId],
+                    'meta' => ['reason' => $reason, 'original_tx' => (int) $tx['id'], 'event_id' => $eventId, 'commission_type' => $commission['type'] ?? ''],
                 ], allowNegative: true);
+                // دفتر کل تراکنش‌ها Append-Only است: تراکنش اصلی completed می‌ماند تا جمع credit و debit برگشتی دقیقاً با مانده کیف پول منطبق باشد
                 $this->db->update('referral_commissions', ['status' => 'reverted'], 'id = :id', ['id' => (int) $commission['id']]);
-                $this->db->update('wallet_transactions', ['status' => 'reverted'], 'id = :id', ['id' => (int) $tx['id']]);
+
+                // کاهش دقیق آمار درآمدی کاربر ذی‌نفع (بدون منفی شدن)
+                $amt = (int) $commission['amount'];
+                $ctype = (string) ($commission['type'] ?? '');
+                $earnCol = match ($ctype) {
+                    'direct' => 'direct_earned',
+                    'welcome' => $this->db->columnExists('users', 'welcome_earned') ? 'welcome_earned' : null,
+                    'campaign' => 'campaign_earned',
+                    default => 'layer_earned',
+                };
+                $uRow = $this->db->first('SELECT * FROM users WHERE id = :id', ['id' => (int) $commission['beneficiary_id']]);
+                if ($uRow !== null) {
+                    $upd = [
+                        'total_earned' => max(0, (int) ($uRow['total_earned'] ?? 0) - $amt),
+                        'updated_at' => now(),
+                    ];
+                    if ($earnCol !== null && array_key_exists($earnCol, $uRow)) {
+                        $upd[$earnCol] = max(0, (int) ($uRow[$earnCol] ?? 0) - $amt);
+                    }
+                    $this->db->update('users', $upd, 'id = :id', ['id' => (int) $commission['beneficiary_id']]);
+                }
                 $reverted++;
             }
             $this->db->update('referral_events', ['status' => 'reverted'], 'id = :id', ['id' => $eventId]);

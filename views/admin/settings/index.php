@@ -72,40 +72,167 @@ $flag = static fn(string $key, bool $default = false) => (int) ($settings[$key] 
     </div>
 </div>
 
+<?php
+$defaultInviteTpl = \RB\Services\ReferralMessageService::defaultInviteTemplate();
+$defaultShareTpl = \RB\Services\ReferralMessageService::defaultShareTemplate();
+$defaultRefWelcomeTpl = \RB\Services\ReferralMessageService::defaultReferredWelcomeTemplate();
+$curInviterAmt = wtoman($commission->effectiveDirectReward());
+$curInviteeAmt = wtoman($commission->effectiveInviteeReward());
+?>
 <div class="card mb-3" id="messages">
     <div class="card-header">
-        <h2 class="card-title">پیام‌های ربات</h2>
-        <span class="card-subtitle">از متغیرهای {name} و {link} می‌توانید استفاده کنید</span>
+        <h2 class="card-title">✉️ پیام‌های ربات، دعوت دوستان و خوش‌آمدگویی دعوت‌شده</h2>
+        <span class="card-subtitle">پشتیبانی کامل از متغیرهای پویا — مبالغ فعلی: دعوت‌کننده <b><?= $curInviterAmt ?></b> · دعوت‌شده <b><?= $curInviteeAmt ?></b></span>
     </div>
-    <form method="post" action="<?= url('admin/settings/start-message') ?>" data-ajax>
+    <form method="post" action="<?= url('admin/settings/start-message') ?>" data-ajax id="bot-messages-form">
         <?= csrf_field() ?>
-        <div class="card-body grid-2">
-            <div class="form-group">
-                <label class="form-label">متن خوش‌آمد کاربر جدید (/start)</label>
-                <textarea name="start_message_new" class="form-control" rows="5" maxlength="4000"><?= e($s('start_message_new')) ?></textarea>
+        <input type="hidden" name="referred_welcome_append_checklist_present" value="1">
+        <input type="hidden" name="notify_referral_joined_present" value="1">
+        <div class="card-body">
+            <div class="alert alert-info mb-3">
+                <span class="alert-icon">🏷</span>
+                <div>
+                    <div class="font-bold mb-1">متغیرهای پویا (روی هر متغیر کلیک کنید تا در کادر فعال درج شود):</div>
+                    <div class="flex wrap gap-1" style="margin-top:4px">
+                        <?php foreach ([
+                            '{invite_link}' => 'لینک اختصاصی دعوت',
+                            '{referral_code}' => 'کد دعوت',
+                            '{inviter_reward}' => 'پاداش دعوت‌کننده (' . $curInviterAmt . ')',
+                            '{invitee_reward}' => 'پاداش دعوت‌شده (' . $curInviteeAmt . ')',
+                            '{total_reward}' => 'مجموع دو پاداش',
+                            '{name}' => 'نام کاربر',
+                            '{referrer_name}' => 'نام معرف',
+                            '{requirements}' => 'چک‌لیست پویای شرایط فعال',
+                            '{app_name}' => 'نام ربات/سامانه',
+                            '{min_withdraw}' => 'حداقل برداشت',
+                            '{max_levels}' => 'تعداد سطوح',
+                        ] as $tok => $desc): ?>
+                            <button type="button" class="btn btn-xs btn-outline" data-insert-var="<?= e($tok) ?>" title="<?= e($desc) ?>">
+                                <span class="ltr mono"><?= e($tok) ?></span> · <?= e($desc) ?>
+                            </button>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="text-xs text-muted" style="margin-top:6px">
+                        اگر هر یک از کادرهای «پیام دعوت» یا «خوش‌آمدگویی دعوت‌شده» را خالی بگذارید، قالب هوشمند پیش‌فرض متناسب با مبالغ و شرایط فعال سامانه نمایش داده می‌شود. معادل‌های فارسی مثل <code>[لینک دعوت]</code>، <code>[پاداش دعوت‌کننده]</code> و <code>[پاداش دعوت‌شده]</code> نیز پشتیبانی می‌شوند.
+                    </div>
+                </div>
             </div>
-            <div class="form-group">
-                <label class="form-label">متن خوش‌آمد کاربر بازگشتی</label>
-                <textarea name="start_message_returning" class="form-control" rows="5" maxlength="4000"><?= e($s('start_message_returning')) ?></textarea>
+
+            <div class="grid-2 mb-3">
+                <div class="form-group mb-0">
+                    <div class="flex items-center justify-between wrap gap-1 mb-1">
+                        <label class="form-label mb-0">🎁 متن پیام دعوت دوستان (لینک + پاداش دوطرفه)</label>
+                        <button type="button" class="btn btn-xs btn-ghost" data-fill-target="invite_message_text" data-fill-value="<?= e($defaultInviteTpl) ?>">درج قالب پیشنهادی</button>
+                    </div>
+                    <textarea name="invite_message_text" class="form-control" rows="7" maxlength="4000"
+                              placeholder="<?= e($defaultInviteTpl) ?>"><?= e($s('invite_message_text')) ?></textarea>
+                    <div class="form-hint">این پیام در بخش «دعوت دوستان» ربات و مینی‌اپ با لینک اختصاصی کاربر و مبالغ به‌روز نمایش داده می‌شود.</div>
+                </div>
+
+                <div class="form-group mb-0">
+                    <div class="flex items-center justify-between wrap gap-1 mb-1">
+                        <label class="form-label mb-0">👋 پیام خوش‌آمدگویی و راهنمای تکمیل ثبت‌نام (کاربر دعوت‌شده)</label>
+                        <button type="button" class="btn btn-xs btn-ghost" data-fill-target="start_message_referred" data-fill-value="<?= e($defaultRefWelcomeTpl) ?>">درج قالب پیشنهادی</button>
+                    </div>
+                    <textarea name="start_message_referred" class="form-control" rows="7" maxlength="4000"
+                              placeholder="<?= e($defaultRefWelcomeTpl) ?>"><?= e($s('start_message_referred')) ?></textarea>
+                    <div class="form-hint">هنگام اولین ورود کاربر جدید از طریق لینک دعوت نمایش داده می‌شود و مبلغ پاداش دعوت‌شده + مراحل لازم (پروفایل، شماره، کانال اجباری و...) را شفاف اعلام می‌کند.</div>
+                </div>
             </div>
-            <div class="form-group">
-                <label class="form-label">متن قوانین</label>
-                <textarea name="start_rules_text" class="form-control" rows="4" maxlength="4000"><?= e($s('start_rules_text')) ?></textarea>
+
+            <div class="grid-2 mb-3">
+                <div class="form-group mb-0">
+                    <div class="flex items-center justify-between wrap gap-1 mb-1">
+                        <label class="form-label mb-0">📤 متن اشتراک‌گذاری سریع لینک دعوت (دکمه ارسال به دوستان)</label>
+                        <button type="button" class="btn btn-xs btn-ghost" data-fill-target="invite_share_text" data-fill-value="<?= e($defaultShareTpl) ?>">درج قالب پیشنهادی</button>
+                    </div>
+                    <textarea name="invite_share_text" class="form-control" rows="3" maxlength="1500"
+                              placeholder="<?= e($defaultShareTpl) ?>"><?= e($s('invite_share_text')) ?></textarea>
+                    <div class="form-hint">متن همراه لینک هنگام فوروارد مستقیم به دوستان در تلگرام (خالی = تولید خودکار از روی پیام دعوت).</div>
+                </div>
+
+                <div class="form-group mb-0">
+                    <label class="form-label">🔔 پیام اطلاع‌رسانی دعوت جدید به معرف (اختیاری)</label>
+                    <textarea name="referral_joined_message" class="form-control" rows="3" maxlength="2000"
+                              placeholder="تبریک! کاربر «{name}» ({username}) با لینک دعوت شما وارد ربات شد. تعداد دعوت‌های شما: {direct_count} نفر"><?= e($s('referral_joined_message')) ?></textarea>
+                    <div class="form-hint">متغیرها: <code>{name}</code>، <code>{username}</code>، <code>{direct_count}</code>، <code>{total_count}</code>، <code>{app_name}</code> (خالی = متن استاندارد).</div>
+                </div>
             </div>
-            <div class="form-group">
-                <label class="form-label">متن راهنما</label>
-                <textarea name="guide_text" class="form-control" rows="4" maxlength="4000"><?= e($s('guide_text')) ?></textarea>
+
+            <div class="divider"></div>
+
+            <div class="grid-2">
+                <div class="form-group">
+                    <label class="form-label">متن خوش‌آمد کاربر عادی جدید (/start بدون لینک دعوت)</label>
+                    <textarea name="start_message_new" class="form-control" rows="5" maxlength="4000"><?= e($s('start_message_new')) ?></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">متن خوش‌آمد کاربر بازگشتی</label>
+                    <textarea name="start_message_returning" class="form-control" rows="5" maxlength="4000"><?= e($s('start_message_returning')) ?></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">متن قوانین</label>
+                    <textarea name="start_rules_text" class="form-control" rows="4" maxlength="4000"><?= e($s('start_rules_text')) ?></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">متن راهنما</label>
+                    <textarea name="guide_text" class="form-control" rows="4" maxlength="4000"><?= e($s('guide_text')) ?></textarea>
+                </div>
             </div>
-            <div class="form-group" style="grid-column:1/-1">
+
+            <div class="flex wrap gap-3" style="margin-top:4px">
+                <label class="checkbox">
+                    <input type="checkbox" name="referred_welcome_append_checklist" value="1" <?= $flag('referred_welcome_append_checklist', true) ? 'checked' : '' ?>>
+                    <span class="checkbox-text">درج خودکار چک‌لیست شرایط باقی‌مانده در انتهای پیام خوش‌آمد دعوت‌شده (اگر <code>{requirements}</code> در متن نباشد)</span>
+                </label>
+                <label class="checkbox">
+                    <input type="checkbox" name="notify_referral_joined" value="1" <?= $flag('notify_referral_joined', true) ? 'checked' : '' ?>>
+                    <span class="checkbox-text">ارسال اعلان فوری پیوستن زیرمجموعه جدید به دعوت‌کننده</span>
+                </label>
                 <label class="checkbox">
                     <input type="checkbox" name="show_rules_in_start" value="1" <?= $flag('show_rules_in_start', true) ? 'checked' : '' ?>>
-                    <span class="checkbox-text">نمایش قوانین در پیام /start</span>
+                    <span class="checkbox-text">نمایش قوانین در انتهای پیام /start</span>
                 </label>
             </div>
         </div>
-        <div class="card-footer"><button class="btn" type="submit">💾 ذخیره پیام‌ها</button></div>
+        <div class="card-footer flex justify-between items-center wrap gap-2">
+            <span class="text-xs text-muted">هر تغییری در پیام‌ها و مبالغ پاداش بلافاصله در ربات و مینی‌اپ اعمال می‌شود.</span>
+            <button class="btn" type="submit">💾 ذخیره پیام‌ها</button>
+        </div>
     </form>
 </div>
+<script>
+(function () {
+    const form = document.getElementById('bot-messages-form');
+    if (!form) return;
+    let activeArea = form.querySelector('textarea[name="invite_message_text"]');
+    form.querySelectorAll('textarea').forEach(function (ta) {
+        ta.addEventListener('focus', function () { activeArea = ta; });
+    });
+    form.querySelectorAll('[data-insert-var]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            if (!activeArea) return;
+            const tok = btn.getAttribute('data-insert-var') || '';
+            const start = activeArea.selectionStart ?? activeArea.value.length;
+            const end = activeArea.selectionEnd ?? activeArea.value.length;
+            activeArea.value = activeArea.value.slice(0, start) + tok + activeArea.value.slice(end);
+            activeArea.focus();
+            activeArea.selectionStart = activeArea.selectionEnd = start + tok.length;
+        });
+    });
+    form.querySelectorAll('[data-fill-target]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const name = btn.getAttribute('data-fill-target');
+            const val = btn.getAttribute('data-fill-value') || '';
+            const ta = form.querySelector('textarea[name="' + name + '"]');
+            if (!ta) return;
+            ta.value = val;
+            ta.focus();
+            activeArea = ta;
+        });
+    });
+})();
+</script>
 
 <div class="grid-2 mb-3">
     <div class="card" id="gates">

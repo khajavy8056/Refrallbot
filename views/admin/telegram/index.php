@@ -13,7 +13,10 @@ $webhookActive = !empty($settings['webhook_active']);
         <h1 class="mb-0">اتصال به ربات تلگرام</h1>
         <p class="text-muted text-sm mb-0">ثبت توکن، تست اتصال، تنظیم Webhook و همگام‌سازی منوها</p>
     </div>
-    <a href="?refresh=1" class="btn btn-secondary btn-sm">🔄 به‌روزرسانی وضعیت از تلگرام</a>
+    <div class="flex gap-2 wrap">
+        <a href="<?= url('admin/bot-profile') ?>" class="btn btn-outline btn-sm">🎨 پروفایل و بیوگرافی ربات</a>
+        <a href="?refresh=1" class="btn btn-secondary btn-sm">🔄 به‌روزرسانی وضعیت از تلگرام</a>
+    </div>
 </div>
 
 <?php if (!empty($settings['last_error'])): ?>

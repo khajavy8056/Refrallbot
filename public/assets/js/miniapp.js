@@ -299,6 +299,7 @@
     setText('#leg-indirect', faFormat(indirect) + ' نفر');
 
     setText('#earn-direct', money(eb.direct || 0));
+    setText('#earn-welcome', money(eb.welcome || 0));
     setText('#earn-layer', money(eb.layer || 0));
     setText('#earn-campaign', money(eb.campaign || 0));
   }
@@ -331,6 +332,40 @@
 
     const link = $('#invite-link');
     if (link) link.textContent = u.invite_link || u.referral_code;
+
+    // نمایش پویای مبالغ پاداش دعوت‌کننده و دعوت‌شده از تنظیمات مدیر
+    const rw = data.referral_rewards || {};
+    state.shareText = rw.share_text || '';
+    state.inviteText = rw.invite_text || '';
+    const rwNote = $('#invite-rewards-note');
+    if (rwNote) {
+      const parts = [];
+      if (rw.inviter_reward > 0) parts.push('🎯 پاداش شما: <b>' + esc(rw.inviter_reward_fa) + '</b>');
+      if (rw.invitee_reward > 0) parts.push('🎁 هدیه دوستتان: <b>' + esc(rw.invitee_reward_fa) + '</b>');
+      if (parts.length) {
+        rwNote.innerHTML = parts.join(' · ');
+        rwNote.classList.remove('hidden');
+      } else {
+        rwNote.classList.add('hidden');
+      }
+    }
+
+    // راهنمای تکمیل شرایط پاداش خوش‌آمدگویی برای کاربر دعوت‌شده
+    const guideBox = $('#mini-welcome-guide');
+    const guideBody = $('#mini-welcome-guide-body');
+    if (guideBox && guideBody) {
+      const pendingList = Array.isArray(rw.pending_requirements) ? rw.pending_requirements : [];
+      if (u.referred_by && !u.qualified && pendingList.length > 0) {
+        const rewardIntro = rw.invitee_reward > 0
+          ? '<b>هدیه خوش‌آمدگویی ' + esc(rw.invitee_reward_fa) + ' در انتظار شماست!</b><br>برای دریافت پاداش، مراحل زیر را تکمیل کنید:'
+          : '<b>برای تکمیل ثبت‌نام دعوت خود مراحل زیر را انجام دهید:</b>';
+        const items = pendingList.map(function (s) { return '• ' + esc(s); }).join('<br>');
+        guideBody.innerHTML = rewardIntro + '<div style="margin-top:4px">' + items + '</div>';
+        guideBox.classList.remove('hidden');
+      } else {
+        guideBox.classList.add('hidden');
+      }
+    }
     const openBot = $('#open-bot');
     if (openBot && u.invite_link) {
       openBot.href = u.invite_link.replace('?start=' + u.referral_code, '');
@@ -591,12 +626,12 @@
     }
     if (e.target.closest('#share-invite')) {
       const link = $('#invite-link').textContent.trim();
-      const text = 'با این لینک به ربات بپیوند و از پاداش دعوت بهره‌مند شو:\n' + link;
+      const text = state.shareText || 'با این لینک به ربات بپیوند و از پاداش دعوت بهره‌مند شو 👇';
       if (tg && tg.openTelegramLink) {
         tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent(link) + '&text=' + encodeURIComponent(text));
       } else if (navigator.share) {
-        navigator.share({ title: 'دعوت به ربات', text: text, url: link }).catch(() => {});
-      } else if (window.RB) { RB.copy(link); }
+        navigator.share({ title: 'دعوت به ربات', text: state.inviteText || (text + '\n' + link), url: link }).catch(() => {});
+      } else if (window.RB) { RB.copy(state.inviteText || link); }
       return;
     }
     if (e.target.closest('#read-all')) {

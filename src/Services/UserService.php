@@ -357,64 +357,179 @@ final class UserService
     }
 
     /**
-     * بررسی شرایط واجد شرایط شدن معرفی و ثبت پورسانت
+     * فهرست مؤثر شرایط لازم پیش از پرداخت پاداش دعوت (هم برای دعوت‌کننده و هم دعوت‌شده).
+     * علاوه بر شرایط انتخاب‌شده در تنظیمات پورسانت، در صورت فعال بودن دروازه‌های ورود ربات
+     * (تأیید شماره تماس یا عضویت اجباری در کانال‌های فعال) آن‌ها نیز به‌صورت خودکار الزام می‌شوند
+     * تا هیچ پاداشی پیش از تکمیل کامل احراز پرداخت نگردد.
+     *
+     * @return string[]
+     */
+    public function effectiveConditions(?CommissionSettings $settings = null): array
+    {
+        $settings ??= CommissionSettings::current($this->db);
+        $raw = $settings->qualifyConditions ?: ['joined'];
+        $normalized = [];
+        foreach ($raw as $cond) {
+            $key = match ((string) $cond) {
+                'contact', 'phone' => 'phone',
+                'channel', 'channels' => 'channels',
+                'profile' => 'profile',
+                'profile_complete' => 'profile_complete',
+                'approved', 'manual_approval' => 'approved',
+                'activity' => 'activity',
+                'joined' => 'joined',
+                default => (string) $cond,
+            };
+            if ($key !== '' && !in_array($key, $normalized, true)) {
+                $normalized[] = $key;
+            }
+        }
+        if ($normalized === []) {
+            $normalized[] = 'joined';
+        }
+
+        // همگام‌سازی با دروازه‌های اجباری ورود به ربات
+        if (SettingsService::bool('contact_required', false) && !in_array('phone', $normalized, true)) {
+            $normalized[] = 'phone';
+        }
+        if (SettingsService::bool('force_channel_membership', false) && !in_array('channels', $normalized, true)) {
+            $membership = new MembershipService($this->db);
+            $tg = new TelegramService(null, $this->db);
+            if ($tg->isConfigured() && $membership->activeChannels() !== []) {
+                $normalized[] = 'channels';
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * چک‌لیست پویای شرایط تکمیل ثبت‌نام و دریافت پاداش دعوت برای نمایش در پیام‌ها و رابط کاربری
+     *
+     * @return array<int,array{key:string,label:string,done:bool}>
+     */
+    public function qualificationChecklist(array $user, ?CommissionSettings $settings = null): array
+    {
+        $settings ??= CommissionSettings::current($this->db);
+        $conditions = $this->effectiveConditions($settings);
+        $membership = new MembershipService($this->db);
+        $activeChannels = $membership->activeChannels();
+        $channelNames = array_values(array_filter(array_map(
+            static fn(array $c): string => trim((string) ($c['title'] ?? '')),
+            $activeChannels
+        )));
+        $minMsgs = max(0, (int) SettingsService::get('qualify_min_activity_messages', '0'));
+
+        $items = [];
+        foreach ($conditions as $cond) {
+            $done = $this->meetsConditions($user, [$cond]);
+            $label = match ($cond) {
+                'joined' => 'شروع ربات و ثبت اولیه دعوت',
+                'profile' => 'تکمیل پروفایل کاربری (نام و نام خانوادگی)',
+                'profile_complete' => 'تکمیل نام پروفایل کاربری',
+                'phone', 'contact' => 'ثبت و تأیید شماره تماس',
+                'channels', 'channel' => $channelNames !== []
+                    ? 'عضویت در کانال اجباری (' . implode('، ', array_slice($channelNames, 0, 3)) . (count($channelNames) > 3 ? ' و ...' : '') . ') و زدن دکمه بررسی عضویت'
+                    : 'عضویت در کانال‌های اجباری ربات و تأیید عضویت',
+                'approved', 'manual_approval' => 'بررسی و تأیید عضویت توسط مدیریت',
+                'activity' => $minMsgs > 0
+                    ? 'ثبت حداقل ' . fa_digits($minMsgs) . ' پیام فعالیت در ربات'
+                    : 'فعالیت در ربات',
+                default => '',
+            };
+            if ($label !== '') {
+                $items[] = ['key' => $cond, 'label' => $label, 'done' => $done];
+            }
+        }
+        return $items;
+    }
+
+    /**
+     * فقط شرایط باقی‌مانده (تکمیل‌نشده) کاربر برای دریافت پاداش دعوت
+     *
+     * @return array<int,array{key:string,label:string,done:bool}>
+     */
+    public function pendingRequirements(array $user, ?CommissionSettings $settings = null): array
+    {
+        return array_values(array_filter(
+            $this->qualificationChecklist($user, $settings),
+            static fn(array $item): bool => !$item['done']
+        ));
+    }
+
+    /**
+     * بررسی شرایط واجد شرایط شدن معرفی و ثبت پاداش دوطرفه (دعوت‌کننده + دعوت‌شده) و چندلایه.
+     * هیچ پاداشی به هیچ‌یک از دو طرف پیش از تکمیل و تأیید همهٔ شرایط پرداخت نمی‌شود.
      */
     public function maybeQualify(array $user, bool $force = false): bool
     {
         if (empty($user['referred_by'])) {
             return false;
         }
+        $userId = (int) $user['id'];
+        $referrerId = (int) $user['referred_by'];
+        if ($userId <= 0 || $referrerId <= 0 || $userId === $referrerId) {
+            return false;
+        }
         if (!empty($user['qualified_at']) && !$force) {
             return false;
         }
-        if ($user['status'] === 'blocked') {
+        if (($user['status'] ?? 'active') === 'blocked') {
             return false;
         }
 
         $settings = CommissionSettings::current($this->db, true);
-        $conditions = $settings->qualifyConditions ?: ['joined'];
+        $conditions = $this->effectiveConditions($settings);
         if (!$this->meetsConditions($user, $conditions)) {
             return false;
         }
 
-        // علامت‌گذاری واجد شرایط
-        $this->db->run(
+        // علامت‌گذاری اتمیک واجد شرایط (جلوگیری از اجرای همزمان دو درخواست)
+        $stmt = $this->db->run(
             'UPDATE users SET qualified_at = :now, updated_at = :now2 WHERE id = :id AND qualified_at IS NULL',
-            ['now' => now(), 'now2' => now(), 'id' => (int) $user['id']]
+            ['now' => now(), 'now2' => now(), 'id' => $userId]
         );
+        if (!$force && $stmt->rowCount() === 0) {
+            return false;
+        }
 
         $service = new CommissionService($this->db, $settings);
         $result = $service->processEvent([
-            'event_key' => 'referral_qualified:' . (int) $user['id'],
+            'event_key' => 'referral_qualified:' . $userId,
             'type' => 'referral_qualified',
-            'user_id' => (int) $user['id'],
-            'actor_id' => (int) $user['referred_by'],
+            'user_id' => $userId,
+            'actor_id' => $referrerId,
             'base_amount' => $settings->directReward,
+            'invitee_amount' => $settings->inviteeReward,
             'applies_direct' => true,
+            'applies_invitee' => true,
             'payload' => [
-                'referred_by' => (int) $user['referred_by'],
+                'referred_by' => $referrerId,
                 'conditions' => $conditions,
-                'telegram_id' => (int) $user['telegram_id'],
+                'direct_reward' => $settings->effectiveDirectReward(),
+                'invitee_reward' => $settings->effectiveInviteeReward(),
+                'telegram_id' => (int) ($user['telegram_id'] ?? 0),
             ],
         ]);
 
         if (!$result['duplicated'] && $result['total'] > 0) {
             Notifier::referralCommission($user, $result, $settings);
         }
-        SecurityService::evaluateUser((int) $user['id']);
+        SecurityService::evaluateUser($userId);
         return true;
     }
 
     public function meetsConditions(array $user, array $conditions): bool
     {
         foreach ($conditions as $condition) {
-            $ok = match ($condition) {
+            $ok = match ((string) $condition) {
                 'joined' => true,
-                'profile_complete' => !empty($user['first_name']),
-                'phone' => !empty($user['phone']),
-                'channels' => (bool) ($user['channels_verified'] ?? false),
-                'manual_approval' => !empty($user['qualified_at']),
-                'activity' => $this->hasActivity((int) $user['id']),
+                'profile' => trim((string) ($user['first_name'] ?? '')) !== '' && trim((string) ($user['last_name'] ?? '')) !== '',
+                'profile_complete' => trim((string) ($user['first_name'] ?? '')) !== '',
+                'phone', 'contact' => trim((string) ($user['phone'] ?? '')) !== '',
+                'channels', 'channel' => (bool) ($user['channels_verified'] ?? false),
+                'approved', 'manual_approval' => (string) ($user['verify_status'] ?? '') === 'verified',
+                'activity' => $this->hasActivity((int) ($user['id'] ?? 0)),
                 default => true,
             };
             if (!$ok) {
@@ -422,6 +537,58 @@ final class UserService
             }
         }
         return true;
+    }
+
+    /** تأیید دستی عضویت کاربر توسط مدیر و بررسی خودکار پرداخت پاداش دعوت */
+    public function approveVerification(int $userId, ?int $adminId = null): bool
+    {
+        $user = $this->find($userId);
+        if ($user === null) {
+            throw new \InvalidArgumentException('کاربر یافت نشد.');
+        }
+        $this->db->update('users', [
+            'verify_status' => 'verified',
+            'updated_at' => now(),
+        ], 'id = :id', ['id' => $userId]);
+        AuditService::log('user.verified', 'user', $userId, [
+            'previous' => $user['verify_status'] ?? 'pending',
+            'to' => 'verified',
+        ], $adminId);
+
+        $fresh = $this->find($userId);
+        $qualified = false;
+        if ($fresh !== null) {
+            $qualified = $this->maybeQualify($fresh);
+            if (!$this->db->inTransaction()) {
+                Notifier::flushDeferred();
+            }
+        }
+        return $qualified;
+    }
+
+    /** تکمیل/ویرایش نام و نام خانوادگی پروفایل کاربر و بررسی خودکار شرایط پاداش */
+    public function updateProfile(int $userId, string $firstName, string $lastName): bool
+    {
+        $firstName = mb_substr(trim($firstName), 0, 120);
+        $lastName = mb_substr(trim($lastName), 0, 120);
+        if ($firstName === '') {
+            throw new \InvalidArgumentException('وارد کردن نام الزامی است.');
+        }
+        $this->db->update('users', [
+            'first_name' => $firstName,
+            'last_name' => $lastName !== '' ? $lastName : null,
+            'updated_at' => now(),
+        ], 'id = :id', ['id' => $userId]);
+
+        $fresh = $this->find($userId);
+        $qualified = false;
+        if ($fresh !== null) {
+            $qualified = $this->maybeQualify($fresh);
+            if (!$this->db->inTransaction()) {
+                Notifier::flushDeferred();
+            }
+        }
+        return $qualified;
     }
 
     private function hasActivity(int $userId): bool

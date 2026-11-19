@@ -106,6 +106,29 @@ final class UserController extends AdminController
         \RB\Support\Request::redirect(url('admin/users/' . $id) . '#status');
     }
 
+    public function approve(array $params): void
+    {
+        $id = (int) $params['id'];
+        try {
+            $qualified = (new UserService())->approveVerification($id, current_admin_id());
+            $msg = $qualified
+                ? 'عضویت کاربر تأیید شد و پاداش دعوت طبق تنظیمات فعال محاسبه و واریز گردید.'
+                : 'وضعیت احراز عضویت کاربر به «تأییدشده» تغییر یافت.';
+            if ($this->wantsJson()) {
+                $this->ok($msg, ['verified' => true, 'qualified' => $qualified]);
+                return;
+            }
+            $this->flash('success', $msg);
+        } catch (\Throwable $e) {
+            if ($this->wantsJson()) {
+                $this->fail($e->getMessage());
+                return;
+            }
+            $this->flash('error', $e->getMessage());
+        }
+        \RB\Support\Request::redirect(url('admin/users/' . $id) . '#status');
+    }
+
     public function changeReferrer(array $params): void
     {
         $id = (int) $params['id'];

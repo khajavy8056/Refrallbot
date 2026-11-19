@@ -56,10 +56,10 @@ final class Notifier
         self::$deferred[] = ['user_id' => $userId, 'title' => $title, 'body' => $body];
     }
 
-    /** ارسال تلگرام اعلان‌های معوق — باید بعد از COMMIT صدا زده شود. */
+    /** ارسال تلگرام اعلان‌های معوق — فقط بعد از COMMIT قطعی اجرا می‌شود. */
     public static function flushDeferred(): void
     {
-        if (self::$deferred === []) {
+        if (self::$deferred === [] || Database::instance()->inTransaction()) {
             return;
         }
         $items = self::$deferred;
@@ -196,7 +196,7 @@ final class Notifier
         }
     }
 
-    /** اطلاع‌رسانی پورسانت به ذی‌نفعان */
+    /** اطلاع‌رسانی پورسانت و پاداش دوطرفه به ذی‌نفعان (دعوت‌کننده، دعوت‌شده و سطوح شبکه) */
     public static function referralCommission(array $referredUser, array $result, CommissionSettings $settings): void
     {
         $rawName = trim((string) (($referredUser['first_name'] ?? '') . ' ' . ($referredUser['last_name'] ?? '')));
@@ -205,10 +205,22 @@ final class Notifier
             if (($commission['amount'] ?? 0) <= 0) {
                 continue;
             }
-            $title = $commission['type'] === 'direct' ? '💰 پاداش معرفی جدید' : '📈 پورسانت لایه ' . fa_digits((int) $commission['level']);
-            $body = $commission['type'] === 'direct'
-                ? 'بابت معرفی کاربر «' . $safeName . '»، مبلغ ' . wtoman($commission['amount']) . ' به کیف پول شما اضافه شد.'
-                : 'از معرفی کاربر «' . $safeName . '» در سطح ' . fa_digits((int) $commission['level']) . ' شبکه شما، مبلغ ' . wtoman($commission['amount']) . ' به کیف پول شما اضافه شد.';
+            $type = (string) ($commission['type'] ?? '');
+            if ($type === 'welcome') {
+                $title = '🎁 پاداش خوش‌آمدگویی واریز شد';
+                $body = 'تبریک «' . $safeName . '» عزیز! مراحل ثبت‌نام و شرایط عضویت شما با موفقیت تکمیل شد و مبلغ <b>'
+                    . wtoman((int) $commission['amount'])
+                    . '</b> هدیه خوش‌آمدگویی به کیف پول شما اضافه شد.';
+            } elseif ($type === 'direct') {
+                $title = '💰 پاداش معرفی جدید';
+                $body = 'بابت معرفی موفق کاربر «' . $safeName . '» و تکمیل شرایط عضویت، مبلغ <b>'
+                    . wtoman((int) $commission['amount'])
+                    . '</b> به کیف پول شما اضافه شد.';
+            } else {
+                $title = '📈 پورسانت لایه ' . fa_digits((int) $commission['level']);
+                $body = 'از معرفی کاربر «' . $safeName . '» در سطح ' . fa_digits((int) $commission['level']) . ' شبکه شما، مبلغ '
+                    . wtoman((int) $commission['amount']) . ' به کیف پول شما اضافه شد.';
+            }
             self::dispatch((int) $commission['beneficiary_id'], $title, $body, 'commission');
         }
     }

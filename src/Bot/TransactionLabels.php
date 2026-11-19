@@ -10,6 +10,7 @@ final class TransactionLabels
 {
     public const TYPES = [
         'commission_direct' => 'پاداش معرفی مستقیم',
+        'commission_welcome' => 'پاداش خوش‌آمدگویی دعوت',
         'commission_level' => 'پورسانت لایه‌ای',
         'campaign_reward' => 'جایزه کمپین',
         'withdrawal_reserve' => 'رزرو برداشت',
@@ -54,7 +55,7 @@ final class TransactionLabels
     public static function typeClass(string $type): string
     {
         return match ($type) {
-            'commission_direct' => 'success',
+            'commission_direct', 'commission_welcome' => 'success',
             'commission_level' => 'info',
             'campaign_reward' => 'purple',
             'withdrawal_paid' => 'danger',

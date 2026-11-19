@@ -37,6 +37,7 @@ return static function (Router $router): void {
     $router->get('/admin/users', [Admin\UserController::class, 'index'], ['admin']);
     $router->get('/admin/users/{id}', [Admin\UserController::class, 'show'], ['admin']);
     $router->post('/admin/users/{id}/status', [Admin\UserController::class, 'updateStatus'], ['admin', 'csrf']);
+    $router->post('/admin/users/{id}/approve', [Admin\UserController::class, 'approve'], ['admin', 'csrf']);
     $router->post('/admin/users/{id}/referrer', [Admin\UserController::class, 'changeReferrer'], ['admin', 'csrf']);
     $router->post('/admin/users/{id}/wallet', [Admin\UserController::class, 'adjustWallet'], ['admin', 'csrf']);
     $router->get('/admin/network', [Admin\NetworkController::class, 'index'], ['admin']);
@@ -73,6 +74,14 @@ return static function (Router $router): void {
     $router->post('/admin/telegram/menu/sync', [Admin\TelegramController::class, 'syncMenu'], ['admin', 'csrf']);
     $router->get('/admin/telegram/menus', [Admin\TelegramController::class, 'menus'], ['admin']);
     $router->post('/admin/telegram/menus/save', [Admin\TelegramController::class, 'saveMenus'], ['admin', 'csrf']);
+
+    // پروفایل و ظاهر ربات (تصویر پروفایل، بیوگرافی Bio، توضیحات و وضعیت)
+    $router->get('/admin/bot-profile', [Admin\BotProfileController::class, 'index'], ['admin']);
+    $router->get('/admin/bot-profile/photo', [Admin\BotProfileController::class, 'photo'], ['admin']);
+    $router->post('/admin/bot-profile/sync', [Admin\BotProfileController::class, 'sync'], ['admin', 'csrf']);
+    $router->post('/admin/bot-profile/save', [Admin\BotProfileController::class, 'save'], ['admin', 'csrf']);
+    $router->post('/admin/bot-profile/photo', [Admin\BotProfileController::class, 'uploadPhoto'], ['admin', 'csrf']);
+    $router->post('/admin/bot-profile/photo/remove', [Admin\BotProfileController::class, 'removePhoto'], ['admin', 'csrf']);
 
     // کانال‌های اجباری
     $router->get('/admin/channels', [Admin\ChannelController::class, 'index'], ['admin']);

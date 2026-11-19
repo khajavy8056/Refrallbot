@@ -17,6 +17,7 @@ $navItems = [
     ['path' => '/admin/reports/transactions', 'label' => 'گزارش‌ها', 'icon' => '📈'],
     ['group' => 'ربات و ارتباطات'],
     ['path' => '/admin/telegram', 'label' => 'اتصال به ربات', 'icon' => '🤖'],
+    ['path' => '/admin/bot-profile', 'label' => 'پروفایل و ظاهر ربات', 'icon' => '🎨'],
     ['path' => '/admin/channels', 'label' => 'کانال‌های اجباری', 'icon' => '📢'],
     ['path' => '/admin/broadcast', 'label' => 'پیام همگانی', 'icon' => '✉️'],
     ['path' => '/admin/support', 'label' => 'پشتیبانی', 'icon' => '☎️', 'badge' => $navBadges['support'] ?? 0],

@@ -31,6 +31,13 @@ final class CommissionSettingsService
     {
         $errors = [];
         $directReward = self::amount($input['direct_reward'] ?? 0);
+        $inviteeReward = self::amount($input['invitee_reward'] ?? 0);
+        if ($directReward < 0) {
+            $errors[] = 'مبلغ پاداش دعوت‌کننده نمی‌تواند منفی باشد.';
+        }
+        if ($inviteeReward < 0) {
+            $errors[] = 'مبلغ پاداش دعوت‌شده نمی‌تواند منفی باشد.';
+        }
         $maxLevels = (int) ($input['max_levels'] ?? 1);
         if ($maxLevels < 1 || $maxLevels > 8) {
             $errors[] = 'تعداد لایه‌ها باید بین ۱ تا ۸ باشد.';
@@ -62,11 +69,19 @@ final class CommissionSettingsService
             $errors[] = 'در حالت چندلایه، حداقل یک لایه باید درصد بزرگ‌تر از صفر داشته باشد.';
         }
         if (!empty($input['direct_enabled']) && $directReward <= 0) {
-            $errors[] = 'در صورت فعال بودن پاداش مستقیم، مبلغ پاداش باید بیشتر از صفر باشد.';
+            $errors[] = 'در صورت فعال بودن پاداش دعوت‌کننده (مستقیم)، مبلغ پاداش باید بیشتر از صفر باشد.';
+        }
+        if (!empty($input['invitee_enabled']) && $inviteeReward <= 0) {
+            $errors[] = 'در صورت فعال بودن پاداش دعوت‌شده (خوش‌آمدگویی)، مبلغ پاداش باید بیشتر از صفر باشد.';
         }
         $maxPayout = self::amount($input['max_payout_per_event'] ?? 0);
-        if ($maxPayout > 0 && $directReward > $maxPayout) {
-            $errors[] = 'سقف پرداخت هر رویداد باید بزرگ‌تر یا مساوی پاداش مستقیم باشد.';
+        $activeDirect = !empty($input['direct_enabled']) ? $directReward : 0;
+        $activeInvitee = !empty($input['invitee_enabled']) ? $inviteeReward : 0;
+        $minRequiredCap = max($directReward, $activeDirect + $activeInvitee);
+        if ($maxPayout > 0 && $minRequiredCap > $maxPayout) {
+            $errors[] = $activeInvitee > 0
+                ? 'سقف پرداخت هر رویداد باید بزرگ‌تر یا مساوی مجموع پاداش دعوت‌کننده و دعوت‌شده باشد.'
+                : 'سقف پرداخت هر رویداد باید بزرگ‌تر یا مساوی پاداش مستقیم باشد.';
         }
         $percentBase = (string) ($input['percent_base'] ?? 'direct_reward');
         if (!in_array($percentBase, ['direct_reward', 'fixed_base', 'event_amount'], true)) {

@@ -85,6 +85,14 @@ final class DashboardApiController extends Controller
         }
 
         $analytics = self::buildUserAnalytics($db, $user, $summary);
+        $comSettings = \RB\Services\CommissionSettings::current($db);
+        $userSvc = new UserService($db);
+        $pendingReqs = (!empty($user['referred_by']) && empty($user['qualified_at']))
+            ? $userSvc->pendingRequirements($user, $comSettings)
+            : [];
+        $inviteHtml = \RB\Services\ReferralMessageService::renderInviteMessage($user, $link, $comSettings, $db);
+        $invitePlain = trim(html_entity_decode(strip_tags($inviteHtml), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        $shareText = \RB\Services\ReferralMessageService::renderShareText($user, $link, $comSettings, $db);
 
         $this->json([
             'ok' => true,
@@ -103,10 +111,23 @@ final class DashboardApiController extends Controller
                 'joined_date_fa' => fa_date($user['joined_at'], false),
                 'referral_code' => $user['referral_code'],
                 'invite_link' => $link,
+                'referred_by' => $user['referred_by'] ? (int) $user['referred_by'] : null,
+                'qualified' => !empty($user['qualified_at']),
                 'verify_status' => $user['verify_status'],
                 'rank' => $rank,
             ],
             'wallet' => $summary,
+            'referral_rewards' => [
+                'inviter_enabled' => $comSettings->directEnabled,
+                'inviter_reward' => $comSettings->effectiveDirectReward(),
+                'inviter_reward_fa' => wtoman($comSettings->effectiveDirectReward()),
+                'invitee_enabled' => $comSettings->inviteeEnabled,
+                'invitee_reward' => $comSettings->effectiveInviteeReward(),
+                'invitee_reward_fa' => wtoman($comSettings->effectiveInviteeReward()),
+                'share_text' => $shareText,
+                'invite_text' => $invitePlain,
+                'pending_requirements' => array_map(static fn(array $i): string => (string) $i['label'], $pendingReqs),
+            ],
             'reconcile' => [
                 'match' => (bool) ($reconcile['match'] ?? true),
                 'ledger' => (int) ($reconcile['ledger'] ?? 0),
@@ -149,7 +170,7 @@ final class DashboardApiController extends Controller
         $earnRows = $db->all(
             "SELECT DATE(created_at) AS d, COALESCE(SUM(amount), 0) AS s FROM wallet_transactions
              WHERE user_id = :u AND status = 'completed' AND direction = 'credit'
-               AND type IN ('commission_direct','commission_level','campaign_reward')
+               AND type IN ('commission_direct','commission_welcome','commission_level','campaign_reward')
                AND created_at >= :s
              GROUP BY DATE(created_at)",
             ['u' => $uid, 's' => $days30Start]
@@ -256,6 +277,7 @@ final class DashboardApiController extends Controller
             ],
             'earnings_breakdown' => [
                 'direct' => (int) ($walletSummary['direct_earned'] ?? 0),
+                'welcome' => (int) ($walletSummary['welcome_earned'] ?? 0),
                 'layer' => (int) ($walletSummary['layer_earned'] ?? 0),
                 'campaign' => (int) ($walletSummary['campaign_earned'] ?? 0),
             ],
@@ -567,16 +589,10 @@ final class DashboardApiController extends Controller
             $this->fail('نام باید حداقل ۲ کاراکتر باشد.');
             return;
         }
-        Database::instance()->update('users', [
-            'first_name' => mb_substr($first, 0, 120),
-            'last_name' => mb_substr($last, 0, 120),
-            'updated_at' => now(),
-        ], 'id = :id', ['id' => (int) $user['id']]);
-        $fresh = (new UserService())->find((int) $user['id']);
-        if ($fresh !== null) {
-            (new UserService())->maybeQualify($fresh, true);
-        }
-        $this->ok('پروفایل ذخیره شد.');
+        $qualified = (new UserService())->updateProfile((int) $user['id'], $first, $last);
+        $this->ok($qualified ? 'پروفایل ذخیره شد و پاداش خوش‌آمدگویی شما فعال گردید! 🎁' : 'پروفایل ذخیره شد.', [
+            'qualified' => $qualified,
+        ]);
     }
 
     /** @param array $tx */
