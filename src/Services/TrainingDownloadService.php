@@ -104,6 +104,13 @@ final class TrainingDownloadService
                     continue;
                 }
                 if (!empty($response['error']) || $status !== 200) throw new \RuntimeException('دریافت از Google Drive ممکن نشد؛ دسترسی عمومی فایل، اتصال هاست و محدودیت دانلود گوگل را بررسی کنید.');
+                // Some Drive downloads return a virus-scan confirmation form. Only
+                // take its opaque token; never follow an arbitrary form action.
+                if ($bytes > 0 && $bytes <= 65536) {
+                    fflush($out);
+                    $confirmation = self::confirmationUrl((string) @file_get_contents($partPath, false, null, 0, 65536));
+                    if ($confirmation !== null && $confirmation !== $url) { $url = $confirmation; continue; }
+                }
                 break;
             }
             fflush($out); fclose($out); $out = null;
@@ -133,6 +140,22 @@ final class TrainingDownloadService
         } finally {
             flock($lock, LOCK_UN); fclose($lock);
         }
+    }
+
+    public static function confirmationUrl(string $html): ?string
+    {
+        if (!preg_match_all('/<input\b[^>]*>/i', $html, $inputs)) return null;
+        $uuid = null;
+        foreach ($inputs[0] as $input) {
+            if (preg_match('/\bname\s*=\s*["\']uuid["\']/i', $input)
+                && preg_match('/\bvalue\s*=\s*["\']([a-z0-9_-]{1,160})["\']/i', $input, $value)) {
+                $uuid = $value[1]; break;
+            }
+        }
+        if ($uuid === null) return null;
+        return 'https://drive.usercontent.google.com/download?' . http_build_query([
+            'id'=>TrainingVideoService::DRIVE_ID, 'export'=>'download', 'confirm'=>'t', 'uuid'=>$uuid,
+        ], '', '&', PHP_QUERY_RFC3986);
     }
 
     public static function safeUrl(string $url): bool

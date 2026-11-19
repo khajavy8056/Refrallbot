@@ -47,6 +47,19 @@ T::eq(true, Download::safeUrl('https://abc.googleusercontent.com/data'), 'میز
 T::eq(false, Download::safeUrl('https://googleusercontent.com.evil.example/'), 'نام دامنه جعلی رد می‌شود');
 T::eq(false, Download::safeUrl('http://drive.google.com/a'), 'اتصال غیر امن رد می‌شود');
 T::eq(false, Download::safeUrl('https://user@drive.google.com/a'), 'نشانی دارای نام کاربری رد می‌شود');
+$confirm = Download::confirmationUrl('<form action="https://evil.example"><input type="hidden" name="uuid" value="abc-123"></form>');
+T::ok(is_string($confirm) && str_starts_with($confirm, 'https://drive.usercontent.google.com/download?') && str_contains($confirm, 'uuid=abc-123'), 'فرم تأیید گوگل تنها با آدرس ثابت و توکن امن دنبال می‌شود');
+T::eq(null, Download::confirmationUrl('<input name="uuid" value="../bad">'), 'توکن نامعتبر رد می‌شود');
+T::ok(Download::confirmationUrl('<input value="abc-123" name="uuid">') !== null, 'ترتیب ویژگی‌های فرم تأیید اهمیتی ندارد');
+$attempts = 0;
+$confirmSvc = new Download($dir, static function ($url, $write, $progress) use ($video, &$attempts): array {
+    $attempts++;
+    $write($attempts === 1 ? '<form><input name="uuid" value="abc-123"></form>' : $video);
+    $progress(); return ['status'=>200];
+}, $size, $hash);
+T::eq('done', $confirmSvc->download()['state'], 'پس از صفحه تأیید، ویدیو با هش معتبر دریافت می‌شود');
+T::eq(2, $attempts, 'فرم تأیید تنها یک بار دنبال شد');
+unlink($dir . '/panel-training.mp4');
 $routes = file_get_contents(RB_ROOT . '/src/routes.php');
 T::ok(str_contains($routes, "'startDownload'], ['admin', 'csrf']") && str_contains($routes, "'downloadStatus'], ['admin']"), 'مسیرهای انتقال نیازمند ورود و شروع دارای CSRF است');
 foreach (glob($dir . '/.*') ?: [] as $file) if (is_file($file)) unlink($file);
