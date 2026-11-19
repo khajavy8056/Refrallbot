@@ -99,6 +99,7 @@ $isActive = static function (array $item) use ($path): bool {
                 <small><?= fa_date(date('Y-m-d H:i:s')) ?></small>
             </div>
             <div class="topbar-spacer"></div>
+            <a href="<?= url('admin/training') ?>" class="training-button" aria-label="آموزش پنل">▶ آموزش پنل</a>
 
             <?php if (!empty($navBadges['withdrawals'])): ?>
                 <a href="<?= url('admin/withdrawals?status=open') ?>" class="btn btn-secondary btn-sm hide-xs">

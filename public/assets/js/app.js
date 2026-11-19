@@ -896,3 +896,23 @@
     return RB.enNum(value).replace(/[^\d]/g, '');
   };
 })();
+
+// Warn before PHP discards an oversized multipart request (and its CSRF token).
+(function () {
+  const form = document.getElementById('training-upload');
+  if (!form) return;
+  const limit = value => {
+    const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*([KMG]?)$/i);
+    if (!match) return 0;
+    return Number(match[1]) * ({ K: 1024, M: 1048576, G: 1073741824 }[match[2].toUpperCase()] || 1);
+  };
+  form.addEventListener('submit', event => {
+    const file = document.getElementById('training-file').files[0];
+    if (!file) return;
+    const upload = limit(form.dataset.uploadMax), post = limit(form.dataset.postMax);
+    if (file.size > 524288000 || (upload && file.size > upload) || (post && file.size + 65536 > post)) {
+      event.preventDefault();
+      alert('حجم فایل از سقف آپلود هاست بیشتر است. محدودیت PHP را افزایش دهید یا از روش انتقال دستی استفاده کنید.');
+    }
+  });
+})();

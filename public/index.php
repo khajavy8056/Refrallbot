@@ -67,7 +67,7 @@ $app($router);
 // ---- اجرای مسیر
 // خروجی در بافر گرفته می‌شود تا اگر کنترلر هیچ چیزی تولید نکرد
 // (مثلاً به‌خاطر یک خطای بی‌صدا)، پاسخ «۲۰۰ با بدنهٔ خالی» ندهیم.
-if ($rbTrace) {
+if ($rbTrace && $path !== '/admin/training/video') {
     ob_start();
     $router->dispatch();
     $rbBody = (string) ob_get_clean();

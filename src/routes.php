@@ -35,6 +35,11 @@ return static function (Router $router): void {
     $router->get('/admin', [Admin\DashboardController::class, 'index'], ['admin']);
     $router->get('/admin/api/chart', [Admin\DashboardController::class, 'chart'], ['admin']);
 
+    // آموزش پنل، پخش امن و بارگذاری توسط مدیر کل
+    $router->get('/admin/training', [Admin\TrainingController::class, 'index'], ['admin']);
+    $router->get('/admin/training/video', [Admin\TrainingController::class, 'video'], ['admin']);
+    $router->post('/admin/training/upload', [Admin\TrainingController::class, 'upload'], ['admin', 'csrf']);
+
     // کاربران و شبکه
     $router->get('/admin/users', [Admin\UserController::class, 'index'], ['admin']);
     $router->get('/admin/users/{id}', [Admin\UserController::class, 'show'], ['admin']);

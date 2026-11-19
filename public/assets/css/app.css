@@ -1197,3 +1197,11 @@ html:not([data-theme="dark"]) .text-accent { color: #0891b2 !important; }
   .main { margin: 0; }
   .card { box-shadow: none; border: 1px solid #ddd; }
 }
+
+/* Training link is visible throughout the admin panel. */
+.training-button { display: inline-flex; align-items: center; white-space: nowrap; border-radius: 8px; padding: 8px 11px; color: #fff; background: #a21caf; font-weight: 700; font-size: .82rem; text-decoration: none; animation: training-pulse 1.6s ease-in-out infinite; }
+.training-button:hover, .training-button:focus-visible { color: #fff; background: #86198f; outline: 2px solid #e879f9; outline-offset: 2px; }
+@keyframes training-pulse { 50% { background: #be185d; box-shadow: 0 0 0 5px rgba(190,24,93,.18); } }
+.training-player { display: block; width: 100%; max-width: 960px; aspect-ratio: 16 / 9; border: 0; border-radius: 8px; background: #000; }
+@media (prefers-reduced-motion: reduce) { .training-button { animation: none; } }
+@media (max-width: 640px) { .training-button { font-size: .72rem; padding: 7px; } .topbar-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
