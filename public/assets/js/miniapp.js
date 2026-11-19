@@ -1183,112 +1183,6 @@
     return out;
   }
 
-  const IR_BANKS = {
-    '603799':'بانک ملی ایران','589210':'بانک سپه','627648':'بانک توسعه صادرات','207177':'بانک توسعه صادرات',
-    '627961':'بانک صنعت و معدن','603770':'بانک کشاورزی','639217':'بانک کشاورزی','628023':'بانک مسکن',
-    '627760':'پست بانک ایران','502908':'بانک توسعه تعاون','627412':'بانک اقتصاد نوین','622106':'بانک پارسیان',
-    '627884':'بانک پارسیان','639194':'بانک پارسیان','502229':'بانک پاسارگاد','639347':'بانک پاسارگاد',
-    '627488':'بانک کارآفرین','502910':'بانک کارآفرین','621986':'بانک سامان','639346':'بانک سینا',
-    '639607':'بانک سرمایه','502806':'بانک شهر','504706':'بانک شهر','502938':'بانک دی',
-    '603769':'بانک صادرات ایران','610433':'بانک ملت','991975':'بانک ملت','627353':'بانک تجارت',
-    '585983':'بانک تجارت','589463':'بانک رفاه کارگران','627381':'بانک انصار (سپه)','639370':'بانک مهر اقتصاد (سپه)',
-    '639599':'بانک قوامین (سپه)','636949':'بانک حکمت ایرانیان (سپه)','505801':'موسسه کوثر (سپه)',
-    '505785':'بانک ایران‌زمین','505416':'بانک گردشگری','636214':'بانک آینده','504172':'بانک قرض‌الحسنه رسالت',
-    '606373':'بانک قرض‌الحسنه مهر ایران','585947':'بانک خاورمیانه','505809':'بانک خاورمیانه',
-    '585848':'بانک ایران و ونزوئلا','636795':'بانک مرکزی','606256':'موسسه ملل','507677':'موسسه نور','628157':'موسسه توسعه'
-  };
-
-  function detectCardBank(digits) {
-    if (!digits || digits.length < 6) return '';
-    if (digits.slice(0, 8) === '62198619') return 'بلوبانک (بانک سامان)';
-    return IR_BANKS[digits.slice(0, 6)] || '';
-  }
-
-  function passesLuhn16(digits) {
-    if (!/^\d{16}$/.test(digits)) return false;
-    let sum = 0, dbl = false;
-    for (let i = 15; i >= 0; i--) {
-      let d = digits.charCodeAt(i) - 48;
-      if (dbl) { d *= 2; if (d > 9) d -= 9; }
-      sum += d;
-      dbl = !dbl;
-    }
-    return (sum % 10) === 0;
-  }
-
-  function cleanCardText(raw) {
-    return enNum(raw || '')
-      .replace(/[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '')
-      .replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, ' ')
-      .trim();
-  }
-
-  function validateCardClient(raw) {
-    const clean = cleanCardText(raw);
-    if (!clean) return { valid: false, error: 'لطفاً شماره کارت ۱۶ رقمی خود را وارد کنید.' };
-    if (/^IR[\s\-._]*\d{6,}/i.test(clean)) return { valid: false, error: 'شماره شبا (IR) وارد شده است. لطفاً شماره کارت ۱۶ رقمی روی کارت بانکی را وارد کنید.' };
-    if (/[*×✕✖•●▪]|X{2,}/i.test(clean)) return { valid: false, error: 'شماره کارت به‌صورت ستاره‌دار (ماسک‌شده) وارد شده است. لطفاً هر ۱۶ رقم را کامل وارد کنید.' };
-    if (/[^0-9\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]/.test(clean)) return { valid: false, error: 'شماره کارت فقط باید شامل ارقام باشد (فاصله و خط تیره مجاز است).' };
-    const gm = clean.match(/^(\d{4})[\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]+(\d{4})[\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]+(\d{4})[\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]+(\d{4})$/);
-    if (gm) {
-      const fwd = gm[1] + gm[2] + gm[3] + gm[4];
-      const revG = gm[4] + gm[3] + gm[2] + gm[1];
-      if (!detectCardBank(fwd) && detectCardBank(revG) && passesLuhn16(revG)) {
-        return { valid: false, error: 'ترتیب ۴تایی ارقام کارت برعکس وارد شده است. لطفاً از چپ به راست (شروع با ' + faNum(gm[4]) + ') وارد کنید.' };
-      }
-    }
-    const digits = clean.replace(/[^0-9]/g, '');
-    if (!digits) return { valid: false, error: 'لطفاً شماره کارت ۱۶ رقمی خود را وارد کنید.' };
-    if (digits.length < 16) return { valid: false, error: 'تعداد ارقام شماره کارت کم است (' + faNum(digits.length) + ' رقم وارد شده؛ باید دقیقاً ۱۶ رقم باشد).' };
-    if (digits.length > 16) return { valid: false, error: 'تعداد ارقام شماره کارت بیش از حد مجاز است (' + faNum(digits.length) + ' رقم وارد شده؛ باید دقیقاً ۱۶ رقم باشد).' };
-    if ('0178'.indexOf(digits[0]) !== -1 || /^(\d)\1{15}$/.test(digits) || digits.slice(1, 11) === '0000000000' || digits.slice(10, 16) === '000000') {
-      return { valid: false, error: 'ساختار شماره کارت معتبر نیست. لطفاً یک شماره کارت بانکی ۱۶ رقمی معتبر وارد کنید.' };
-    }
-    if (!passesLuhn16(digits)) {
-      return { valid: false, error: 'شماره کارت واردشده معتبر نیست (رقم کنترلی کارت صحیح نیست). لطفاً ۱۶ رقم روی کارت را دوباره بررسی کنید.' };
-    }
-    return { valid: true, digits: digits, bank: detectCardBank(digits) };
-  }
-
-  document.addEventListener('input', function (e) {
-    const el = e.target;
-    if (!el || el.id !== 'withdraw-card') return;
-    const hint = $('#withdraw-card-hint');
-    const clean = cleanCardText(el.value);
-    // اگر فقط ارقام و فاصله/خط تیره وارد شده و ۱۶ رقم یا کمتر است، به‌صورت خوانا ۴تایی قالب‌بندی کن
-    if (clean && /^[0-9\s\-‐‑‒–—―−ـ]+$/.test(clean)) {
-      const onlyDigits = clean.replace(/[^0-9]/g, '');
-      if (onlyDigits.length <= 16) {
-        const grouped = onlyDigits.replace(/(\d{4})(?=\d)/g, '$1-');
-        if (el.value !== grouped) el.value = grouped;
-      }
-    }
-    if (!hint) return;
-    if (!clean) {
-      hint.textContent = 'ارقام فارسی یا انگلیسی، با فاصله یا خط تیره یا کپی مستقیم از همراه بانک پذیرفته می‌شود.';
-      hint.style.color = '';
-      return;
-    }
-    const digitsOnly = clean.replace(/[^0-9]/g, '');
-    const bank = detectCardBank(digitsOnly);
-    if (digitsOnly.length === 16 || /[^0-9\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]/.test(clean)) {
-      const check = validateCardClient(el.value);
-      if (check.valid) {
-        hint.textContent = '✅ شماره کارت معتبر است' + (check.bank ? ' · ' + check.bank : '');
-        hint.style.color = 'var(--success, #16a34a)';
-      } else {
-        hint.textContent = '⚠️ ' + check.error;
-        hint.style.color = 'var(--danger, #dc2626)';
-      }
-    } else if (bank) {
-      hint.textContent = '🏦 ' + bank + ' · ' + faNum(digitsOnly.length) + ' از ۱۶ رقم';
-      hint.style.color = '';
-    } else {
-      hint.textContent = faNum(digitsOnly.length) + ' از ۱۶ رقم وارد شده';
-      hint.style.color = '';
-    }
-  });
-
   document.addEventListener('submit', async function (e) {
     const form = e.target;
     if (form.id === 'withdraw-form') {
@@ -1296,9 +1190,7 @@
       const data = formData(form);
       data.amount = enNum(data.amount || '').replace(/[^\d]/g, '');
       if (!data.amount) { toast('لطفاً مبلغ برداشت را وارد کنید.', 'error'); return; }
-      const cardCheck = validateCardClient(data.card_number || '');
-      if (!cardCheck.valid) { toast(cardCheck.error, 'error'); haptic('error'); return; }
-      data.card_number = cardCheck.digits;
+      if (!(data.card_number || '').trim()) { toast('لطفاً شماره کارت خود را وارد کنید.', 'error'); haptic('error'); return; }
       const btn = $('#withdraw-submit');
       const original = btn.textContent;
       btn.disabled = true; btn.textContent = 'در حال ثبت…';
@@ -1309,7 +1201,7 @@
         haptic('success');
         form.reset();
         const hint = $('#withdraw-card-hint');
-        if (hint) { hint.textContent = 'ارقام فارسی یا انگلیسی، با فاصله یا خط تیره یا کپی مستقیم از همراه بانک پذیرفته می‌شود.'; hint.style.color = ''; }
+        if (hint) { hint.textContent = 'شماره ارسالی هنگام پرداخت توسط مدیر بررسی می‌شود.'; hint.style.color = ''; }
         loadWithdrawals();
         loadDashboard();
       }

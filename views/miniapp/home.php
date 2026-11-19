@@ -401,9 +401,9 @@
                         <div class="form-hint" id="withdraw-min">—</div>
                     </div>
                     <div class="form-group">
-                        <label class="form-label" for="withdraw-card">شماره کارت بانکی (۱۶ رقم)</label>
-                        <input type="text" name="card_number" id="withdraw-card" class="form-control ltr" dir="ltr" inputmode="numeric" autocomplete="cc-number" maxlength="64" required placeholder="6037-9975-XXXX-XXXX">
-                        <div class="form-hint" id="withdraw-card-hint">ارقام فارسی یا انگلیسی، با فاصله یا خط تیره یا کپی مستقیم از همراه بانک پذیرفته می‌شود.</div>
+                        <label class="form-label" for="withdraw-card">شماره کارت بانکی</label>
+                        <input type="text" name="card_number" id="withdraw-card" class="form-control ltr" dir="ltr" autocomplete="cc-number" required placeholder="شماره کارت را وارد کنید">
+                        <div class="form-hint" id="withdraw-card-hint">شماره ارسالی هنگام پرداخت توسط مدیر بررسی می‌شود.</div>
                     </div>
                     <div class="form-group">
                         <label class="form-label">نام و نام خانوادگی صاحب کارت</label>

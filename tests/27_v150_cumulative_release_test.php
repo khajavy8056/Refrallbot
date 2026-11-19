@@ -168,6 +168,7 @@ T::eq([
     '004_multi_messenger_invite_studio_and_layers.php',
     '005_cross_messenger_channels_and_error_logs.php',
     '006_user_levels.php',
+    '007_withdrawal_card_details.php',
 ], $appliedUpgrade, 'ارتقای مستقیم از v1.2.0 همه Migrationهای بعدی را به ترتیب اجرا کرد');
 
 // اجرای مجدد برای تضمین Idempotency کامل پس از ارتقا
@@ -222,98 +223,22 @@ if (class_exists(\ZipArchive::class)) {
 @rmdir($v12Dir);
 
 // =========================================================================
-// ۳) اعتبارسنجی دقیق شماره کارت بانکی ۱۶ رقمی (Luhn + نرمال‌سازی + رد کارت جعلی)
+// ۳) شماره کارت بدون اعتبارسنجی بانکی و با حفظ ورودی برای بررسی مدیر
 // =========================================================================
-$validIranianCards = [
-    ['6037997512345670', 'بانک ملی ایران'],
-    ['6104337812345674', 'بانک ملت'],
-    ['6219861034529007', 'بانک سامان'],
-    ['6219861912345675', 'بلوبانک'],
-    ['5022291012345672', 'بانک پاسارگاد'],
-    ['5041721011111110', 'رسالت'],
-    ['6274121112345673', 'اقتصاد نوین'],
-    ['5892101112345679', 'بانک سپه'],
-    ['5859831112345672', 'بانک تجارت'],
-    ['6037691912345675', 'بانک صادرات'],
-    ['6280231412345679', 'بانک مسکن'],
-    ['6037701689095443', 'بانک کشاورزی'],
-    ['6362141112345674', 'بانک آینده'],
-    ['6063731012345675', 'مهر ایران'],
-];
-foreach ($validIranianCards as [$cardNo, $expectedBankPart]) {
-    if ($expectedBankPart === 'بلوبانک' && !WithdrawalService::validateCard($cardNo)['valid']) {
-        $prefix15 = '621986191234567';
-        for ($d = 0; $d <= 9; $d++) {
-            if (WithdrawalService::validateCard($prefix15 . $d)['valid']) {
-                $cardNo = $prefix15 . $d;
-                break;
-            }
-        }
-    }
-    $insp = WithdrawalService::validateCard($cardNo);
-    T::eq(true, $insp['valid'], "کارت بانکی معتبر {$cardNo} ({$expectedBankPart}) پذیرفته شد");
-    T::eq($cardNo, $insp['normalized'], "نرمال‌سازی دقیق کارت {$cardNo}");
-    $bank = WithdrawalService::detectBank($cardNo);
-    T::ok(str_contains($bank, $expectedBankPart), "تشخیص دقیق نام بانک «{$expectedBankPart}» → «{$bank}»");
+foreach (['123', '6037997512345671', '1111111111111111', 'IR062960000000100324200001', '۶۰۳۷-۹۹۷۵-۱۲۳۴-۵۶۷۰', '6037-ABCD-1234'] as $input) {
+    $result = WithdrawalService::validateCard($input);
+    T::eq(true, $result['valid'], 'ورودی غیرخالی بدون بررسی بانکی پذیرفته شد');
+    T::eq($input, $result['normalized'], 'ورودی همان‌طور که ارسال شد حفظ می‌شود');
 }
-
-// تست انواع فرمت‌های واقعی ورودی کاربران (فارسی، عربی، تمام‌عرض، فاصله، خط تیره، کاراکترهای مخفی RTL/BiDi)
-$formattedValidInputs = [
-    '۶۰۳۷ ۹۹۷۵ ۱۲۳۴ ۵۶۷۰' => '6037997512345670',
-    '۶۰۳۷-۹۹۷۵-۱۲۳۴-۵۶۷۰' => '6037997512345670',
-    '۶۰۳۷–۹۹۷۵—۱۲۳۴ـ۵۶۷۰' => '6037997512345670',
-    '٦١٠٤-٣٣٧٨-١٢٣٤-٥٦٧٤' => '6104337812345674',
-    "\u{200F}\u{202A}۶۰۳۷\u{200C}۹۹۷۵\u{00A0}1234-٥٦٧٠\u{202C}\u{FEFF}" => '6037997512345670',
-    '６２１９ ８６１０ ３４５２ ９００７' => '6219861034529007',
-    "  5022.2910/1234_5672 \n" => '5022291012345672',
-];
-foreach ($formattedValidInputs as $rawInput => $expectedNorm) {
-    $res = WithdrawalService::validateCard($rawInput);
-    T::eq(true, $res['valid'], "ورودی فرمت‌دار معتبر به {$expectedNorm} پذیرفته شد");
-    T::eq($expectedNorm, $res['normalized'], "خروجی نرمال‌شده دقیقاً {$expectedNorm} است");
-}
-
-// رد قاطع تمام شماره‌کارت‌های نامعتبر با پیام خطای شفاف فارسی
-$invalidInputs = [
-    ['', 'empty'],
-    ['IR062960000000100324200001', 'iban_instead_of_card'],
-    ['6037-****-****-5670', 'masked_card'],
-    ['6037-ABCD-1234-5670', 'non_digit'],
-    ['۶۰۳۷ ۹۹۷۵ ۱۲۳۴ ۵۶۷', 'short_15'],
-    ['60379975123456701', 'long_17'],
-    ['6666666666666666', 'identical_digits'],
-    ['6037990000000000', 'zero_tail'],
-    ['6037997512345671', 'luhn_single_digit_error'],
-    ['6037995712345670', 'luhn_transposition_error'],
-    ['5670-1234-9975-6037', 'rtl_group_reversed'],
-    ['1234567812345670', 'invalid_shaparak_prefix'],
-];
-foreach ($invalidInputs as [$badRaw, $label]) {
-    $res = WithdrawalService::validateCard($badRaw);
-    T::eq(false, $res['valid'], "کارت نامعتبر ({$label}) قاطعانه رد شد");
-    $errMsg = (string) ($res['error'] ?? '');
-    T::ok(mb_strlen($errMsg) > 8, "پیام خطای فارسی شفاف برای ({$label}) تولید شد: {$errMsg}");
-}
-
-// ثبت واقعی درخواست برداشت با شماره کارت فارسی خط‌تیره‌دار و کاراکتر مخفی RTL
+T::eq(false, WithdrawalService::validateCard('')['valid'], 'ورودی خالی رد می‌شود');
 SettingsService::set('withdrawal_enabled', '1', 'withdrawal');
-SettingsService::set('min_withdrawal', '50000', 'withdrawal');
 $cardUser = $users->registerFromTelegram(['id' => 7700101, 'first_name' => 'مریم', 'last_name' => 'حسینی', 'username' => 'maryam_card'])['user'];
 $wallets->credit((int) $cardUser['id'], 'adjustment', 100000, ['idempotency_key' => 'card-test-credit-1', 'description' => 'شارژ تست برداشت']);
-
-$badWdCaught = false;
-try {
-    $withdrawals->create((int) $cardUser['id'], 60000, '۶۰۳۷-۹۹۷۵-۱۲۳۴-۵۶۷۱', 'مریم حسینی');
-} catch (\Throwable $e) {
-    $badWdCaught = str_contains($e->getMessage(), 'کارت') || str_contains($e->getMessage(), 'رقم');
-}
-T::ok($badWdCaught, 'سرویس برداشت کارت ۱۶ رقمی با رقم کنترل اشتباه را رد کرد');
-
-$goodWd = $withdrawals->create((int) $cardUser['id'], 60000, "\u{200E}۶۰۳۷ - ۹۹۷۵ - ۱۲۳۴ - ۵۶۷۰\u{200F}", 'مریم حسینی');
-T::ok(in_array((string) $goodWd['status'], ['pending', 'reviewing'], true), 'درخواست برداشت با کارت فارسی خط‌تیره‌دار و کاراکتر مخفی با موفقیت ثبت شد');
-T::eq('5670', (string) $goodWd['card_last4'], '۴ رقم آخر کارت با ارقام استاندارد ذخیره شد');
-T::ok(str_contains((string) $goodWd['bank_name'], 'ملی'), 'نام بانک ملی ایران روی درخواست برداشت ذخیره شد');
-T::eq('6037997512345670', (string) WithdrawalService::decryptedCard($goodWd), 'شماره کارت ۱۶ رقمی تمیز به‌صورت رمزنگاری‌شده ذخیره شد');
+$rawCard = "\u{200E}۶۰۳۷ - ۹۹۷۵ - ۱۲۳۴ - ۵۶۷۱\u{200F}";
+$goodWd = $withdrawals->create((int) $cardUser['id'], 60000, $rawCard, 'مریم حسینی');
+T::eq('reviewing', $goodWd['status'], 'درخواست با ورودی بدون اعتبارسنجی در انتظار بررسی مدیر ثبت شد');
+T::eq('5671', (string) $goodWd['card_last4'], 'چهار رقم آخر برای نمایش به‌دست آمد');
+T::eq($rawCard, WithdrawalService::decryptedCard($goodWd), 'ورودی اصلی رمزگذاری و بدون تغییر نگهداری شد');
 
 // =========================================================================
 // ۴) نمایش هوشمند تنظیمات و تفکیک آمار فقط برای پیام‌رسان‌های فعال و متصل

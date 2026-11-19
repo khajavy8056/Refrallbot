@@ -835,7 +835,7 @@ final class DashboardApiController extends Controller
         }
         Csrf::verify();
         $amount = Money::parseToman($_POST['amount'] ?? null);
-        $card = trim((string) ($_POST['card_number'] ?? ''));
+        $card = (string) ($_POST['card_number'] ?? '');
         $holder = trim((string) ($_POST['card_holder'] ?? ''));
         if ($amount === null) {
             $this->fail('مبلغ درخواست را وارد کنید.');

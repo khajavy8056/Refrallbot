@@ -98,139 +98,29 @@ final class WithdrawalService
         return ($sum % 10) === 0;
     }
 
-    /**
-     * اعتبارسنجی دقیق شماره کارت بانکی (۱۶ رقم + نرمال‌سازی کامل + قواعد شاپرک + الگوریتم استاندارد Luhn)
-     * @return array{valid:bool,error:?string,normalized:string,formatted?:string,bank_name?:string}
-     */
+    /** Accept any non-empty payment details; an administrator reviews them before payment. */
     public static function validateCard(string $card): array
     {
-        $clean = self::cleanCardInput($card);
-        if ($clean === '') {
-            return [
-                'valid' => false,
-                'error' => 'لطفاً شماره کارت ۱۶ رقمی خود را وارد کنید.',
-                'normalized' => '',
-            ];
+        if (trim($card) === '') {
+            return ['valid' => false, 'error' => 'لطفاً شماره کارت خود را وارد کنید.', 'normalized' => ''];
         }
-
-        // تشخیص وارد کردن اشتباهی شماره شبا (IR...)
-        if (preg_match('~^IR[\s\-‐‑‒–—―−._]*\d{6,}~iu', $clean)) {
-            return [
-                'valid' => false,
-                'error' => 'شماره شبا (IR) وارد شده است. لطفاً شماره کارت ۱۶ رقمی درج‌شده روی کارت بانکی را وارد کنید.',
-                'normalized' => '',
-            ];
-        }
-
-        // تشخیص شماره کارت ماسک‌شده/ستاره‌دار (مثل 6037-****-****-1234 یا XXXX)
-        if (preg_match('~[*×✕✖•●▪]|X{2,}~iu', $clean)) {
-            return [
-                'valid' => false,
-                'error' => 'شماره کارت به‌صورت ستاره‌دار (ماسک‌شده) وارد شده است. لطفاً هر ۱۶ رقم کارت را کامل وارد کنید.',
-                'normalized' => '',
-            ];
-        }
-
-        // رد کاراکترهای غیرعددی نامعتبر (فقط ارقام، فاصله، خط تیره، کشیده فارسی و جداکننده‌های متداول مجازند)
-        if (preg_match('~[^0-9\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]~u', $clean)) {
-            return [
-                'valid' => false,
-                'error' => 'شماره کارت فقط باید شامل ارقام باشد (استفاده از فاصله یا خط تیره بین ارقام مجاز است).',
-                'normalized' => '',
-            ];
-        }
-
-        // تشخیص کپی برعکس گروه‌های ۴تایی در متون راست‌به‌چپ (مثلاً 5670-1234-9975-6037 به جای 6037-9975-1234-5670)
-        if (preg_match(
-            '~^(\d{4})[\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]+(\d{4})[\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]+(\d{4})[\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]+(\d{4})$~u',
-            $clean,
-            $gm
-        )) {
-            $forward = $gm[1] . $gm[2] . $gm[3] . $gm[4];
-            $groupReversed = $gm[4] . $gm[3] . $gm[2] . $gm[1];
-            if (
-                self::detectBank($forward) === 'بانک نامشخص'
-                && self::detectBank($groupReversed) !== 'بانک نامشخص'
-                && self::passesLuhn($groupReversed)
-            ) {
-                return [
-                    'valid' => false,
-                    'error' => 'ترتیب ۴تایی ارقام شماره کارت برعکس وارد شده است. لطفاً شماره کارت را از چپ به راست (شروع با پیش‌شماره ' . fa_digits($gm[4]) . ') وارد کنید.',
-                    'normalized' => $forward,
-                ];
-            }
-        }
-
-        $digits = preg_replace('~[^0-9]~', '', $clean) ?? '';
-        if ($digits === '') {
-            return [
-                'valid' => false,
-                'error' => 'لطفاً شماره کارت ۱۶ رقمی خود را وارد کنید.',
-                'normalized' => '',
-            ];
-        }
-
-        $len = strlen($digits);
-        if ($len < 16) {
-            return [
-                'valid' => false,
-                'error' => 'تعداد ارقام شماره کارت کم است (' . fa_digits($len) . ' رقم وارد شده؛ شماره کارت باید دقیقاً ۱۶ رقم باشد).',
-                'normalized' => $digits,
-            ];
-        }
-        if ($len > 16) {
-            return [
-                'valid' => false,
-                'error' => 'تعداد ارقام شماره کارت بیش از حد مجاز است (' . fa_digits($len) . ' رقم وارد شده؛ شماره کارت باید دقیقاً ۱۶ رقم باشد).',
-                'normalized' => $digits,
-            ];
-        }
-
-        // رد الگوهای ساختاری نامعتبر (پیش‌شماره غیربانکی ISO/شاپرک، همه ارقام یکسان، یا بخش میانی/انتهایی تمام‌صفر)
-        if (
-            in_array($digits[0], ['0', '1', '7', '8'], true)
-            || preg_match('~^(\d)\1{15}$~', $digits)
-            || substr($digits, 1, 10) === '0000000000'
-            || substr($digits, 10, 6) === '000000'
-        ) {
-            return [
-                'valid' => false,
-                'error' => 'ساختار شماره کارت معتبر نیست. لطفاً یک شماره کارت بانکی ۱۶ رقمی معتبر وارد کنید.',
-                'normalized' => $digits,
-            ];
-        }
-
-        // تشخیص ورود کاملاً معکوس ۱۶ رقم
-        $reversed = strrev($digits);
-        if (
-            self::detectBank($digits) === 'بانک نامشخص'
-            && self::detectBank($reversed) !== 'بانک نامشخص'
-            && self::passesLuhn($reversed)
-        ) {
-            return [
-                'valid' => false,
-                'error' => 'ارقام شماره کارت برعکس وارد شده است. لطفاً ۱۶ رقم روی کارت را از چپ به راست وارد کنید.',
-                'normalized' => $digits,
-            ];
-        }
-
-        // بررسی استاندارد الگوریتم Luhn (Mod-10)
-        if (!self::passesLuhn($digits)) {
-            return [
-                'valid' => false,
-                'error' => 'شماره کارت واردشده معتبر نیست (رقم کنترلی کارت صحیح نیست). لطفاً ۱۶ رقم روی کارت را دوباره با دقت بررسی کنید.',
-                'normalized' => $digits,
-            ];
-        }
-
-        return [
-            'valid' => true,
-            'error' => null,
-            'normalized' => $digits,
-            'formatted' => self::formatCard($digits),
-            'bank_name' => self::detectBank($digits),
-        ];
+        $key = self::cardKey($card);
+        return ['valid' => true, 'error' => null, 'normalized' => $card,
+            'formatted' => $card, 'bank_name' => self::detectBank($key)];
     }
+
+    /** Normalize conventional number separators only for masking, bank hints and reuse checks.
+     * This never changes what the administrator sees and never rejects an input. */
+    private static function cardKey(string $card): string
+    {
+        $clean = self::cleanCardInput($card);
+        if (preg_match('~^[0-9\s\-‐‑‒–—―−﹣－ـ._/,،٬٫·:]+$~u', $clean)) {
+            return preg_replace('~[^0-9]~', '', $clean) ?? $clean;
+        }
+        return $clean;
+    }
+
+    private const LONG_CARD_MARKER = 'RB:LONG-CARD-IN-DETAILS';
 
     /** نمایش خوانا و استاندارد شماره کارت ۱۶ رقمی: 6037-9975-1234-5670 */
     public static function formatCard(string $digits): string
@@ -245,10 +135,10 @@ final class WithdrawalService
     /** نمایش گروهی شماره کارت: 6037-****-****-1234 */
     public static function maskCard(?string $card): string
     {
-        if ($card === null || strlen($card) < 8) {
-            return '—';
-        }
-        return substr($card, 0, 4) . '-****-****-' . substr($card, -4);
+        if ($card === null || $card === '') return '—';
+        $key = self::cardKey($card);
+        if (!ctype_digit($key) || strlen($key) < 8) return '••••';
+        return substr($key, 0, 4) . '-****-****-' . substr($key, -4);
     }
 
     /**
@@ -277,7 +167,14 @@ final class WithdrawalService
             throw new \RuntimeException('نام صاحب کارت نامعتبر است.');
         }
 
-        return $this->db->transaction(function () use ($userId, $amount, $card, $holder, $ip, $min) {
+        $rawCard = $card['normalized'];
+        $cardKey = self::cardKey($rawCard);
+        $cardHash = hash('sha256', $cardKey);
+        $encryptedCard = Crypto::encrypt($rawCard);
+        // The original column is VARCHAR(255); long encrypted input is stored in a separate protected table.
+        $longCard = strlen((string) $encryptedCard) > 255;
+        $last4 = ctype_digit($cardKey) && strlen($cardKey) >= 4 ? substr($cardKey, -4) : null;
+        return $this->db->transaction(function () use ($userId, $amount, $cardKey, $cardHash, $encryptedCard, $longCard, $last4, $holder, $ip, $min) {
             // قفل کاربر برای جلوگیری از درخواست هم‌زمان
             $user = $this->db->lockRow('users', $userId);
             if ($user === null) {
@@ -320,20 +217,27 @@ final class WithdrawalService
                 'user_id' => $userId,
                 'amount' => $amount,
                 'status' => 'new',
-                'card_number_enc' => Crypto::encrypt($card['normalized']),
-                'card_last4' => substr($card['normalized'], -4),
+                'card_number_enc' => $longCard ? Crypto::encrypt(self::LONG_CARD_MARKER) : $encryptedCard,
+                'card_last4' => $last4,
                 'card_holder' => $holder,
-                'bank_name' => self::detectBank($card['normalized']),
+                'bank_name' => self::detectBank($cardKey),
                 'reserve_key' => 'withdrawal_reserve:' . $requestCode,
                 'client_ip' => $ip,
                 'meta' => json_encode([
-                    'card_hash' => hash('sha256', $card['normalized']),
+                    'card_hash' => $cardHash,
                     'min_at_request' => $min,
                     'settings_version' => CommissionSettings::current($this->db)->version,
                 ], JSON_UNESCAPED_UNICODE),
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
+
+            if ($longCard) {
+                $this->db->insert('withdrawal_card_details', [
+                    'withdrawal_id' => $id,
+                    'card_enc' => $encryptedCard,
+                ]);
+            }
 
             // رزرو مبلغ (تراکنش مالی — اگر شکست بخورد همه چیز Rollback می‌شود)
             (new WalletService($this->db))->reserve($userId, $amount, 'withdrawal_reserve:' . $requestCode, [
@@ -353,7 +257,7 @@ final class WithdrawalService
                 'updated_at' => now(),
             ], 'id = :id', ['id' => $id]);
 
-            SecurityService::checkCardReuse(hash('sha256', $card['normalized']), $userId);
+            SecurityService::checkCardReuse($cardHash, $userId);
 
             try {
                 AuditService::log('withdrawal.created', 'withdrawal', $id, ['amount' => $amount, 'user_id' => $userId]);
@@ -379,7 +283,12 @@ final class WithdrawalService
         if ($request === null) {
             return null;
         }
-        return Crypto::decrypt($request['card_number_enc'] ?? null);
+        $value = Crypto::decrypt($request['card_number_enc'] ?? null);
+        if ($value === self::LONG_CARD_MARKER && !empty($request['id'])) {
+            $extra = Database::instance()->first('SELECT card_enc FROM withdrawal_card_details WHERE withdrawal_id = :id', ['id' => (int) $request['id']]);
+            if ($extra !== null) return Crypto::decrypt((string) $extra['card_enc']);
+        }
+        return $value;
     }
 
     /** کاربر درخواست‌های خودش را می‌بیند — بدون شماره کارت کامل */

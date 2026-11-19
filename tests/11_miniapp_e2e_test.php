@@ -160,7 +160,7 @@ $_SERVER['REQUEST_URI'] = '/app/api/withdraw';
 $_SERVER['HTTP_ACCEPT'] = 'application/json';
 $_POST = [
     'amount' => '50,000',
-    'card_number' => '6037-7016-8909-5443',
+    'card_number' => '۱۲۳-نامعتبر-۷',
     'card_holder' => 'کاربر تست پنل',
 ];
 ob_start();
@@ -173,7 +173,9 @@ try {
     $err = $e->getMessage();
 }
 $withdrawOut = json_decode((string) ob_get_clean(), true);
-T::ok($withdrawOut['ok'] ?? false, 'ثبت درخواست برداشت از Mini App موفق بود');
+T::ok($withdrawOut['ok'] ?? false, 'ثبت درخواست برداشت از Mini App با ورودی آزاد موفق بود');
+$miniCardReq = (new \RB\Services\WithdrawalService($db))->find((int) ($withdrawOut['request']['id'] ?? 0));
+T::eq('۱۲۳-نامعتبر-۷', \RB\Services\WithdrawalService::decryptedCard($miniCardReq), 'ورودی آزاد در مینی‌اپ دقیقاً ذخیره می‌شود');
 T::eq(150000, (int) $wallet->summary((int) $user['id'])['balance'], 'مبلغ برداشت از موجودی رزرو شد');
 $openRequests = (int) $db->value("SELECT COUNT(*) FROM withdrawal_requests WHERE user_id = :u AND status IN ('new','reviewing')", ['u' => (int) $user['id']]);
 T::eq(1, $openRequests, 'یک درخواست برداشت باز برای کاربر ثبت شد');

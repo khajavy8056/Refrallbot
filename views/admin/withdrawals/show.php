@@ -76,12 +76,13 @@ $currentIndex = array_search($status, $statusFlow, true);
                 <tr><td>نام کاربری</td><td class="ltr"><?= $request['username'] ? '@' . e((string) $request['username']) : '—' ?></td></tr>
                 <tr><td>شماره کارت کامل</td><td>
                     <?php if ($card !== null): ?>
-                        <span class="ltr mono" id="card-number"><?= e($card) ?></span>
+                        <span class="ltr mono" id="card-number" style="white-space:pre-wrap;overflow-wrap:anywhere"><?= e($card) ?></span>
                         <button class="btn btn-ghost btn-sm" type="button" data-copy="<?= e($card) ?>">کپی</button>
                     <?php else: ?>
                         <span class="text-muted">قابل رمزگشایی نیست (کلید رمزنگاری تغییر کرده)</span>
                     <?php endif; ?>
                 </td></tr>
+                <tr><td></td><td class="text-muted text-xs">شماره بدون اعتبارسنجی ذخیره شده است؛ پیش از واریز آن را بررسی کنید.</td></tr>
                 <tr><td>صاحب کارت</td><td><?= e((string) ($request['card_holder'] ?? '—')) ?></td></tr>
                 <tr><td>شماره شبا</td><td class="ltr"><?= e((string) ($request['iban'] ?? '—')) ?></td></tr>
                 <tr><td>IP ثبت درخواست</td><td class="ltr"><?= e((string) ($request['client_ip'] ?? '—')) ?></td></tr>

@@ -26,6 +26,7 @@ use RB\Services\UserService;
 use RB\Services\WalletService;
 use RB\Services\WithdrawalService;
 use RB\Support\Config;
+use RB\Support\Crypto;
 use RB\Support\Database;
 use RB\Support\Money;
 use RB\Support\RateLimiter;
@@ -145,12 +146,14 @@ final class BotHandler
         }
 
         $existingUser = $this->users->findByMessenger($this->platform, $upd->externalUserId);
+        $incomingSession = $existingUser ? $this->getUserSession($existingUser) : null;
+        $loggedText = ($incomingSession['step'] ?? '') === 'withdraw_card' ? '[شماره کارت محرمانه]' : $upd->text;
         $this->driver->logMessage(
             $existingUser ? (int) $existingUser['id'] : null,
             $upd->chatId,
             'in',
             $upd->kind,
-            ['text' => $upd->text, 'start' => $upd->startPayload],
+            ['text' => $loggedText, 'start' => $upd->startPayload],
             'ok',
             $upd->messageId
         );
@@ -776,13 +779,13 @@ final class BotHandler
                 $this->setUserStep($user, 'withdraw_card', ['amount' => $amount, 'min' => $min]);
                 $this->send(
                     $chatId,
-                    "💳 لطفاً <b>شماره کارت بانکی ۱۶ رقمی</b> خود را ارسال کنید:\n"
-                    . "<i>(ارقام فارسی یا انگلیسی، با فاصله یا خط تیره یا پیوسته پذیرفته می‌شود — مثلاً <code>6037-9975-XXXX-XXXX</code>؛ برای انصراف /cancel)</i>"
+                    "💳 لطفاً <b>شماره کارت بانکی</b> خود را ارسال کنید:\n"
+                    . "<i>شماره همان‌طور که ارسال می‌کنید برای بررسی مدیر ثبت می‌شود. برای انصراف /cancel را بفرستید.</i>"
                 );
                 return true;
 
             case 'withdraw_card':
-                $validation = WithdrawalService::validateCard($text);
+                $validation = WithdrawalService::validateCard($upd->text);
                 if (!$validation['valid']) {
                     $this->send(
                         $chatId,
@@ -792,15 +795,12 @@ final class BotHandler
                 }
                 $this->setUserStep($user, 'withdraw_holder', [
                     'amount' => (int) ($payload['amount'] ?? 0),
-                    'card' => $validation['normalized'],
+                    'card_enc' => Crypto::encrypt($validation['normalized']),
                     'min' => $payload['min'] ?? 0,
                 ]);
-                $formattedCard = (string) ($validation['formatted'] ?? WithdrawalService::formatCard($validation['normalized']));
-                $bankName = (string) ($validation['bank_name'] ?? '');
-                $bankSuffix = ($bankName !== '' && $bankName !== 'بانک نامشخص') ? ' (' . e($bankName) . ')' : '';
                 $this->send(
                     $chatId,
-                    "✅ شماره کارت تأیید و ثبت شد:\n<code>" . e($formattedCard) . '</code>' . $bankSuffix
+                    "✅ شماره کارت دریافت شد و مدیر هنگام پرداخت آن را بررسی می‌کند."
                     . "\n\n👤 لطفاً <b>نام و نام خانوادگی صاحب کارت</b> را ارسال کنید:"
                 );
                 return true;
@@ -813,7 +813,7 @@ final class BotHandler
                 }
                 $service = new WithdrawalService($this->db);
                 try {
-                    $request = $service->create((int) $user['id'], (int) $payload['amount'], (string) $payload['card'], $holder, Request::ip());
+                    $request = $service->create((int) $user['id'], (int) $payload['amount'], (string) (isset($payload['card_enc']) ? Crypto::decrypt((string) $payload['card_enc']) : ($payload['card'] ?? '')), $holder, Request::ip());
                     $this->clearUserSession($user);
                     $info = $service->statusLabel((string) $request['status']);
                     $this->sendMainMenu($user, $chatId, "✅ درخواست برداشت شما ثبت شد.\n\n"
