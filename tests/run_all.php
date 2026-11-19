@@ -80,6 +80,11 @@ if ($totalFailed > 0) {
         printf("✘ %s (خروج: %d، ناموفق: %d)\n", $r['name'], $r['exit'], $r['failed']);
         foreach (array_slice($r['failedLines'], 0, 12) as $line) {
             echo '    ' . $line . "\n";
+            if (getenv('GITHUB_ACTIONS') === 'true') {
+                // Surface the actionable assertion even when hosted job logs are inaccessible.
+                $annotation = str_replace(["%", "\r", "\n"], ['%25', '%0D', '%0A'], $r['name'] . ': ' . $line);
+                echo '::error::' . $annotation . "\n";
+            }
         }
     }
     echo str_repeat('-', 62) . "\n";
