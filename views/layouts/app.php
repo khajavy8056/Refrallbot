@@ -14,9 +14,11 @@ $navItems = [
     ['group' => 'درآمد و پورسانت'],
     ['path' => '/admin/commissions', 'label' => 'تنظیمات پورسانت', 'icon' => '💰'],
     ['path' => '/admin/campaigns', 'label' => 'جشنواره‌ها', 'icon' => '🎁'],
-    ['path' => '/admin/reports/transactions', 'label' => 'گزارش‌ها', 'icon' => '📈'],
-    ['group' => 'ربات و ارتباطات'],
-    ['path' => '/admin/telegram', 'label' => 'اتصال به ربات', 'icon' => '🤖'],
+    ['path' => '/admin/reports/layers', 'label' => 'گزارش‌ها و لایه‌ها', 'icon' => '📈', 'match_prefix' => '/admin/reports/'],
+    ['group' => 'پیام‌رسان‌ها و دعوت'],
+    ['path' => '/admin/messengers', 'label' => 'پیام‌رسان‌ها (۴ پلتفرم)', 'icon' => '📡'],
+    ['path' => '/admin/invite-content', 'label' => 'محتوای دعوت و بنر', 'icon' => '🖼'],
+    ['path' => '/admin/telegram', 'label' => 'تلگرام و منوهای ربات', 'icon' => '🤖'],
     ['path' => '/admin/bot-profile', 'label' => 'پروفایل و ظاهر ربات', 'icon' => '🎨'],
     ['path' => '/admin/channels', 'label' => 'کانال‌های اجباری', 'icon' => '📢'],
     ['path' => '/admin/broadcast', 'label' => 'پیام همگانی', 'icon' => '✉️'],
@@ -33,6 +35,9 @@ $navItems = [
 $isActive = static function (array $item) use ($path): bool {
     if (!empty($item['exact'])) {
         return $path === $item['path'];
+    }
+    if (!empty($item['match_prefix']) && str_starts_with($path, (string) $item['match_prefix'])) {
+        return true;
     }
     return $path === $item['path'] || str_starts_with($path, $item['path'] . '/');
 };

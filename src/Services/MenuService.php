@@ -3,28 +3,39 @@ declare(strict_types=1);
 
 namespace RB\Services;
 
+use RB\Messengers\MessengerCapabilities;
+use RB\Messengers\MessengerRegistry;
 use RB\Support\Database;
 
 /**
- * مدیریت متمرکز منوهای ربات
- * منوهای پیش‌فرض در کد تعریف شده‌اند؛ مدیر می‌تواند فعال/غیرفعال و ترتیب آن‌ها را تغییر دهد.
+ * مدیریت متمرکز منوهای ربات در تمام پیام‌رسان‌ها با تطبیق هوشمند ۳ حالت نمایش:
+ *   - miniapp : فقط Mini App (در پیام‌رسان‌های فاقد مینی‌اپ مانند روبیکا به‌صورت خودکار دکمه‌های کامل نمایش داده می‌شود)
+ *   - buttons : فقط دکمه‌های معمولی (بدون هیچ دکمه web_app در چت)
+ *   - hybrid  : هر دو حالت (Mini App + دکمه‌های کامل در تلگرام و بله؛ دکمه‌های کامل در روبیکا؛ برنامک در ایتا)
  */
 final class MenuService
 {
     /** ساختار پیش‌فرض منوها — منبع واحد حقیقت */
     public const DEFAULTS = [
-        ['action' => 'account', 'title' => '👤 حساب کاربری من', 'perm' => null],
-        ['action' => 'invite', 'title' => '🔗 لینک دعوت من', 'perm' => null],
-        ['action' => 'referrals', 'title' => '👥 زیرمجموعه‌های من', 'perm' => null],
-        ['action' => 'income', 'title' => '💰 درآمد من', 'perm' => null],
-        ['action' => 'wallet', 'title' => '👛 کیف پول', 'perm' => null],
-        ['action' => 'withdraw', 'title' => '🏦 درخواست برداشت', 'perm' => null],
-        ['action' => 'history', 'title' => '🧾 تاریخچه تراکنش‌ها', 'perm' => null],
-        ['action' => 'campaigns', 'title' => '🎁 جشنواره‌ها و جوایز', 'perm' => null],
-        ['action' => 'ranking', 'title' => '🏆 رتبه‌بندی', 'perm' => 'ranking'],
-        ['action' => 'notifications', 'title' => '🔔 اعلان‌ها', 'perm' => null],
-        ['action' => 'support', 'title' => '☎️ پشتیبانی', 'perm' => null],
-        ['action' => 'guide', 'title' => '📖 راهنمای استفاده', 'perm' => null],
+        ['action' => 'account',       'title' => '👤 حساب کاربری من',    'perm' => null],
+        ['action' => 'invite',        'title' => '🔗 دعوت و بنر تبلیغاتی', 'perm' => null],
+        ['action' => 'referrals',     'title' => '👥 زیرمجموعه‌های من',   'perm' => null],
+        ['action' => 'income',        'title' => '💰 درآمد لایه‌ای من',   'perm' => null],
+        ['action' => 'wallet',        'title' => '👛 کیف پول',           'perm' => null],
+        ['action' => 'withdraw',      'title' => '🏦 درخواست برداشت',     'perm' => null],
+        ['action' => 'history',       'title' => '🧾 تاریخچه تراکنش‌ها',   'perm' => null],
+        ['action' => 'link_account',  'title' => '🔄 اتصال پیام‌رسان‌ها',   'perm' => null],
+        ['action' => 'campaigns',     'title' => '🎁 جشنواره‌ها و جوایز',  'perm' => null],
+        ['action' => 'ranking',       'title' => '🏆 رتبه‌بندی',          'perm' => 'ranking'],
+        ['action' => 'notifications', 'title' => '🔔 اعلان‌ها',           'perm' => null],
+        ['action' => 'support',       'title' => '☎️ پشتیبانی',          'perm' => null],
+        ['action' => 'guide',         'title' => '📖 راهنمای استفاده',     'perm' => null],
+    ];
+
+    /** نگاشت عنوان‌های نسخه قبلی برای سازگاری ۱۰۰٪ با منوهای موجود دیتابیس */
+    private const LEGACY_TITLES = [
+        '🔗 لینک دعوت من' => 'invite',
+        '💰 درآمد من'     => 'income',
     ];
 
     public static function syncDefaults(?Database $db = null): void
@@ -74,32 +85,40 @@ final class MenuService
     }
 
     /**
-     * ساختار Reply Keyboard بر اساس حالت انتخابی مدیر:
-     *   - miniapp : دکمه بزرگ بازکردن Mini App + دسترسی سریع لینک دعوت و پشتیبانی
-     *   - hybrid  : دکمه Mini App در سطر اول + تمام دکمه‌های ۲ ستونه ربات
-     *   - buttons : فقط دکمه‌های ۲ ستونه ربات (بدون هیچ دکمه web_app)
+     * ساختار کیبورد معمولی با رعایت دقیق قابلیت واقعی هر پیام‌رسان:
+     *   - اگر پیام‌رسان Mini App ندارد (مثلاً روبیکا): حتی در حالت miniapp دکمه‌های کامل نمایش داده می‌شود (هیچ دکمه خرابی ساخته نمی‌شود).
+     *   - در حالت miniapp روی تلگرام/بله با HTTPS: دکمه ورود به Mini App (بدون شلوغی دکمه‌های اضافی) + دعوت سریع و پشتیبانی.
+     *   - در حالت hybrid روی تلگرام/بله با HTTPS: هم دکمه Mini App و هم تمام دکمه‌های معمولی.
+     *   - در حالت buttons: فقط دکمه‌های معمولی در تمام پیام‌رسان‌های دکمه‌دار.
      */
-    public static function replyKeyboardRows(?array $user = null): array
+    public static function replyKeyboardRows(?array $user = null, string $platform = MessengerCapabilities::TELEGRAM): array
     {
-        $uiMode = SettingsService::botUiMode();
-        $miniappUrl = SettingsService::resolvedMiniappUrl();
-        $hasHttpsApp = SettingsService::miniappActive() && str_starts_with($miniappUrl, 'https://');
+        if (!MessengerCapabilities::supports($platform, 'reply_keyboard')) {
+            return [];
+        }
 
-        if ($uiMode === 'miniapp' && $hasHttpsApp) {
+        $resolved = SettingsService::resolveUiModeFor($platform);
+        $baseUrl = SettingsService::resolvedMiniappUrl();
+        $appUrl = '';
+        if ($resolved['show_miniapp'] && $baseUrl !== '') {
+            $appUrl = (new MessengerRegistry())->driver($platform)->buildMiniAppUrl($baseUrl);
+        }
+
+        if ($resolved['effective'] === 'miniapp' && $appUrl !== '') {
             return [
-                [['text' => '📱 ورود به پنل کاربری', 'web_app' => ['url' => $miniappUrl]]],
+                [['text' => '📱 ورود به پنل کاربری (Mini App)', 'web_app' => ['url' => $appUrl]]],
                 [self::actionTitle('invite'), self::actionTitle('support')],
             ];
         }
 
         $rows = [];
-        if ($uiMode === 'hybrid' && $hasHttpsApp) {
-            $rows[] = [['text' => '📱 پنل کاربری (مینی‌اپ)', 'web_app' => ['url' => $miniappUrl]]];
+        if ($resolved['effective'] === 'hybrid' && $appUrl !== '') {
+            $rows[] = [['text' => '📱 پنل کاربری (مینی‌اپ)', 'web_app' => ['url' => $appUrl]]];
         }
 
         $current = [];
         foreach (self::active() as $menu) {
-            $current[] = $menu['title'];
+            $current[] = (string) $menu['title'];
             if (count($current) === 2) {
                 $rows[] = $current;
                 $current = [];
@@ -111,13 +130,34 @@ final class MenuService
         return $rows;
     }
 
-    /** دکمه‌های شیشه‌ای اصلی (برای پیام‌ها) */
-    public static function inlineMainRows(?array $user = null): array
+    /** دکمه‌های شیشه‌ای اصلی متناسب با حالت نمایش و قابلیت پیام‌رسان */
+    public static function inlineMainRows(?array $user = null, string $platform = MessengerCapabilities::TELEGRAM): array
     {
+        if (!MessengerCapabilities::supports($platform, 'inline_keyboard')) {
+            return [];
+        }
+
+        $resolved = SettingsService::resolveUiModeFor($platform);
+        $baseUrl = SettingsService::resolvedMiniappUrl();
+        $appUrl = ($resolved['show_miniapp'] && $baseUrl !== '')
+            ? (new MessengerRegistry())->driver($platform)->buildMiniAppUrl($baseUrl)
+            : '';
+
+        if ($resolved['effective'] === 'miniapp' && $appUrl !== '') {
+            return [
+                [['text' => '🚀 باز کردن پنل کاربری (Mini App)', 'web_app' => ['url' => $appUrl]]],
+                [['text' => '🎁 استودیو دعوت و بنر', 'callback_data' => 'menu:invite']],
+            ];
+        }
+
         $rows = [];
+        if ($resolved['effective'] === 'hybrid' && $appUrl !== '') {
+            $rows[] = [['text' => '🚀 باز کردن مینی‌اپ', 'web_app' => ['url' => $appUrl]]];
+        }
+
         $row = [];
         foreach (self::active() as $menu) {
-            $row[] = ['text' => $menu['title'], 'callback_data' => 'menu:' . $menu['action']];
+            $row[] = ['text' => (string) $menu['title'], 'callback_data' => 'menu:' . $menu['action']];
             if (count($row) === 2) {
                 $rows[] = $row;
                 $row = [];
@@ -132,10 +172,6 @@ final class MenuService
     /** دکمه‌های مدیریتی (فقط برای ادمین‌های ربات) */
     public static function adminRows(): array
     {
-        $base = rtrim((string) SettingsService::get('webhook_base_url', ''), '/');
-        if ($base === '') {
-            $base = '';
-        }
         return [
             [
                 ['text' => '🛠 پنل مدیریت', 'callback_data' => 'admin:panel'],
@@ -146,6 +182,13 @@ final class MenuService
 
     public static function actionTitle(string $action): string
     {
+        $db = Database::instance();
+        if ($db->tableExists('bot_menus')) {
+            $saved = $db->value('SELECT title FROM bot_menus WHERE action = :a LIMIT 1', ['a' => $action]);
+            if (is_string($saved) && $saved !== '') {
+                return $saved;
+            }
+        }
         foreach (self::DEFAULTS as $row) {
             if ($row['action'] === $action) {
                 return $row['title'];
@@ -154,16 +197,18 @@ final class MenuService
         return $action;
     }
 
-    /** تشخیص دکمه بر اساس متن ارسالی کاربر */
+    /** تشخیص عملیات دکمه بر اساس متن ارسالی کاربر */
     public static function actionByTitle(string $text): ?string
     {
         $text = trim($text);
+        if (isset(self::LEGACY_TITLES[$text])) {
+            return self::LEGACY_TITLES[$text];
+        }
         foreach (self::DEFAULTS as $row) {
             if (trim($row['title']) === $text) {
                 return $row['action'];
             }
         }
-        // پشتیبانی از تنظیمات سفارشی مدیر
         $db = Database::instance();
         if ($db->tableExists('bot_menus')) {
             $action = $db->value('SELECT action FROM bot_menus WHERE title = :t LIMIT 1', ['t' => $text]);

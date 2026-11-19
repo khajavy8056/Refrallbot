@@ -29,10 +29,13 @@ final class BroadcastController extends AdminController
             $this->fail('متن پیام را وارد کنید.');
             return;
         }
+        $params = json_decode((string) ($_POST['segment_params'] ?? '{}'), true) ?: [];
+        $targetPlatform = strtolower(trim((string) ($_POST['target_platform'] ?? ($params['target_platform'] ?? 'all'))));
+        $params['target_platform'] = $targetPlatform;
         $this->json([
             'ok' => true,
             'preview' => BroadcastService::renderPreview($text),
-            'count' => (new BroadcastService())->countTargets((string) ($_POST['segment'] ?? 'all'), json_decode((string) ($_POST['segment_params'] ?? '{}'), true) ?: []),
+            'count' => (new BroadcastService())->countTargets((string) ($_POST['segment'] ?? 'all'), $params),
         ]);
     }
 
@@ -45,6 +48,8 @@ final class BroadcastController extends AdminController
         }
         $segment = (string) ($_POST['segment'] ?? 'all');
         $params = json_decode((string) ($_POST['segment_params'] ?? '{}'), true) ?: [];
+        $targetPlatform = strtolower(trim((string) ($_POST['target_platform'] ?? 'all')));
+        $params['target_platform'] = $targetPlatform;
 
         try {
             $service = new BroadcastService();
@@ -52,6 +57,7 @@ final class BroadcastController extends AdminController
                 'title' => mb_substr((string) ($_POST['title'] ?? 'پیام همگانی'), 0, 150),
                 'message_text' => $text,
                 'segment' => $segment,
+                'target_platform' => $targetPlatform,
                 'segment_params' => $params,
                 'buttons' => trim((string) ($_POST['buttons'] ?? '')) !== '' ? json_decode((string) $_POST['buttons'], true) : null,
                 'media_type' => (string) ($_POST['media_type'] ?? '') ?: null,
@@ -61,6 +67,7 @@ final class BroadcastController extends AdminController
 
             AuditService::log('broadcast.created', 'broadcast', (int) $campaign['id'], [
                 'segment' => $segment,
+                'target_platform' => $targetPlatform,
                 'targets' => (int) $campaign['total_targets'],
             ], current_admin_id());
 

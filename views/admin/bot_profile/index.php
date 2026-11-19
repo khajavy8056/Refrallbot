@@ -1,4 +1,101 @@
 <?php
+$selectedPlatform = $selectedPlatform ?? 'telegram';
+$allMessengers = $allMessengers ?? [];
+$currentMessenger = $currentMessenger ?? null;
+?>
+<!-- انتخابگر پیام‌رسان -->
+<div class="flex gap-1 wrap mb-3">
+    <?php foreach ($allMessengers as $mp => $mc): ?>
+        <a href="<?= url('admin/bot-profile?platform=' . $mp) ?>"
+           class="btn btn-sm <?= $mp === $selectedPlatform ? '' : 'btn-secondary' ?>">
+            <?= e(($mc['meta']['icon'] ?? '🤖') . ' ' . ($mc['meta']['name'] ?? $mp)) ?>
+            <?php if (!empty($mc['is_enabled']) && !empty($mc['has_token'])): ?>
+                <span style="font-size:.65rem;opacity:.85">●</span>
+            <?php endif; ?>
+        </a>
+    <?php endforeach; ?>
+</div>
+
+<?php if ($selectedPlatform !== 'telegram' && is_array($currentMessenger)): ?>
+    <?php
+    $mMeta = $currentMessenger['meta'] ?? [];
+    $mName = (string) ($mMeta['name'] ?? $selectedPlatform);
+    $mIcon = (string) ($mMeta['icon'] ?? '🤖');
+    $mUser = ltrim((string) ($currentMessenger['bot_username'] ?? ''), '@');
+    $mBadge = $currentMessenger['status_badge'] ?? ['label' => 'نامشخص', 'class' => 'badge-muted'];
+    $panelGuide = match ($selectedPlatform) {
+        'bale'   => 'بازوی رسمی @BotFather در پیام‌رسان بله (دستور /mybots → Edit Bot)',
+        'rubika' => 'ربات رسمی @BotFather در پیام‌رسان روبیکا (بخش مدیریت ربات)',
+        'eitaa'  => 'پنل توسعه‌دهندگان ایتا به نشانی developer.eitaa.com (بخش تنظیمات برنامک)',
+        default  => 'پنل رسمی پیام‌رسان',
+    };
+    ?>
+    <div class="flex items-center justify-between wrap gap-3 mb-3">
+        <div>
+            <h1 class="mb-0"><?= e($mIcon) ?> پروفایل و مشخصات ربات در <?= e($mName) ?></h1>
+            <p class="text-muted text-sm mb-0">مدیریت نام، بیوگرافی و توضیحات معرفی ربات برای <?= e($mName) ?></p>
+        </div>
+        <div class="flex gap-1 wrap">
+            <?php if ($selectedPlatform !== 'eitaa' && !empty($currentMessenger['has_token'])): ?>
+                <form method="post" action="<?= url('admin/bot-profile/sync') ?>">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="platform" value="<?= e($selectedPlatform) ?>">
+                    <button type="submit" class="btn btn-secondary btn-sm">🔄 استعلام اطلاعات از <?= e($mName) ?></button>
+                </form>
+            <?php endif; ?>
+            <a href="<?= url('admin/messengers?tab=' . $selectedPlatform) ?>" class="btn btn-outline btn-sm">📡 تنظیمات اتصال <?= e($mName) ?></a>
+        </div>
+    </div>
+
+    <div class="alert alert-info mb-3">
+        <span class="alert-icon">ℹ️</span>
+        <div class="text-sm" style="line-height:1.9">
+            <strong>شفافیت قابلیت API رسمی <?= e($mName) ?>:</strong>
+            برخلاف تلگرام، API رسمی <?= e($mName) ?> در حال حاضر متد برنامه‌نویسی برای تغییر مستقیم تصویر پروفایل و بیوگرافی ربات ارائه نمی‌دهد.
+            در این صفحه می‌توانید متن‌های رسمی نام، بیوگرافی و توضیحات معرفی <?= e($mName) ?> را ذخیره و با یک کلیک کپی کنید تا در <b><?= e($panelGuide) ?></b> ثبت نمایید.
+        </div>
+    </div>
+
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-header justify-between">
+                <h2 class="card-title">✏️ مشخصات و بیوگرافی <?= e($mName) ?></h2>
+                <span class="badge <?= e($mBadge['class']) ?>"><?= e($mBadge['label']) ?></span>
+            </div>
+            <form method="post" action="<?= url('admin/bot-profile/save') ?>" class="card-body">
+                <?= csrf_field() ?>
+                <input type="hidden" name="platform" value="<?= e($selectedPlatform) ?>">
+                <div class="form-group">
+                    <label class="form-label">نام نمایشی ربات (حداکثر ۶۴ کاراکتر)</label>
+                    <div style="display:flex;gap:6px">
+                        <input type="text" name="bot_name" class="form-control" maxlength="64" value="<?= e((string) ($currentMessenger['bot_name'] ?? '')) ?>">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="RB.copy(this.previousElementSibling.value)">📋</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">بیوگرافی کوتاه / درباره ربات (حداکثر ۱۲۰ کاراکتر)</label>
+                    <textarea name="bot_short_description" class="form-control" rows="2" maxlength="120"><?= e((string) ($currentMessenger['bot_short_description'] ?? '')) ?></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">توضیحات کامل معرفی (حداکثر ۵۱۲ کاراکتر)</label>
+                    <textarea name="bot_description" class="form-control" rows="4" maxlength="512"><?= e((string) ($currentMessenger['bot_description'] ?? '')) ?></textarea>
+                </div>
+                <button type="submit" class="btn">💾 ذخیره در پنل مدیریت</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><h2 class="card-title">📌 وضعیت فعلی در <?= e($mName) ?></h2></div>
+            <div class="card-body text-sm" style="line-height:2.1">
+                <div><strong>نام کاربری:</strong> <span class="ltr mono"><?= $mUser !== '' ? '@' . e($mUser) : 'ثبت‌نشده' ?></span></div>
+                <div><strong>شناسه ربات:</strong> <span class="ltr mono"><?= e((string) ($currentMessenger['bot_id'] ?: '—')) ?></span></div>
+                <div><strong>آخرین بررسی:</strong> <?= !empty($currentMessenger['profile_synced_at']) ? fa_date($currentMessenger['profile_synced_at']) : '—' ?></div>
+                <div><strong>محل تغییر تصویر پروفایل:</strong> <?= e($panelGuide) ?></div>
+            </div>
+        </div>
+    </div>
+<?php return; endif; ?>
+<?php
 $connected = ($settings['connection_status'] ?? '') === 'connected' && $configured;
 $botName = (string) ($settings['bot_name'] ?? '');
 $botUsername = ltrim((string) ($settings['bot_username'] ?? ''), '@');

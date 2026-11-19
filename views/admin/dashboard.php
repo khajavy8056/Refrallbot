@@ -43,7 +43,8 @@ $growthTone = $ms['growth_pct'] > 0 ? 'success' : ($ms['growth_pct'] < 0 ? 'dang
         <p class="text-muted text-sm mb-0">نمای زنده رشد اعضا، عملکرد شبکه زیرمجموعه‌گیری، کیف پول و وضعیت ربات تلگرام</p>
     </div>
     <div class="flex items-center gap-2 wrap">
-        <a href="<?= url('admin/telegram#bot-mode') ?>" class="btn btn-secondary btn-sm" title="تغییر سریع بین مینی‌اپ و حالت دکمه‌ای">
+        <a href="<?= url('admin/messengers') ?>" class="btn btn-sm" title="مدیریت پیام‌رسان‌ها">📡 پیام‌رسان‌ها</a>
+        <a href="<?= url('admin/settings#ui-mode') ?>" class="btn btn-secondary btn-sm" title="تغییر سریع بین مینی‌اپ و حالت دکمه‌ای">
             <?= $uiModeMeta[0] ?> · تغییر
         </a>
         <div class="period-pills">
@@ -68,6 +69,25 @@ $growthTone = $ms['growth_pct'] > 0 ? 'success' : ($ms['growth_pct'] < 0 ? 'dang
         <div>
             ربات متصل است اما Webhook فعال نیست؛ ربات پیام‌ها را دریافت نمی‌کند.
             <a href="<?= url('admin/telegram') ?>">همین حالا تنظیم کنید</a>.
+        </div>
+    </div>
+<?php endif; ?>
+
+<?php if (!empty($messengers) && is_array($messengers)): ?>
+    <div class="card mb-3">
+        <div class="card-body flex justify-between items-center wrap gap-2" style="padding:11px 16px">
+            <div class="flex items-center gap-2 wrap">
+                <strong class="text-sm">📡 وضعیت پیام‌رسان‌ها:</strong>
+                <?php foreach ($messengers as $mp => $mi): ?>
+                    <a href="<?= url('admin/messengers?tab=' . $mp) ?>" style="text-decoration:none" class="badge <?= e((string) ($mi['status_badge']['class'] ?? 'badge-muted')) ?>">
+                        <?= e(($mi['icon'] ?? '') . ' ' . ($mi['name'] ?? $mp)) ?> · <?= fa_digits((int) ($mi['registered_users'] ?? 0)) ?> کاربر
+                    </a>
+                <?php endforeach; ?>
+            </div>
+            <div class="flex gap-1 wrap">
+                <a href="<?= url('admin/invite-content') ?>" class="btn btn-ghost btn-sm">🖼 بنرها و پیام دعوت</a>
+                <a href="<?= url('admin/reports/layers') ?>" class="btn btn-ghost btn-sm">📊 گزارش لایه‌ها</a>
+            </div>
         </div>
     </div>
 <?php endif; ?>

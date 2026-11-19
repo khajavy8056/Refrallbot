@@ -4,7 +4,7 @@ $page = (int) $result['page'];
 $perPage = (int) $result['per_page'];
 $pages = max(1, (int) ceil($total / max(1, $perPage)));
 $queryBase = array_filter([
-    'q' => $filters['q'] ?? null, 'status' => $filters['status'] ?? null,
+    'q' => $filters['q'] ?? null, 'status' => $filters['status'] ?? null, 'platform' => $filters['platform'] ?? null,
     'has_refs' => $filters['has_refs'] ?? null, 'has_income' => $filters['has_income'] ?? null,
     'with_phone' => $filters['with_phone'] ?? null, 'suspicious' => $filters['suspicious'] ?? null,
     'from' => ($fromRaw ?? '') ?: null, 'to' => ($toRaw ?? '') ?: null,
@@ -33,6 +33,16 @@ $pageUrl = static function (int $p) use ($queryBase) {
             <label class="form-label">جستجو</label>
             <input type="search" name="q" class="form-control" value="<?= e($filters['q'] ?? '') ?>"
                    placeholder="نام، نام کاربری، شناسه تلگرام، کد دعوت…">
+        </div>
+        <div class="form-group">
+            <label class="form-label">پیام‌رسان</label>
+            <select name="platform" class="form-select">
+                <option value="">همه</option>
+                <option value="telegram" <?= ($filters['platform'] ?? '') === 'telegram' ? 'selected' : '' ?>>✈️ تلگرام</option>
+                <option value="bale" <?= ($filters['platform'] ?? '') === 'bale' ? 'selected' : '' ?>>💬 بله</option>
+                <option value="rubika" <?= ($filters['platform'] ?? '') === 'rubika' ? 'selected' : '' ?>>🟣 روبیکا</option>
+                <option value="eitaa" <?= ($filters['platform'] ?? '') === 'eitaa' ? 'selected' : '' ?>>🟠 ایتا</option>
+            </select>
         </div>
         <div class="form-group">
             <label class="form-label">وضعیت</label>

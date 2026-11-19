@@ -1,14 +1,15 @@
-<?php $botUsernameInView = ''; ?>
+<?php $platformHint = $platformHint ?? ''; ?>
 <div class="miniapp-shell">
     <header class="mini-topbar">
         <div class="mini-user">
             <div class="avatar" id="mini-avatar">؟</div>
             <div class="mini-user-meta">
                 <div class="mini-name" id="mini-name">در حال اتصال…</div>
-                <div class="mini-sub" id="mini-sub">احراز هویت تلگرام</div>
+                <div class="mini-sub" id="mini-sub">احراز هویت امن پیام‌رسان</div>
             </div>
         </div>
         <div class="mini-top-actions">
+            <span class="badge badge-brand no-dot hidden" id="mini-platform-badge" style="font-size:.68rem;padding:4px 8px">—</span>
             <button class="mini-icon-btn" type="button" data-theme-toggle title="تغییر حالت تاریک / روشن" aria-label="تغییر تم">
                 <span class="theme-icon-dark">🌙</span>
                 <span class="theme-icon-light">☀️</span>
@@ -19,10 +20,10 @@
 
     <div id="auth-gate" class="mini-gate hidden">
         <div class="empty-icon">🔒</div>
-        <div class="empty-title">دسترسی از داخل تلگرام لازم است</div>
-        <div class="empty-text">این پنل با احراز هویت امن تلگرام کار می‌کند. در صورت اجرای توکارِ ربات (Mini App) به‌صورت خودکار وارد می‌شوید.</div>
+        <div class="empty-title">دسترسی از داخل پیام‌رسان لازم است</div>
+        <div class="empty-text">این پنل با احراز هویت رمزنگاری‌شده تلگرام، بله و ایتا کار می‌کند. صفحه را از دکمه «پنل کاربری» یا برنامک پیام‌رسان باز کنید.</div>
         <div id="auth-error" class="form-error"></div>
-        <a class="btn btn-block mt-2" id="open-bot" href="#" style="display:none">🤖 باز کردن ربات در تلگرام</a>
+        <a class="btn btn-block mt-2" id="open-bot" href="#" style="display:none">🤖 بازگشت به ربات</a>
     </div>
 
     <div id="mini-content" class="hidden">
@@ -40,15 +41,15 @@
             </div>
         </div>
 
-        <!-- شاخص‌های سریع شبکه -->
+        <!-- شاخص‌های سریع شبکه (تفکیک دقیق مستقیم و لایه‌ای) -->
         <div class="mini-stats">
-            <div class="mini-stat" data-goto="profile" role="button" tabindex="0">
+            <div class="mini-stat" data-goto="referrals" role="button" tabindex="0">
                 <span id="stat-direct">—</span>
-                <small>دعوت مستقیم</small>
+                <small>دعوت مستقیم (L0)</small>
             </div>
             <div class="mini-stat" data-goto="referrals" role="button" tabindex="0">
                 <span id="stat-network">—</span>
-                <small>کل شبکه</small>
+                <small>کل شبکه (L0+)</small>
             </div>
             <div class="mini-stat" data-goto="withdraw" role="button" tabindex="0">
                 <span id="stat-withdrawn">—</span>
@@ -56,7 +57,7 @@
             </div>
         </div>
 
-        <!-- جعبه لینک دعوت اختصاصی -->
+        <!-- جعبه لینک دعوت سریع + دکمه ورود به استودیوی دعوت و بنر -->
         <div class="mini-invite" id="invite-box">
             <div class="mini-invite-head">
                 <span class="mini-invite-title">🔗 لینک دعوت اختصاصی شما</span>
@@ -64,23 +65,28 @@
             </div>
             <div class="text-xs hidden" id="invite-rewards-note" style="margin-bottom:8px;opacity:.92;line-height:1.7"></div>
             <div class="mini-link ltr" id="invite-link">—</div>
-            <div class="mini-invite-actions">
+            <div class="mini-invite-actions" style="flex-wrap:wrap">
                 <button class="btn btn-sm" type="button" id="copy-invite">📋 کپی لینک</button>
-                <button class="btn btn-sm btn-success" type="button" id="share-invite">📤 ارسال برای دوستان</button>
+                <button class="btn btn-sm btn-success" type="button" id="share-invite">📤 ارسال دعوت</button>
+                <button class="btn btn-sm btn-secondary" type="button" data-goto="invite">🎨 بنر و پیام آماده</button>
             </div>
         </div>
 
-        <!-- راهنمای تکمیل شرایط پاداش خوش‌آمدگویی برای کاربر دعوت‌شده -->
+        <!-- کارت تعاملی تکمیل شرایط (شماره تماس / کانال / مجوز اعلان ایتا) -->
         <div class="alert alert-info hidden" id="mini-welcome-guide" style="margin-bottom:12px">
             <span class="alert-icon">🎁</span>
-            <div id="mini-welcome-guide-body" class="text-sm"></div>
+            <div style="flex:1;min-width:0">
+                <div id="mini-welcome-guide-body" class="text-sm"></div>
+                <div id="mini-gate-actions" class="flex gap-1 mt-2" style="flex-wrap:wrap"></div>
+            </div>
         </div>
 
         <!-- تب‌های ناوبری -->
         <nav class="mini-tabs" aria-label="بخش‌های پنل کاربری">
             <button class="mini-tab active" data-tab="home">🏠 خانه</button>
-            <button class="mini-tab" data-tab="profile">👤 پروفایل و آمار</button>
-            <button class="mini-tab" data-tab="referrals">👥 زیرمجموعه</button>
+            <button class="mini-tab" data-tab="invite">🎨 دعوت و بنر</button>
+            <button class="mini-tab" data-tab="referrals">👥 شبکه</button>
+            <button class="mini-tab" data-tab="profile">👤 پروفایل</button>
             <button class="mini-tab" data-tab="wallet">👛 کیف پول</button>
             <button class="mini-tab" data-tab="withdraw">🏦 برداشت</button>
             <button class="mini-tab" data-tab="more">✨ بیشتر</button>
@@ -115,7 +121,94 @@
             </div>
         </section>
 
-        <!-- تب ۲: پروفایل و نمودارهای حرفه‌ای دعوت -->
+        <!-- تب ۲: استودیوی دعوت و بنرهای تبلیغاتی -->
+        <section class="mini-panel hidden" data-panel="invite">
+            <div class="card">
+                <div class="card-header justify-between">
+                    <div>
+                        <h2 class="card-title">🎨 استودیوی دعوت دوستان</h2>
+                        <span class="card-subtitle">لینک دعوت اختصاصی شما در تمام حالت‌ها به‌صورت خودکار درج می‌شود</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- ۴ حالت دعوت -->
+                    <div class="studio-modes" role="tablist">
+                        <button type="button" class="studio-mode-btn active" data-studio-mode="message">📝 متن آماده</button>
+                        <button type="button" class="studio-mode-btn" data-studio-mode="banner_caption">🖼 بنر + متن</button>
+                        <button type="button" class="studio-mode-btn" data-studio-mode="banner_link">🎯 بنر + لینک</button>
+                        <button type="button" class="studio-mode-btn" data-studio-mode="links">🔗 همه لینک‌ها</button>
+                    </div>
+
+                    <!-- انتخابگر قالب پیام -->
+                    <div id="studio-msg-picker">
+                        <div class="text-xs text-muted mb-1">انتخاب قالب پیام دعوت:</div>
+                        <div class="studio-pills" id="studio-msg-pills"></div>
+                    </div>
+
+                    <!-- انتخابگر بنر تبلیغاتی -->
+                    <div id="studio-banner-picker" class="hidden">
+                        <div class="text-xs text-muted mb-1">انتخاب بنر تبلیغاتی:</div>
+                        <div class="studio-banners" id="studio-banner-grid"></div>
+                    </div>
+
+                    <!-- پیش‌نمایش زنده -->
+                    <div id="studio-preview-wrap" class="studio-preview">
+                        <img id="studio-preview-img" class="studio-preview-img hidden" src="" alt="بنر دعوت">
+                        <div id="studio-preview-text" class="studio-preview-text">—</div>
+                    </div>
+
+                    <!-- دکمه‌های اقدام در حالت پیام/بنر -->
+                    <div id="studio-main-actions" class="studio-actions">
+                        <button type="button" class="btn btn-success btn-sm" id="studio-share-btn">📤 اشتراک‌گذاری با دوستان</button>
+                        <button type="button" class="btn btn-secondary btn-sm" id="studio-copy-text-btn">📋 کپی متن + لینک</button>
+                        <button type="button" class="btn btn-sm hidden" id="studio-send-bot-btn">🤖 ارسال بنر به گفتگوی من</button>
+                        <a class="btn btn-ghost btn-sm hidden" id="studio-download-banner" href="#" download target="_blank" rel="noopener">⬇️ دریافت تصویر بنر</a>
+                    </div>
+
+                    <!-- لیست همه لینک‌های چندپیام‌رسانی -->
+                    <div id="studio-links-list" class="hidden"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- تب ۳: زیرمجموعه‌ها و شبکه لایه‌ای -->
+        <section class="mini-panel hidden" data-panel="referrals">
+            <div class="card mini-chart-card">
+                <div class="card-header justify-between">
+                    <h2 class="card-title">📊 دعوت‌های روزانه (۱۴ روز اخیر)</h2>
+                    <span class="card-subtitle" id="refs-summary">—</span>
+                </div>
+                <div class="mini-chart-body">
+                    <div class="mini-chart-wrap" style="height:165px"><canvas id="mini-chart-refs-bar"></canvas></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header justify-between">
+                    <div>
+                        <h2 class="card-title">🕸 تفکیک لایه‌های شبکه و پورسانت</h2>
+                        <span class="card-subtitle">لایه ۰ = دعوت مستقیم · لایه‌های ۱ به بعد = زیرمجموعه غیرمستقیم</span>
+                    </div>
+                </div>
+                <div class="card-body" style="padding:14px 16px"><div id="levels-bars"></div></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header justify-between">
+                    <h2 class="card-title">👥 زیرمجموعه‌های مستقیم من (لایه ۰)</h2>
+                </div>
+                <div id="refs-list" class="mini-list"></div>
+            </div>
+
+            <div class="card hidden" id="indirect-card">
+                <div class="card-header justify-between">
+                    <h2 class="card-title">🌐 آخرین عضویت‌های لایه‌های غیرمستقیم (L1+)</h2>
+                </div>
+                <div id="indirect-list" class="mini-list"></div>
+            </div>
+        </section>
+
+        <!-- تب ۴: پروفایل، آمار و اتصال پیام‌رسان‌ها -->
         <section class="mini-panel hidden" data-panel="profile">
             <div class="mini-profile-hero">
                 <div class="mini-profile-top">
@@ -162,7 +255,29 @@
                 </div>
             </div>
 
-            <!-- نمودار اصلی رشد دعوت‌های کاربر (قابل سوییچ روزانه/تجمعی و ۱۴/۳۰ روزه) -->
+            <!-- اتصال یکپارچه حساب بین پیام‌رسان‌ها -->
+            <div class="card">
+                <div class="card-header justify-between">
+                    <div>
+                        <h2 class="card-title">🔄 پیام‌رسان‌های متصل به حساب من</h2>
+                        <span class="card-subtitle">کیف پول، کد دعوت و زیرمجموعه‌های واحد در تلگرام، بله، روبیکا و ایتا</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="linked-messengers-list" class="mb-2"></div>
+                    <div class="flex gap-1" style="flex-wrap:wrap">
+                        <button type="button" class="btn btn-secondary btn-sm" id="btn-gen-link-token">🔑 ساخت کد اتصال پیام‌رسان دیگر</button>
+                    </div>
+                    <div id="link-token-output" class="link-token-box hidden"></div>
+                    <form id="redeem-link-form" class="mt-2" style="display:flex;gap:6px;align-items:center">
+                        <input type="text" name="code" class="form-control ltr" placeholder="کد اتصال (LNK-XXXXXX)" maxlength="32" style="flex:1">
+                        <button type="submit" class="btn btn-sm">اتصال</button>
+                    </form>
+                    <div class="form-hint">اگر در پیام‌رسان دیگری حساب دارید، در آن پیام‌رسان کد اتصال بسازید و اینجا وارد کنید.</div>
+                </div>
+            </div>
+
+            <!-- نمودار اصلی رشد دعوت‌های کاربر -->
             <div class="card mini-chart-card">
                 <div class="card-header justify-between">
                     <div>
@@ -181,14 +296,14 @@
                             <button type="button" data-invite-range="30">۳۰ روز</button>
                         </div>
                     </div>
-                    <div class="mini-chart-wrap" style="height:215px"><canvas id="mini-chart-invites"></canvas></div>
+                    <div class="mini-chart-wrap" style="height:210px"><canvas id="mini-chart-invites"></canvas></div>
                 </div>
             </div>
 
             <!-- نمودار حلقه‌ای کیفیت دعوت‌ها -->
             <div class="card mini-chart-card">
                 <div class="card-header justify-between">
-                    <h2 class="card-title">🎯 وضعیت دعوت‌های مستقیم</h2>
+                    <h2 class="card-title">🎯 وضعیت شبکه من</h2>
                     <span class="badge badge-success no-dot" id="prof-qual-badge">۰٪ تأییدشده</span>
                 </div>
                 <div class="mini-chart-body">
@@ -196,15 +311,15 @@
                         <div class="mini-donut-canvas"><canvas id="mini-chart-quality"></canvas></div>
                         <div class="mini-donut-legend">
                             <div class="mini-legend-item">
-                                <span><i class="legend-dot" style="background:#10b981"></i> واجد شرایط</span>
+                                <span><i class="legend-dot" style="background:#10b981"></i> مستقیم واجد شرایط (L0)</span>
                                 <strong id="leg-qualified">۰ نفر</strong>
                             </div>
                             <div class="mini-legend-item">
-                                <span><i class="legend-dot" style="background:#f59e0b"></i> در انتظار تکمیل</span>
+                                <span><i class="legend-dot" style="background:#f59e0b"></i> مستقیم در انتظار (L0)</span>
                                 <strong id="leg-pending">۰ نفر</strong>
                             </div>
                             <div class="mini-legend-item">
-                                <span><i class="legend-dot" style="background:#818cf8"></i> زیرمجموعه لایه‌ها</span>
+                                <span><i class="legend-dot" style="background:#818cf8"></i> زیرمجموعه لایه‌ها (L1+)</span>
                                 <strong id="leg-indirect">۰ نفر</strong>
                             </div>
                         </div>
@@ -216,16 +331,16 @@
             <div class="card mini-chart-card">
                 <div class="card-header justify-between">
                     <div>
-                        <h2 class="card-title">💰 نمودار درآمد پورسانت من</h2>
-                        <span class="card-subtitle">درآمد روزانه ۱۴ روز اخیر و تفکیک منابع</span>
+                        <h2 class="card-title">💰 نمودار و تفکیک درآمد من</h2>
+                        <span class="card-subtitle">درآمد روزانه ۱۴ روز اخیر و تفکیک دقیق منابع</span>
                     </div>
                 </div>
                 <div class="mini-chart-body">
-                    <div class="mini-chart-wrap" style="height:185px"><canvas id="mini-chart-earnings"></canvas></div>
+                    <div class="mini-chart-wrap" style="height:180px"><canvas id="mini-chart-earnings"></canvas></div>
                     <div class="mini-earn-split">
-                        <div><small>پاداش معرفی</small><strong id="earn-direct">۰</strong></div>
+                        <div><small>معرفی مستقیم (L0)</small><strong id="earn-direct">۰</strong></div>
                         <div><small>خوش‌آمدگویی</small><strong id="earn-welcome">۰</strong></div>
-                        <div><small>پورسانت لایه‌ای</small><strong id="earn-layer">۰</strong></div>
+                        <div><small>لایه‌های غیرمستقیم</small><strong id="earn-layer">۰</strong></div>
                         <div><small>جایزه کمپین</small><strong id="earn-campaign">۰</strong></div>
                     </div>
                 </div>
@@ -253,41 +368,16 @@
             </div>
         </section>
 
-        <!-- تب ۳: زیرمجموعه‌ها -->
-        <section class="mini-panel hidden" data-panel="referrals">
-            <div class="card mini-chart-card">
-                <div class="card-header justify-between">
-                    <h2 class="card-title">📊 دعوت‌های روزانه (۱۴ روز اخیر)</h2>
-                    <span class="card-subtitle" id="refs-summary">—</span>
-                </div>
-                <div class="mini-chart-body">
-                    <div class="mini-chart-wrap" style="height:170px"><canvas id="mini-chart-refs-bar"></canvas></div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header"><h2 class="card-title">🕸 گسترش شبکه من در لایه‌ها</h2></div>
-                <div class="card-body" style="padding:14px 16px"><div id="levels-bars"></div></div>
-            </div>
-
-            <div class="card">
-                <div class="card-header justify-between">
-                    <h2 class="card-title">👥 لیست زیرمجموعه‌های مستقیم</h2>
-                </div>
-                <div id="refs-list" class="mini-list"></div>
-            </div>
-        </section>
-
-        <!-- تب ۴: کیف پول -->
+        <!-- تب ۵: کیف پول -->
         <section class="mini-panel hidden" data-panel="wallet">
             <div class="card">
                 <div class="card-header justify-between">
                     <h2 class="card-title">👛 کیف پول و تراکنش‌ها</h2>
                     <select class="form-select" id="tx-filter" style="max-width:155px">
                         <option value="">همه تراکنش‌ها</option>
-                        <option value="commission_direct">پاداش مستقیم</option>
+                        <option value="commission_direct">پاداش مستقیم (L0)</option>
                         <option value="commission_welcome">پاداش خوش‌آمدگویی</option>
-                        <option value="commission_level">پورسانت لایه‌ای</option>
+                        <option value="commission_level">پورسانت لایه‌ای (L1+)</option>
                         <option value="campaign_reward">جایزه کمپین</option>
                         <option value="withdrawal_reserve">برداشت</option>
                         <option value="withdrawal_release">بازگشت برداشت</option>
@@ -299,7 +389,7 @@
             </div>
         </section>
 
-        <!-- تب ۵: برداشت -->
+        <!-- تب ۶: برداشت -->
         <section class="mini-panel hidden" data-panel="withdraw">
             <div class="card">
                 <div class="card-header"><h2 class="card-title">🏦 ثبت درخواست برداشت</h2></div>
@@ -327,7 +417,7 @@
             </div>
         </section>
 
-        <!-- تب ۶: بیشتر (رتبه‌بندی، اعلان‌ها، پشتیبانی) -->
+        <!-- تب ۷: بیشتر (رتبه‌بندی، اعلان‌ها، پشتیبانی) -->
         <section class="mini-panel hidden" data-panel="more">
             <div class="card">
                 <div class="card-header"><h2 class="card-title">🏆 رتبه‌بندی برترین‌ها</h2></div>
@@ -359,6 +449,10 @@
 </div>
 
 <script>
-window.RB_MINIAPP = { bootstrapUrl: '<?= url('app/api/bootstrap') ?>', csrf: '<?= e(csrf_token()) ?>' };
+window.RB_MINIAPP = {
+  bootstrapUrl: '<?= url('app/api/bootstrap') ?>',
+  csrf: '<?= e(csrf_token()) ?>',
+  platformHint: '<?= e($platformHint) ?>'
+};
 </script>
 <script src="<?= asset('js/miniapp.js') ?>?v=<?= e(RB_VERSION) ?>"></script>

@@ -164,7 +164,8 @@ final class ReferralMessageService
         array $user,
         ?array $referrer = null,
         ?CommissionSettings $settings = null,
-        ?Database $db = null
+        ?Database $db = null,
+        ?string $platform = null
     ): string {
         $db ??= Database::instance();
         $settings ??= CommissionSettings::current($db);
@@ -174,10 +175,10 @@ final class ReferralMessageService
             $referrer = $users->find((int) $user['referred_by']);
         }
 
+        $plat = $platform ?: (string) ($user['entry_platform'] ?? \RB\Messengers\MessengerCapabilities::TELEGRAM);
         $inviteLink = '';
-        $botUsername = TelegramService::botUsername($db);
-        if ($botUsername !== '' && !empty($user['referral_code'])) {
-            $inviteLink = 'https://t.me/' . $botUsername . '?start=ref_' . $user['referral_code'];
+        if (!empty($user['referral_code'])) {
+            $inviteLink = (new \RB\Messengers\MessengerRegistry($db))->buildReferralLink($plat, (string) $user['referral_code']);
         }
 
         $custom = trim((string) (SettingsService::get('start_message_referred', '') ?? ''));

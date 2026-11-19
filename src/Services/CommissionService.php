@@ -4,18 +4,31 @@ declare(strict_types=1);
 namespace RB\Services;
 
 use RB\Support\Database;
-use RB\Support\Money;
 
 /**
- * موتور پورسانت چندلایه
+ * موتور مرکزی پورسانت و درآمد لایه‌ای (مشترک در تمام پیام‌رسان‌ها)
  *
- * قواعد کلیدی:
- * ۱) هر رویداد پاداش یک event_key یکتا دارد؛ تکرار همان رویداد پاداش دوباره ایجاد نمی‌کند.
- * ۲) برای هر (event, beneficiary, level, type) فقط یک کمیسیون قابل ثبت است (کلید یکتای دیتابیس).
- * ۳) محاسبه در یک تراکنش دیتابیس انجام می‌شود و تنظیمات معتبر در زمان محاسبه
- *    روی خود تراکنش مالی ذخیره می‌گردد.
- * ۴) درصدها با ریاضیات عدد صحیح محاسبه می‌شوند تا خطای اعشاری رخ ندهد.
- * ۵) مجموع پرداختی هرگز از سقف تعیین‌شده بیشتر نمی‌شود.
+ * ساختار دقیق و ریاضی لایه‌ها بر اساس زنجیره واقعی دعوت:
+ *   فرض کنید A → B → C → D:
+ *   - هنگام عضویت و تأیید B (دعوت‌شده توسط A):
+ *       * A در عمق ۱ (depth=1) نسبت به B قرار دارد ⇒ فقط پاداش «لایه ۰ (دعوت مستقیم)» می‌گیرد.
+ *       * هیچ پاداش لایه ۱ به A تعلق نمی‌گیرد (رفع کامل مشکل محاسبه دوگانه).
+ *       * در صورت فعال بودن پاداش خوش‌آمدگویی، B پاداش «welcome» خود را دریافت می‌کند.
+ *   - هنگام عضویت و تأیید C (دعوت‌شده توسط B):
+ *       * B در عمق ۱ (depth=1) ⇒ پاداش «لایه ۰ (دعوت مستقیم)» می‌گیرد.
+ *       * A در عمق ۲ (depth=2) ⇒ پاداش «لایه ۱ (دعوت غیرمستقیم)» می‌گیرد.
+ *   - هنگام عضویت و تأیید D (دعوت‌شده توسط C):
+ *       * C در عمق ۱ ⇒ «لایه ۰ (مستقیم)»
+ *       * B در عمق ۲ ⇒ «لایه ۱ (غیرمستقیم)»
+ *       * A در عمق ۳ ⇒ «لایه ۲ (غیرمستقیم)»
+ *   - به طور کلی: لایه k غیرمستقیم (k ≥ 1) دقیقاً معادل ancestor با depth = k + 1 در referral_relations است.
+ *
+ * قواعد ایمنی مالی:
+ *   ۱) هر رویداد یک event_key یکتا دارد (ضدتکرار سطح رویداد).
+ *   ۲) برای هر (event_id, beneficiary_id, level, type) کلید یکتا در دیتابیس وجود دارد.
+ *   ۳) یک ذی‌نفع در یک رویداد معرفی هرگز هم پاداش مستقیم (لایه ۰) و هم پاداش لایه‌ای نمی‌گیرد.
+ *   ۴) هر لایه غیرمستقیم می‌تواند مبلغ ثابت (تومان) یا درصدی (از مبنای شفاف) + سقف پرداخت اختصاصی داشته باشد.
+ *   ۵) تغییر تنظیمات فقط نسخه جدید می‌سازد و تراکنش‌های گذشته با تنظیمات زمان خود دست‌نخورده می‌مانند.
  */
 final class CommissionService
 {
@@ -36,7 +49,7 @@ final class CommissionService
     }
 
     /**
-     * پردازش پاداش برای یک رویداد واجد شرایط (idempotent).
+     * پردازش پاداش برای یک رویداد واجد شرایط (اتمیک و idempotent).
      *
      * @return array{event_id:int, commissions:array, total:int, duplicated:bool}
      */
@@ -50,16 +63,22 @@ final class CommissionService
         $userId = (int) ($options['user_id'] ?? 0);
         $actorId = isset($options['actor_id']) && $options['actor_id'] ? (int) $options['actor_id'] : null;
         $baseAmount = isset($options['base_amount'])
-            ? (int) $options['base_amount']
+            ? max(0, (int) $options['base_amount'])
             : $this->settings->directReward;
         $inviteeAmount = isset($options['invitee_amount'])
-            ? (int) $options['invitee_amount']
+            ? max(0, (int) $options['invitee_amount'])
             : $this->settings->inviteeReward;
         $appliesDirect = (bool) ($options['applies_direct'] ?? true);
         $appliesInvitee = (bool) ($options['applies_invitee'] ?? ($type === 'referral_qualified' && $appliesDirect));
-        $payload = $options['payload'] ?? [];
+        $platform = isset($options['platform']) && is_string($options['platform']) && $options['platform'] !== ''
+            ? strtolower(trim($options['platform']))
+            : null;
+        $payload = is_array($options['payload'] ?? null) ? $options['payload'] : [];
 
-        return $this->db->transaction(function () use ($eventKey, $type, $userId, $actorId, $baseAmount, $inviteeAmount, $appliesDirect, $appliesInvitee, $payload) {
+        return $this->db->transaction(function () use (
+            $eventKey, $type, $userId, $actorId, $baseAmount, $inviteeAmount,
+            $appliesDirect, $appliesInvitee, $platform, $payload
+        ) {
             // ---- محافظت در برابر رویداد تکراری
             $existing = $this->db->first(
                 'SELECT * FROM referral_events WHERE event_key = :k LIMIT 1',
@@ -74,7 +93,22 @@ final class CommissionService
                 ];
             }
 
-            $eventId = $this->db->insert('referral_events', [
+            // تشخیص خودکار پیام‌رسان رویداد از روی حساب کاربر در صورت ارسال نشدن
+            $resolvedPlatform = $platform;
+            if ($resolvedPlatform === null && $userId > 0 && $this->db->columnExists('users', 'entry_platform')) {
+                $uRow = $this->db->first(
+                    'SELECT entry_platform, referral_source_platform FROM users WHERE id = :id',
+                    ['id' => $userId]
+                );
+                if ($uRow !== null) {
+                    $resolvedPlatform = (string) ($uRow['referral_source_platform'] ?: $uRow['entry_platform'] ?: 'telegram');
+                }
+            }
+            if ($resolvedPlatform !== null) {
+                $payload['platform'] = $resolvedPlatform;
+            }
+
+            $eventRow = [
                 'event_key' => $eventKey,
                 'type' => $type,
                 'user_id' => $userId,
@@ -84,60 +118,142 @@ final class CommissionService
                 'status' => 'processed',
                 'payload' => json_encode($payload, JSON_UNESCAPED_UNICODE),
                 'created_at' => now(),
-            ]);
+            ];
+            if ($resolvedPlatform !== null && $this->db->columnExists('referral_events', 'platform')) {
+                $eventRow['platform'] = $resolvedPlatform;
+            }
+            $eventId = $this->db->insert('referral_events', $eventRow);
+
+            // بررسی معرف مستقیم واقعی در زنجیره (depth=1) برای جلوگیری قطعی از پرداخت دوگانه
+            $directReferrerId = $actorId ?: (int) ($this->db->value(
+                'SELECT ancestor_id FROM referral_relations WHERE descendant_id = :d AND depth = 1 LIMIT 1',
+                ['d' => $userId]
+            ) ?? 0);
 
             $commissions = [];
 
-            // ---- ۱) پاداش معرفی مستقیم (دعوت‌کننده / معرف)
-            if ($appliesDirect && $this->settings->directEnabled && $actorId && $baseAmount > 0) {
-                $commissions[] = $this->credit($eventId, $actorId, 0, 'direct', $baseAmount, '100', $baseAmount, $userId);
+            // ---- ۱) لایه ۰: پاداش معرفی مستقیم (دعوت‌کننده مستقیم — همیشه مبلغ ثابت تومان)
+            if ($appliesDirect && $this->settings->directEnabled && $directReferrerId > 0 && $baseAmount > 0) {
+                $commissions[] = $this->credit(
+                    $eventId,
+                    $directReferrerId,
+                    0,
+                    'direct',
+                    $baseAmount,
+                    '100',
+                    $baseAmount,
+                    $userId,
+                    [
+                        'calc_type' => 'fixed',
+                        'fixed_amount' => $baseAmount,
+                        'max_amount' => 0,
+                        'cap_applied' => false,
+                        'platform' => $resolvedPlatform ?? 'telegram',
+                    ]
+                );
             }
 
-            // ---- ۲) پاداش خوش‌آمدگویی کاربر دعوت‌شده (سیستم پاداش دوطرفه — مستقل از پاداش معرف)
-            if ($appliesInvitee && $this->settings->inviteeEnabled && $actorId && $userId > 0 && $actorId !== $userId && $inviteeAmount > 0) {
-                // اگر معرف نامعتبر/مسدود باشد؟ خیر: بررسی مسدود بودن خود ذی‌نفع (کاربر دعوت‌شده) در credit انجام می‌شود،
-                // اما رابطه دعوت واقعی (referred_by = actorId) باید معتبر باشد.
-                $commissions[] = $this->credit($eventId, $userId, 0, 'welcome', $inviteeAmount, '100', $inviteeAmount, $actorId);
+            // ---- ۲) پاداش خوش‌آمدگویی کاربر دعوت‌شده (سیستم پاداش دوطرفه — مستقل از لایه‌ها)
+            if (
+                $appliesInvitee
+                && $this->settings->inviteeEnabled
+                && $directReferrerId > 0
+                && $userId > 0
+                && $directReferrerId !== $userId
+                && $inviteeAmount > 0
+            ) {
+                $commissions[] = $this->credit(
+                    $eventId,
+                    $userId,
+                    0,
+                    'welcome',
+                    $inviteeAmount,
+                    '100',
+                    $inviteeAmount,
+                    $directReferrerId,
+                    [
+                        'calc_type' => 'fixed',
+                        'fixed_amount' => $inviteeAmount,
+                        'max_amount' => 0,
+                        'cap_applied' => false,
+                        'platform' => $resolvedPlatform ?? 'telegram',
+                    ]
+                );
             }
 
-            // ---- ۳) پورسانت چندلایه
+            // ---- ۳) درآمد لایه‌های غیرمستقیم (لایه ۱ تا maxLevels = عمق ۲ تا maxLevels+1 در زنجیره واقعی دعوت)
+            //         معرف مستقیم (depth=1) فقط در لایه ۰ محاسبه می‌شود و هرگز وارد لایه ۱ نمی‌گردد.
             if ($this->settings->multiLevelEnabled) {
-                $base = $this->settings->percentBaseAmount($baseAmount);
-                $ancestors = $this->ancestors($userId, $this->settings->maxLevels);
+                $indirectChain = $this->indirectAncestors($userId, $this->settings->maxLevels);
 
-                foreach ($ancestors as $depth => $ancestorId) {
-                    $level = $depth + 1; // depth 0 = معرف مستقیم = لایه ۱
-                    $config = $this->settings->level($level);
-                    if ($config === null || !$config['enabled'] || (float) $config['percent'] <= 0) {
-                        continue; // سطح غیرفعال: سهم آن به کسی منتقل نمی‌شود
-                    }
-                    $amount = Money::percentOf($base, (string) $config['percent'], $this->settings->rounding);
-                    if ($amount <= 0) {
+                foreach ($indirectChain as $level => $ancestorId) {
+                    // محافظت مضاعف: معرف مستقیم و خود کاربر هرگز در لایه‌های غیرمستقیم پورسانت نگیرند
+                    if ($ancestorId <= 0 || $ancestorId === $userId || ($directReferrerId > 0 && $ancestorId === $directReferrerId)) {
                         continue;
                     }
+
+                    $calc = $this->settings->calculateLevelPayout($level, $baseAmount);
+                    if ($calc === null || $calc['amount'] <= 0) {
+                        continue; // لایه غیرفعال یا مقدار صفر: سهم آن به لایه دیگر منتقل نمی‌شود
+                    }
+
                     $commissions[] = $this->credit(
                         $eventId,
-                        (int) $ancestorId,
+                        $ancestorId,
                         $level,
                         'level',
-                        $amount,
-                        (string) $config['percent'],
-                        $base,
-                        $userId
+                        $calc['amount'],
+                        $calc['percent'],
+                        $calc['base_amount'],
+                        $userId,
+                        [
+                            'calc_type' => $calc['calc_type'],
+                            'fixed_amount' => $calc['fixed_amount'],
+                            'raw_amount' => $calc['raw_amount'],
+                            'max_amount' => $calc['max_amount'],
+                            'cap_applied' => $calc['cap_applied'],
+                            'chain_depth' => $level + 1,
+                            'platform' => $resolvedPlatform ?? 'telegram',
+                        ]
                     );
                 }
             }
 
-            // ---- ۳) کنترل سقف کل پرداخت برای این رویداد
+            // ---- ۴) کنترل سقف کل پرداخت هر رویداد و سقف روزانه
             $paid = array_values(array_filter($commissions, static fn($c) => ($c['amount'] ?? 0) > 0));
-            if ($this->settings->maxPayoutPerEvent > 0) {
-                $total = array_sum(array_map(static fn($c) => $c['amount'], $paid));
-                if ($total > $this->settings->maxPayoutPerEvent) {
-                    $this->trimToCap($paid, $this->settings->maxPayoutPerEvent);
+            $effectiveCap = $this->settings->maxPayoutPerEvent;
+
+            if ($this->settings->dailyPayoutCap > 0) {
+                $todayPaidBefore = (int) $this->db->value(
+                    "SELECT COALESCE(SUM(amount), 0) FROM referral_commissions
+                     WHERE status = 'approved' AND event_id <> :e AND created_at >= :t",
+                    ['e' => $eventId, 't' => today_start()]
+                );
+                $remainingDaily = max(0, $this->settings->dailyPayoutCap - $todayPaidBefore);
+                $effectiveCap = $effectiveCap > 0 ? min($effectiveCap, $remainingDaily) : $remainingDaily;
+            }
+
+            if ($effectiveCap > 0 || $this->settings->dailyPayoutCap > 0) {
+                $totalNow = array_sum(array_map(static fn($c) => (int) $c['amount'], $paid));
+                if ($totalNow > $effectiveCap) {
+                    $this->trimToCap($paid, $effectiveCap);
+                    // همگام‌سازی مبالغ تعدیل‌شده در خروجی $commissions
+                    $byId = [];
+                    foreach ($paid as $p) {
+                        if (isset($p['commission_id'])) {
+                            $byId[(int) $p['commission_id']] = (int) $p['amount'];
+                        }
+                    }
+                    foreach ($commissions as &$cItem) {
+                        if (isset($cItem['commission_id'], $byId[(int) $cItem['commission_id']])) {
+                            $cItem['amount'] = $byId[(int) $cItem['commission_id']];
+                        }
+                    }
+                    unset($cItem);
                 }
             }
 
-            $total = array_sum(array_map(static fn($c) => $c['amount'], $paid));
+            $total = array_sum(array_map(static fn($c) => (int) ($c['amount'] ?? 0), $paid));
 
             return [
                 'event_id' => $eventId,
@@ -149,7 +265,7 @@ final class CommissionService
     }
 
     /**
-     * ثبت یک کمیسیون برای ذی‌نفع و واریز به کیف پول
+     * ثبت یک کمیسیون برای ذی‌نفع و واریز به کیف پول مرکزی او
      */
     private function credit(
         int $eventId,
@@ -159,7 +275,8 @@ final class CommissionService
         int $amount,
         string $percent,
         int $baseAmount,
-        int $sourceUserId
+        int $sourceUserId,
+        array $extraMeta = []
     ): array {
         if ($beneficiaryId === $sourceUserId) {
             return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'status' => 'self_referral'];
@@ -169,7 +286,6 @@ final class CommissionService
         if ($beneficiary === null) {
             return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'status' => 'user_missing'];
         }
-        // کاربر مسدود پورسانت دریافت نمی‌کند (طبق تنظیمات)
         if ($this->settings->blockedUsersNoCommission && $beneficiary['status'] === 'blocked') {
             return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'status' => 'blocked_beneficiary'];
         }
@@ -183,6 +299,31 @@ final class CommissionService
             return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'status' => 'duplicate'];
         }
 
+        // محافظت ضد پرداخت دوگانه: ذی‌نفعی که در این رویداد پاداش مستقیم لایه ۰ گرفته، نباید پورسانت لایه‌ای بگیرد
+        if ($type === 'level') {
+            $hasDirect = $this->db->value(
+                "SELECT id FROM referral_commissions WHERE event_id = :e AND beneficiary_id = :b AND type = 'direct' LIMIT 1",
+                ['e' => $eventId, 'b' => $beneficiaryId]
+            );
+            if ($hasDirect) {
+                return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'status' => 'already_direct'];
+            }
+        }
+
+        $calcType = (string) ($extraMeta['calc_type'] ?? ($type === 'level' ? 'percent' : 'fixed'));
+        $metaSnapshot = array_merge([
+            'settings_version' => $this->settings->version,
+            'calc_type' => $calcType,
+            'percent_base' => $this->settings->percentBase,
+            'percent' => $percent,
+            'base_amount' => $baseAmount,
+            'max_levels' => $this->settings->maxLevels,
+            'multi_level_enabled' => $this->settings->multiLevelEnabled,
+            'direct_reward' => $this->settings->directReward,
+            'invitee_reward' => $this->settings->inviteeReward,
+            'calculated_at' => now(),
+        ], $extraMeta);
+
         $commissionId = $this->db->insert('referral_commissions', [
             'event_id' => $eventId,
             'beneficiary_id' => $beneficiaryId,
@@ -194,30 +335,22 @@ final class CommissionService
             'amount' => $amount,
             'settings_version_id' => $this->settings->versionId,
             'status' => 'approved',
-            'meta' => json_encode([
-                'settings_version' => $this->settings->version,
-                'percent_base' => $this->settings->percentBase,
-                'max_levels' => $this->settings->maxLevels,
-                'multi_level_enabled' => $this->settings->multiLevelEnabled,
-                'direct_reward' => $this->settings->directReward,
-                'invitee_reward' => $this->settings->inviteeReward,
-                'calculated_at' => now(),
-            ], JSON_UNESCAPED_UNICODE),
+            'meta' => json_encode($metaSnapshot, JSON_UNESCAPED_UNICODE),
             'created_at' => now(),
         ]);
 
         $walletType = match ($type) {
-            'direct' => 'commission_direct',
-            'welcome' => 'commission_welcome',
+            'direct'   => 'commission_direct',
+            'welcome'  => 'commission_welcome',
             'campaign' => 'campaign_reward',
-            default => 'commission_level',
+            default    => 'commission_level',
         };
 
         $description = match ($type) {
-            'direct' => 'پاداش معرفی مستقیم',
-            'welcome' => 'پاداش خوش‌آمدگویی عضویت با لینک دعوت',
+            'direct'   => 'پاداش دعوت مستقیم (لایه ۰)',
+            'welcome'  => 'پاداش خوش‌آمدگویی عضویت با لینک دعوت',
             'campaign' => 'جایزه کمپین',
-            default => 'پورسانت لایه ' . fa_digits($level),
+            default    => 'درآمد لایه ' . fa_digits($level) . ' (دعوت غیرمستقیم)',
         };
 
         $txId = $this->wallet->credit($beneficiaryId, $walletType, $amount, [
@@ -230,12 +363,17 @@ final class CommissionService
             'idempotency_key' => 'commission:' . $commissionId,
             'meta' => [
                 'settings_version' => $this->settings->version,
+                'calc_type' => $calcType,
                 'percent_base' => $this->settings->percentBase,
                 'percent' => $percent,
+                'fixed_amount' => (int) ($extraMeta['fixed_amount'] ?? 0),
+                'max_amount' => (int) ($extraMeta['max_amount'] ?? 0),
+                'cap_applied' => !empty($extraMeta['cap_applied']),
                 'level' => $level,
                 'type' => $type,
                 'direct_reward' => $this->settings->directReward,
                 'invitee_reward' => $this->settings->inviteeReward,
+                'platform' => (string) ($extraMeta['platform'] ?? 'telegram'),
             ],
         ]);
 
@@ -245,10 +383,10 @@ final class CommissionService
 
         $hasWelcomeCol = $type !== 'welcome' || $this->db->columnExists('users', 'welcome_earned');
         $column = match ($type) {
-            'direct' => 'direct_earned',
-            'welcome' => $hasWelcomeCol ? 'welcome_earned' : null,
+            'direct'   => 'direct_earned',
+            'welcome'  => $hasWelcomeCol ? 'welcome_earned' : null,
             'campaign' => 'campaign_earned',
-            default => 'layer_earned',
+            default    => 'layer_earned',
         };
         if ($column !== null) {
             $this->db->run(
@@ -269,7 +407,9 @@ final class CommissionService
             'amount' => $amount,
             'level' => $level,
             'type' => $type,
+            'calc_type' => $calcType,
             'percent' => $percent,
+            'cap_applied' => !empty($extraMeta['cap_applied']),
             'status' => 'paid',
         ];
     }
@@ -279,6 +419,7 @@ final class CommissionService
      */
     private function trimToCap(array &$commissions, int $cap): void
     {
+        $cap = max(0, $cap);
         $total = array_sum(array_map(static fn($c) => (int) $c['amount'], $commissions));
         $excess = $total - $cap;
         for ($i = count($commissions) - 1; $i >= 0 && $excess > 0; $i--) {
@@ -298,7 +439,6 @@ final class CommissionService
                 'UPDATE wallet_transactions SET amount = :a WHERE source_id = :sid AND source_type = :st AND user_id = :u',
                 ['a' => (int) $c['amount'], 'sid' => (int) $c['commission_id'], 'st' => 'referral_commission', 'u' => (int) $c['beneficiary_id']]
             );
-            // همگام‌سازی موجودی کیف پول و آمار کاربر (سازگار با MySQL 8 و SQLite)
             $this->syncBeneficiaryFromLedger((int) $c['beneficiary_id']);
         }
     }
@@ -336,14 +476,44 @@ final class CommissionService
     }
 
     /**
-     * زنجیره معرف‌ها از نزدیک‌ترین به دورترین
-     * @return array<int,int> [depth(0-based) => user_id]
+     * زنجیره معرف‌های غیرمستقیم برای محاسبه درآمد لایه‌ای:
+     *   - depth = 1 در referral_relations معرف مستقیم (لایه ۰) است و اینجا برگردانده نمی‌شود.
+     *   - depth = 2 ⇒ لایه ۱ غیرمستقیم
+     *   - depth = k + 1 ⇒ لایه k غیرمستقیم (تا k = $maxLevels)
+     *
+     * @return array<int,int> [level(1..maxLevels) => ancestor_user_id]
+     */
+    public function indirectAncestors(int $userId, int $maxLevels = 8): array
+    {
+        $maxLevels = max(1, min(CommissionSettings::MAX_SUPPORTED_LEVELS, $maxLevels));
+        $maxDepth = $maxLevels + 1; // depth=2..maxLevels+1 ⇒ level=1..maxLevels
+        $rows = $this->db->all(
+            'SELECT ancestor_id, depth FROM referral_relations
+             WHERE descendant_id = :d AND depth >= 2 AND depth <= :m
+             ORDER BY depth ASC',
+            ['d' => $userId, 'm' => $maxDepth]
+        );
+        $out = [];
+        foreach ($rows as $row) {
+            $level = (int) $row['depth'] - 1;
+            if ($level >= 1 && $level <= $maxLevels) {
+                $out[$level] = (int) $row['ancestor_id'];
+            }
+        }
+        ksort($out);
+        return $out;
+    }
+
+    /**
+     * زنجیره کامل اجداد کاربر بر حسب شماره لایه واقعی (۰ = معرف مستقیم، ۱..۸ = لایه‌های غیرمستقیم)
+     *
+     * @return array<int,int> [layer(0..maxLevels) => user_id]
      */
     public function ancestors(int $userId, int $maxLevels = 8): array
     {
         $rows = $this->db->all(
             'SELECT ancestor_id, depth FROM referral_relations WHERE descendant_id = :d AND depth <= :m ORDER BY depth ASC',
-            ['d' => $userId, 'm' => $maxLevels]
+            ['d' => $userId, 'm' => $maxLevels + 1]
         );
         $out = [];
         foreach ($rows as $row) {
@@ -354,7 +524,7 @@ final class CommissionService
     }
 
     /**
-     * بازگردانی مالی یک رویداد (برای تقلب/لغو) — سوابق حذف نمی‌شوند
+     * بازگردانی مالی یک رویداد (برای تقلب/لغو) — سوابق در دفتر کل Append-Only حفظ می‌شوند
      */
     public function revertEvent(int $eventId, string $reason, ?int $adminId = null): int
     {
@@ -379,9 +549,11 @@ final class CommissionService
                 if ($tx === null) {
                     continue;
                 }
-                $revDesc = ($commission['type'] ?? '') === 'welcome'
-                    ? 'برگشت پاداش خوش‌آمدگویی: ' . $reason
-                    : 'برگشت پورسانت: ' . $reason;
+                $revDesc = match ((string) ($commission['type'] ?? '')) {
+                    'welcome' => 'برگشت پاداش خوش‌آمدگویی: ' . $reason,
+                    'direct'  => 'برگشت پاداش لایه ۰ (دعوت مستقیم): ' . $reason,
+                    default   => 'برگشت درآمد لایه ' . fa_digits((int) $commission['level']) . ': ' . $reason,
+                };
                 $this->wallet->debit((int) $commission['beneficiary_id'], 'reversal', (int) $commission['amount'], [
                     'source_type' => 'reversal',
                     'source_id' => (int) $commission['id'],
@@ -391,19 +563,23 @@ final class CommissionService
                     'created_by_admin_id' => $adminId,
                     'reversal_of_id' => (int) $tx['id'],
                     'level' => (int) $commission['level'],
-                    'meta' => ['reason' => $reason, 'original_tx' => (int) $tx['id'], 'event_id' => $eventId, 'commission_type' => $commission['type'] ?? ''],
+                    'meta' => [
+                        'reason' => $reason,
+                        'original_tx' => (int) $tx['id'],
+                        'event_id' => $eventId,
+                        'commission_type' => $commission['type'] ?? '',
+                    ],
                 ], allowNegative: true);
-                // دفتر کل تراکنش‌ها Append-Only است: تراکنش اصلی completed می‌ماند تا جمع credit و debit برگشتی دقیقاً با مانده کیف پول منطبق باشد
+
                 $this->db->update('referral_commissions', ['status' => 'reverted'], 'id = :id', ['id' => (int) $commission['id']]);
 
-                // کاهش دقیق آمار درآمدی کاربر ذی‌نفع (بدون منفی شدن)
                 $amt = (int) $commission['amount'];
                 $ctype = (string) ($commission['type'] ?? '');
                 $earnCol = match ($ctype) {
-                    'direct' => 'direct_earned',
-                    'welcome' => $this->db->columnExists('users', 'welcome_earned') ? 'welcome_earned' : null,
+                    'direct'   => 'direct_earned',
+                    'welcome'  => $this->db->columnExists('users', 'welcome_earned') ? 'welcome_earned' : null,
                     'campaign' => 'campaign_earned',
-                    default => 'layer_earned',
+                    default    => 'layer_earned',
                 };
                 $uRow = $this->db->first('SELECT * FROM users WHERE id = :id', ['id' => (int) $commission['beneficiary_id']]);
                 if ($uRow !== null) {

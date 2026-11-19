@@ -108,42 +108,85 @@ final class SettingsService
         self::$cache = null;
     }
 
-    /** حالت‌های قابل انتخاب رابط کاربری ربات در تلگرام */
+    /** حالت‌های قابل انتخاب رابط کاربری در پیام‌رسان‌ها (تطبیق هوشمند با قابلیت هر پلتفرم) */
     public const BOT_UI_MODES = [
-        'miniapp' => 'حالت مینی‌اپ (وب‌اپ تلگرام)',
-        'buttons' => 'حالت دکمه‌ای (منوی ربات)',
-        'hybrid'  => 'حالت ترکیبی (مینی‌اپ + دکمه‌ها)',
+        'miniapp' => 'فقط Mini App (بازگشت هوشمند به دکمه در پیام‌رسان‌های فاقد مینی‌اپ)',
+        'buttons' => 'فقط دکمه‌های معمولی (بازگشت هوشمند به برنامک در ایتا)',
+        'hybrid'  => 'هر دو حالت (Mini App + دکمه‌های کامل ربات)',
     ];
 
-    /**
-     * آیا پنل وب (Mini App) باید فعال باشد؟
-     *
-     * تلگرام برای Mini App فقط https معتبر می‌پذیرد. بنابراین:
-     *   miniapp_mode=off یا bot_ui_mode=buttons → همیشه خاموش
-     *   miniapp_mode=on  → فقط اگر آدرس https باشد
-     *   miniapp_mode=auto → (پیش‌فرض) فقط اگر آدرس https باشد
-     *
-     * روی هاست بدون SSL همه‌چیز از دکمه‌های خود ربات کار می‌کند.
-     */
-    public static function miniappActive(): bool
+    /** نرمال‌سازی مقدار ورودی حالت نمایش (پشتیبانی از نام‌های مستعار) */
+    public static function normalizeUiMode(string $mode): string
     {
+        return match (strtolower(trim($mode))) {
+            'miniapp', 'miniapp_only' => 'miniapp',
+            'buttons', 'buttons_only' => 'buttons',
+            'hybrid', 'both'          => 'hybrid',
+            default                   => 'hybrid',
+        };
+    }
+
+    /**
+     * آیا پنل وب (Mini App) برای پیام‌رسان مشخص باید فعال باشد؟
+     * بدون پارامتر دقیقاً رفتار قبلی (تلگرام) را برمی‌گرداند.
+     */
+    public static function miniappActive(?string $platform = null): bool
+    {
+        if ($platform !== null && $platform !== '') {
+            $res = self::resolveUiModeFor($platform);
+            return !empty($res['show_miniapp']);
+        }
         $mode = (string) (self::get('miniapp_mode', 'auto') ?? 'auto');
         if ($mode === 'off') {
             return false;
         }
         $uiMode = (string) (self::get('bot_ui_mode', '') ?? '');
-        if ($uiMode === 'buttons') {
+        if ($uiMode === 'buttons' || $uiMode === 'buttons_only') {
             return false;
         }
         $url = self::resolvedMiniappUrl();
-        return $url !== '' && str_starts_with($url, 'https://');
+        return $url !== '' && str_starts_with(strtolower($url), 'https://');
     }
 
     /** آدرس تمیزشدهٔ Mini App (خالی اگر تنظیم نشده باشد) */
     public static function resolvedMiniappUrl(): string
     {
-        $url = trim((string) (self::get('miniapp_url', '') ?: ''));
-        return $url;
+        return trim((string) (self::get('miniapp_url', '') ?: ''));
+    }
+
+    /** نام مستعار آدرس پایه Mini App */
+    public static function miniappBaseUrl(): string
+    {
+        return self::resolvedMiniappUrl();
+    }
+
+    /** آیا آدرس HTTPS معتبر برای Mini App ثبت شده است؟ */
+    public static function hasHttpsMiniappUrl(): bool
+    {
+        $url = self::resolvedMiniappUrl();
+        return $url !== '' && str_starts_with(strtolower($url), 'https://');
+    }
+
+    /**
+     * تعیین هوشمند حالت نمایش مؤثر برای هر پیام‌رسان (تلگرام، بله، روبیکا، ایتا)
+     * با رعایت دقیق قابلیت‌های رسمی هر پیام‌رسان و جلوگیری از دکمه خراب یا صفحه خالی.
+     */
+    public static function resolveUiModeFor(string $platform): array
+    {
+        return \RB\Messengers\MessengerCapabilities::resolveUiMode(
+            $platform,
+            self::configuredBotUiMode(),
+            self::hasHttpsMiniappUrl()
+        );
+    }
+
+    /** ماتریس کامل وضعیت نمایش برای همه پیام‌رسان‌ها */
+    public static function allPlatformUiModes(): array
+    {
+        return \RB\Messengers\MessengerCapabilities::resolveAllUiModes(
+            self::configuredBotUiMode(),
+            self::hasHttpsMiniappUrl()
+        );
     }
 
     /** حالت ذخیره‌شده توسط مدیر: buttons | miniapp | hybrid */
@@ -154,8 +197,8 @@ final class SettingsService
             return 'buttons';
         }
         $uiMode = (string) (self::get('bot_ui_mode', '') ?? '');
-        if (in_array($uiMode, ['buttons', 'miniapp', 'hybrid'], true)) {
-            return $uiMode;
+        if ($uiMode !== '') {
+            return self::normalizeUiMode($uiMode);
         }
         return 'hybrid';
     }
@@ -192,7 +235,7 @@ final class SettingsService
      */
     public static function applyBotUiMode(string $requestedMode, ?string $miniappUrlInput = null, ?TelegramService $tg = null): array
     {
-        $mode = in_array($requestedMode, ['buttons', 'miniapp', 'hybrid'], true) ? $requestedMode : 'hybrid';
+        $mode = self::normalizeUiMode($requestedMode);
 
         if ($miniappUrlInput !== null) {
             $clean = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', $miniappUrlInput) ?? trim($miniappUrlInput));

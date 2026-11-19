@@ -372,17 +372,17 @@ T::eq(5000, (int) $users->find((int) $userB['id'])['wallet_balance'], 'قبل ا
 $users->updateProfile((int) $userC['id'], 'سهراب', 'سپهری');
 T::eq(0, (int) $users->find((int) $userC['id'])['wallet_balance'], 'بعد از تکمیل پروفایل ولی قبل از تأیید مدیر: پاداش C همچنان = ۰');
 
-// مدیر عضویت C را تأیید می‌کند -> پاداش دعوت‌کننده B (۲۵k + ۲.۵k لایه ۱)، دعوت‌شده C (۱۲k) و لایه ۲ A (۱.۲۵k) همزمان واریز می‌شوند!
+// مدیر عضویت C را تأیید می‌کند -> پاداش مستقیم لایه ۰ برای B (۲۵k)، خوش‌آمدگویی C (۱۲k) و لایه ۱ غیرمستقیم برای A (۲.۵k) همزمان واریز می‌شوند!
 $qualifiedC = $users->approveVerification((int) $userC['id']);
 T::eq(true, $qualifiedC, 'تأیید دستی مدیر باعث واجد شرایط شدن C و پرداخت دوطرفه شد');
 T::eq(12000, (int) $users->find((int) $userC['id'])['wallet_balance'], 'دعوت‌شده C دقیقاً ۱۲٬۰۰۰ تومان دریافت کرد');
-T::eq(5000 + 25000 + 2500, (int) $users->find((int) $userB['id'])['wallet_balance'], 'دعوت‌کننده B مبلغ ۲۵٬۰۰۰ مستقیم + ۲٬۵۰۰ لایه ۱ (جمع ۳۲٬۵۰۰) دارد');
-T::eq(10000 + 1250, (int) $users->find((int) $userA['id'])['wallet_balance'], 'معرف بالادستی A مبلغ ۱٬۲۵۰ لایه ۲ دریافت کرد و پاداش قبلی ۱۰٬۰۰۰ دست‌نخورده ماند');
+T::eq(5000 + 25000, (int) $users->find((int) $userB['id'])['wallet_balance'], 'دعوت‌کننده مستقیم B (لایه ۰) دقیقاً ۲۵٬۰۰۰ مستقیم دریافت کرد (جمع ۳۰٬۰۰۰)');
+T::eq(10000 + 2500, (int) $users->find((int) $userA['id'])['wallet_balance'], 'معرف بالادستی A (لایه ۱ غیرمستقیم) مبلغ ۲٬۵۰۰ دریافت کرد و پاداش قبلی ۱۰٬۰۰۰ دست‌نخورده ماند');
 
-// تست برگشت مالی (Reversal) رویداد C: باید هم پاداش دعوت‌شده و هم دعوت‌کننده و لایه‌ها دقیق برگردند
+// تست برگشت مالی (Reversal) رویداد C: باید هم پاداش دعوت‌شده و هم دعوت‌کننده و لایه غیرمستقیم دقیق برگردند
 $eventC = $db->first("SELECT * FROM referral_events WHERE event_key = :k", ['k' => 'referral_qualified:' . (int) $userC['id']]);
 $revertedCount = (new CommissionService($db))->revertEvent((int) $eventC['id'], 'تست برگشت دوطرفه');
-T::eq(4, $revertedCount, 'هر ۴ ردیف پاداش (مستقیم، خوش‌آمدگویی، لایه ۱، لایه ۲) با موفقیت برگشت خوردند');
+T::eq(3, $revertedCount, 'هر ۳ ردیف پاداش (مستقیم لایه ۰، خوش‌آمدگویی، لایه ۱ غیرمستقیم) با موفقیت برگشت خوردند');
 T::eq(0, (int) $users->find((int) $userC['id'])['wallet_balance'], 'موجودی C پس از برگشت = ۰');
 T::eq(0, (int) $users->find((int) $userC['id'])['welcome_earned'], 'welcome_earned کاربر C پس از برگشت = ۰');
 T::eq(5000, (int) $users->find((int) $userB['id'])['wallet_balance'], 'موجودی B به ۵٬۰۰۰ قبلی برگشت');

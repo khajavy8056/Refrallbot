@@ -3,17 +3,25 @@ declare(strict_types=1);
 
 namespace RB\Controllers\MiniApp;
 
+use RB\Bot\BotHandler;
 use RB\Bot\TransactionLabels;
 use RB\Http\Controller;
+use RB\Messengers\MessengerCapabilities;
+use RB\Messengers\MessengerRegistry;
 use RB\Services\CampaignService;
+use RB\Services\CommissionSettings;
+use RB\Services\InviteContentService;
+use RB\Services\MembershipService;
 use RB\Services\Notifier;
 use RB\Services\RankingService;
+use RB\Services\ReferralMessageService;
 use RB\Services\SettingsService;
 use RB\Services\SupportService;
 use RB\Services\TelegramService;
 use RB\Services\TelegramWebApp;
 use RB\Services\UserService;
 use RB\Services\WalletService;
+use RB\Services\WebAppAuthService;
 use RB\Services\WithdrawalService;
 use RB\Support\Csrf;
 use RB\Support\Database;
@@ -21,8 +29,8 @@ use RB\Support\Money;
 use RB\Support\Request;
 
 /**
- * API پنل کاربری Mini App
- * همه پاسخ‌ها JSON؛ احراز هویت با سشن تلگرام (که خودش با initData معتبر ساخته شده)
+ * API پنل کاربری Mini App چندپیام‌رسانی (تلگرام، بله، ایتا)
+ * همه پاسخ‌ها JSON؛ احراز هویت با سشن امن مینی‌اپ که با initData امضاشده ایجاد شده است.
  */
 final class DashboardApiController extends Controller
 {
@@ -32,21 +40,28 @@ final class DashboardApiController extends Controller
         if ($user === null) {
             $this->json([
                 'ok' => false,
-                'error' => 'برای استفاده از پنل، ابتدا از داخل ربات تلگرام وارد شوید.',
+                'error' => 'برای استفاده از پنل، ابتدا از داخل پیام‌رسان وارد شوید.',
                 'need_auth' => true,
             ], 401);
         }
         return $user;
     }
 
-    /** شامل csrf token برای درخواست‌های بعدی */
+    /** شامل csrf token و اطلاعات پیام‌رسان جاری */
     public function bootstrap(): void
     {
         $user = $this->user();
         if ($user === null) {
             return;
         }
-        $this->json(['ok' => true, 'csrf' => Csrf::token(), 'user_id' => (int) $user['id']]);
+        $platform = WebAppAuthService::currentPlatform();
+        $this->json([
+            'ok' => true,
+            'csrf' => Csrf::token(),
+            'user_id' => (int) $user['id'],
+            'platform' => $platform,
+            'platform_label' => MessengerCapabilities::label($platform),
+        ]);
     }
 
     public function dashboard(): void
@@ -56,24 +71,34 @@ final class DashboardApiController extends Controller
             return;
         }
         $db = Database::instance();
+        $uid = (int) $user['id'];
+        $platform = WebAppAuthService::currentPlatform();
+        $extId = WebAppAuthService::currentExternalId();
+
         $wallet = new WalletService($db);
-        $summary = $wallet->summary((int) $user['id']);
-        $reconcile = $wallet->reconcile((int) $user['id']);
-        $tg = TelegramService::settings($db);
-        $botUsername = (string) ($tg['bot_username'] ?? '');
-        $link = $botUsername !== ''
-            ? 'https://t.me/' . $botUsername . '?start=' . $user['referral_code']
-            : (string) SettingsService::get('bot_link_base', '');
+        $summary = $wallet->summary($uid);
+        $reconcile = $wallet->reconcile($uid);
+
+        $inviteSvc = new InviteContentService($db);
+        $studio = $inviteSvc->buildUserStudioPayload($user, $platform);
+        $link = (string) ($studio['primary_link'] ?? '');
+        if ($link === '') {
+            $tg = TelegramService::settings($db);
+            $botUsername = (string) ($tg['bot_username'] ?? '');
+            $link = $botUsername !== ''
+                ? 'https://t.me/' . $botUsername . '?start=' . $user['referral_code']
+                : (string) ($studio['landing_link'] ?? SettingsService::get('bot_link_base', ''));
+        }
 
         $lastTx = $db->all(
             'SELECT * FROM wallet_transactions WHERE user_id = :u ORDER BY id DESC LIMIT 6',
-            ['u' => (int) $user['id']]
+            ['u' => $uid]
         );
-        $rank = RankingService::enabled() ? RankingService::rankOf((int) $user['id']) : null;
-        $campaigns = (new CampaignService($db))->activeCampaigns();
+        $rank = RankingService::enabled() ? RankingService::rankOf($uid) : null;
+        $campaignSvc = new CampaignService($db);
         $activeCampaigns = [];
-        foreach ($campaigns as $campaign) {
-            $progress = (new CampaignService($db))->progressFor($campaign, (int) $user['id']);
+        foreach ($campaignSvc->activeCampaigns() as $campaign) {
+            $progress = $campaignSvc->progressFor($campaign, $uid);
             $activeCampaigns[] = [
                 'title' => $campaign['title'],
                 'description' => $campaign['description'],
@@ -84,26 +109,86 @@ final class DashboardApiController extends Controller
             ];
         }
 
-        $analytics = self::buildUserAnalytics($db, $user, $summary);
-        $comSettings = \RB\Services\CommissionSettings::current($db);
         $userSvc = new UserService($db);
+        $analytics = self::buildUserAnalytics($db, $user, $summary, $userSvc);
+        $comSettings = CommissionSettings::current($db);
         $pendingReqs = (!empty($user['referred_by']) && empty($user['qualified_at']))
             ? $userSvc->pendingRequirements($user, $comSettings)
             : [];
-        $inviteHtml = \RB\Services\ReferralMessageService::renderInviteMessage($user, $link, $comSettings, $db);
+
+        $inviteHtml = ReferralMessageService::renderInviteMessage($user, $link, $comSettings, $db);
         $invitePlain = trim(html_entity_decode(strip_tags($inviteHtml), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
-        $shareText = \RB\Services\ReferralMessageService::renderShareText($user, $link, $comSettings, $db);
+        $shareText = ReferralMessageService::renderShareText($user, $link, $comSettings, $db);
+        if (!empty($studio['messages'][0])) {
+            $invitePlain = (string) $studio['messages'][0]['text'];
+            $shareText = (string) $studio['messages'][0]['share_text'];
+        }
+
+        // حساب‌های پیام‌رسان متصل کاربر
+        $accounts = array_map(static function (array $acc): array {
+            $p = (string) $acc['platform'];
+            return [
+                'platform' => $p,
+                'label' => MessengerCapabilities::label($p),
+                'external_user_id' => (string) $acc['external_user_id'],
+                'username' => $acc['username'] ?? null,
+                'is_primary' => !empty($acc['is_primary']),
+                'can_send_message' => !empty($acc['can_send_message']),
+                'linked_at_fa' => !empty($acc['linked_at']) ? fa_date($acc['linked_at'], false) : '',
+            ];
+        }, $userSvc->messengerAccounts($uid));
+
+        $currAcc = $userSvc->messengerAccountForPlatform($uid, $platform);
+        $canSendMsg = $currAcc ? !empty($currAcc['can_send_message']) : true;
+
+        // وضعیت کانال‌های اجباری در پیام‌رسان جاری (بدون تماس شبکه سنگین در بارگذاری اولیه؛ فقط لیست کانال‌ها)
+        $memSvc = new MembershipService($db);
+        $reqChannels = [];
+        if ($memSvc->enforcementEnabled() && empty($user['channels_verified'])) {
+            foreach ($memSvc->activeChannels($platform) as $ch) {
+                $reqChannels[] = [
+                    'id' => (int) $ch['id'],
+                    'title' => (string) $ch['title'],
+                    'join_link' => (string) ($ch['invite_link'] ?: (str_starts_with((string) ($ch['chat_id'] ?? ''), '@')
+                        ? match ($platform) {
+                            MessengerCapabilities::BALE => 'https://ble.ir/' . ltrim((string) $ch['chat_id'], '@'),
+                            MessengerCapabilities::RUBIKA => 'https://rubika.ir/' . ltrim((string) $ch['chat_id'], '@'),
+                            MessengerCapabilities::EITAA => 'https://eitaa.com/' . ltrim((string) $ch['chat_id'], '@'),
+                            default => 'https://t.me/' . ltrim((string) $ch['chat_id'], '@'),
+                        } : '')),
+                    'self_confirm' => (($ch['check_mode'] ?? 'api') === 'self_confirm') || !MessengerCapabilities::supports($platform, 'channel_check_api'),
+                ];
+            }
+        }
+
+        $directRefs = (int) ($user['direct_ref_count'] ?? 0);
+        $totalRefs = (int) ($user['total_ref_count'] ?? 0);
+        $indirectRefs = max(0, $totalRefs - $directRefs);
+        $displayExtId = $extId !== '' ? $extId : ((int) $user['telegram_id'] > 0 ? (string) $user['telegram_id'] : (string) $uid);
 
         $this->json([
             'ok' => true,
+            'platform' => [
+                'code' => $platform,
+                'label' => MessengerCapabilities::label($platform),
+                'can_request_contact' => MessengerCapabilities::supports($platform, 'request_contact'),
+                'can_request_write' => ($platform === MessengerCapabilities::EITAA),
+                'can_send_message' => $canSendMsg,
+                'supports_bot_banner' => (bool) ($studio['supports_bot_send'] ?? false),
+                'channel_check_api' => MessengerCapabilities::supports($platform, 'channel_check_api'),
+            ],
             'user' => [
-                'id' => (int) $user['id'],
-                'telegram_id' => (string) $user['telegram_id'],
+                'id' => $uid,
+                'telegram_id' => $displayExtId,
+                'external_id' => $displayExtId,
+                'entry_platform' => (string) ($user['entry_platform'] ?? MessengerCapabilities::TELEGRAM),
+                'entry_platform_label' => MessengerCapabilities::label((string) ($user['entry_platform'] ?? MessengerCapabilities::TELEGRAM)),
                 'name' => trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')),
                 'first_name' => (string) ($user['first_name'] ?? ''),
                 'last_name' => (string) ($user['last_name'] ?? ''),
                 'username' => $user['username'],
                 'phone' => $user['phone'],
+                'channels_verified' => !empty($user['channels_verified']),
                 'profile_complete' => (bool) ($user['phone'] && $user['first_name']),
                 'status' => $user['status'],
                 'joined_at' => $user['joined_at'],
@@ -111,6 +196,7 @@ final class DashboardApiController extends Controller
                 'joined_date_fa' => fa_date($user['joined_at'], false),
                 'referral_code' => $user['referral_code'],
                 'invite_link' => $link,
+                'gateway_link' => (string) ($studio['landing_link'] ?? ''),
                 'referred_by' => $user['referred_by'] ? (int) $user['referred_by'] : null,
                 'qualified' => !empty($user['qualified_at']),
                 'verify_status' => $user['verify_status'],
@@ -124,17 +210,24 @@ final class DashboardApiController extends Controller
                 'invitee_enabled' => $comSettings->inviteeEnabled,
                 'invitee_reward' => $comSettings->effectiveInviteeReward(),
                 'invitee_reward_fa' => wtoman($comSettings->effectiveInviteeReward()),
+                'multilevel_enabled' => $comSettings->multiLevelEnabled,
+                'max_levels' => $comSettings->maxLevels,
                 'share_text' => $shareText,
                 'invite_text' => $invitePlain,
                 'pending_requirements' => array_map(static fn(array $i): string => (string) $i['label'], $pendingReqs),
+                'need_phone' => $memSvc->contactRequired() && empty($user['phone']),
+                'required_channels' => $reqChannels,
             ],
+            'invite_studio' => $studio,
+            'connected_messengers' => $accounts,
             'reconcile' => [
                 'match' => (bool) ($reconcile['match'] ?? true),
                 'ledger' => (int) ($reconcile['ledger'] ?? 0),
             ],
             'counts' => [
-                'direct_refs' => (int) $user['direct_ref_count'],
-                'total_refs' => (int) $user['total_ref_count'],
+                'direct_refs' => $directRefs,
+                'indirect_refs' => $indirectRefs,
+                'total_refs' => $totalRefs,
             ],
             'analytics' => $analytics,
             'withdraw' => [
@@ -148,11 +241,8 @@ final class DashboardApiController extends Controller
         ]);
     }
 
-    /**
-     * آمار و سری‌های زمانی حرفه‌ای دعوت و درآمد اختصاصی کاربر برای نمودارهای پروفایل و مینی‌اپ
-     * کاملاً سازگار با MySQL 5.7/8.x و SQLite.
-     */
-    private static function buildUserAnalytics(Database $db, array $user, array $walletSummary): array
+    /** آمار و سری‌های زمانی دعوت و تفکیک دقیق لایه ۰ (مستقیم) و لایه‌های ۱+ (غیرمستقیم) */
+    private static function buildUserAnalytics(Database $db, array $user, array $walletSummary, UserService $userSvc): array
     {
         $uid = (int) $user['id'];
         $days30Start = date('Y-m-d', time() - 29 * 86400) . ' 00:00:00';
@@ -162,7 +252,6 @@ final class DashboardApiController extends Controller
             'SELECT COUNT(*) FROM users WHERE referred_by = :u AND joined_at < :s',
             ['u' => $uid, 's' => $days30Start]
         );
-
         $inviteRows = $db->all(
             'SELECT DATE(joined_at) AS d, COUNT(*) AS c FROM users WHERE referred_by = :u AND joined_at >= :s GROUP BY DATE(joined_at)',
             ['u' => $uid, 's' => $days30Start]
@@ -232,19 +321,37 @@ final class DashboardApiController extends Controller
         $pendingDirect = max(0, $totalDirect - $qualifiedDirect);
         $qualRate = $totalDirect > 0 ? (int) round(($qualifiedDirect / $totalDirect) * 100) : 0;
 
+        $layerEarn = $userSvc->layerEarningsSummary($uid);
         $levelRows = $db->all(
-            'SELECT rr.depth AS level, COUNT(*) AS c FROM referral_relations rr WHERE rr.ancestor_id = :a GROUP BY rr.depth ORDER BY rr.depth',
+            'SELECT rr.depth, COUNT(*) AS c FROM referral_relations rr WHERE rr.ancestor_id = :a GROUP BY rr.depth ORDER BY rr.depth',
             ['a' => $uid]
         );
-        $levels = array_map(static fn($l) => ['level' => (int) $l['level'], 'count' => (int) $l['c']], $levelRows);
+        $earnByLayer = [];
+        if (!empty($layerEarn['layers']) && is_array($layerEarn['layers'])) {
+            foreach ($layerEarn['layers'] as $le) {
+                $earnByLayer[(int) ($le['layer'] ?? 0)] = (int) ($le['paid_amount'] ?? $le['credited_amount'] ?? ($le['amount'] ?? 0));
+            }
+        }
+        $levels = array_map(static function (array $l) use ($earnByLayer): array {
+            $depth = (int) $l['depth'];
+            $layer = max(0, $depth - 1);
+            $earned = $earnByLayer[$layer] ?? 0;
+            return [
+                'depth' => $depth,
+                'layer' => $layer,
+                'label' => $layer === 0 ? 'لایه ۰ (دعوت مستقیم)' : ('لایه ' . fa_digits($layer) . ' (غیرمستقیم)'),
+                'count' => (int) $l['c'],
+                'earned' => $earned,
+                'earned_fa' => wtoman($earned),
+            ];
+        }, $levelRows);
 
-        // سطح انگیزشی دعوت‌کننده بر اساس تعداد معرفی مستقیم
         $milestones = [
-            ['min' => 0,   'max' => 5,   'name' => 'شروع‌کننده',   'icon' => '🌱', 'next' => 'برنزی'],
-            ['min' => 5,   'max' => 15,  'name' => 'دعوت‌کننده برنزی', 'icon' => '🥉', 'next' => 'نقره‌ای'],
+            ['min' => 0,   'max' => 5,   'name' => 'شروع‌کننده',       'icon' => '🌱', 'next' => 'برنزی'],
+            ['min' => 5,   'max' => 15,  'name' => 'دعوت‌کننده برنزی',  'icon' => '🥉', 'next' => 'نقره‌ای'],
             ['min' => 15,  'max' => 50,  'name' => 'دعوت‌کننده نقره‌ای', 'icon' => '🥈', 'next' => 'طلایی'],
-            ['min' => 50,  'max' => 150, 'name' => 'دعوت‌کننده طلایی', 'icon' => '🥇', 'next' => 'سفیر الماسی'],
-            ['min' => 150, 'max' => 0,   'name' => 'سفیر الماسی',  'icon' => '💎', 'next' => null],
+            ['min' => 50,  'max' => 150, 'name' => 'دعوت‌کننده طلایی',  'icon' => '🥇', 'next' => 'سفیر الماسی'],
+            ['min' => 150, 'max' => 0,   'name' => 'سفیر الماسی',      'icon' => '💎', 'next' => null],
         ];
         $tier = $milestones[0];
         foreach ($milestones as $ms) {
@@ -300,38 +407,339 @@ final class DashboardApiController extends Controller
             return;
         }
         $db = Database::instance();
-        $users = new UserService($db);
+        $uid = (int) $user['id'];
+        $platform = WebAppAuthService::currentPlatform();
+        $userSvc = new UserService($db);
+        $registry = new MessengerRegistry($db);
+
         $direct = $db->all(
-            'SELECT id, first_name, last_name, username, telegram_id, joined_at, qualified_at, status,
+            'SELECT id, first_name, last_name, username, telegram_id, entry_platform, joined_at, qualified_at, status,
                     direct_ref_count, total_earned
              FROM users WHERE referred_by = :r ORDER BY joined_at DESC LIMIT 100',
-            ['r' => (int) $user['id']]
+            ['r' => $uid]
         );
-        $levels = $db->all(
-            'SELECT rr.depth AS level, COUNT(*) AS c FROM referral_relations rr WHERE rr.ancestor_id = :a GROUP BY rr.depth ORDER BY rr.depth',
-            ['a' => (int) $user['id']]
+
+        $layerEarn = $userSvc->layerEarningsSummary($uid);
+        $earnMap = [];
+        if (!empty($layerEarn['layers']) && is_array($layerEarn['layers'])) {
+            foreach ($layerEarn['layers'] as $le) {
+                $earnMap[(int) ($le['layer'] ?? 0)] = [
+                    'amount' => (int) ($le['paid_amount'] ?? $le['credited_amount'] ?? ($le['amount'] ?? 0)),
+                    'pending_amount' => (int) ($le['pending_amount'] ?? 0),
+                    'count' => (int) ($le['users_count'] ?? $le['credited_count'] ?? ($le['count'] ?? 0)),
+                ];
+            }
+        }
+
+        $levelRows = $db->all(
+            'SELECT rr.depth,
+                    COUNT(*) AS c,
+                    SUM(CASE WHEN u.qualified_at IS NOT NULL THEN 1 ELSE 0 END) AS q
+             FROM referral_relations rr
+             JOIN users u ON u.id = rr.descendant_id
+             WHERE rr.ancestor_id = :a
+             GROUP BY rr.depth
+             ORDER BY rr.depth',
+            ['a' => $uid]
         );
-        $tg = TelegramService::settings($db);
-        $botUsername = (string) ($tg['bot_username'] ?? '');
+
+        $levels = array_map(static function (array $l) use ($earnMap): array {
+            $depth = (int) $l['depth'];
+            $layer = max(0, $depth - 1);
+            $earned = (int) ($earnMap[$layer]['amount'] ?? 0);
+            return [
+                'level' => $depth,
+                'layer' => $layer,
+                'is_direct' => ($layer === 0),
+                'label' => $layer === 0 ? 'لایه ۰ — دعوت مستقیم' : ('لایه ' . fa_digits($layer) . ' — غیرمستقیم'),
+                'count' => (int) $l['c'],
+                'qualified' => (int) ($l['q'] ?? 0),
+                'earned' => $earned,
+                'earned_fa' => wtoman($earned),
+            ];
+        }, $levelRows);
+
+        // نمونه زیرمجموعه‌های غیرمستقیم (لایه‌های ۱ تا ۸) با حفظ حریم خصوصی
+        $indirectRows = $db->all(
+            'SELECT rr.depth, u.first_name, u.last_name, u.entry_platform, u.joined_at, u.qualified_at
+             FROM referral_relations rr
+             JOIN users u ON u.id = rr.descendant_id
+             WHERE rr.ancestor_id = :a AND rr.depth >= 2
+             ORDER BY u.joined_at DESC
+             LIMIT 30',
+            ['a' => $uid]
+        );
+
+        $directCount = (int) ($user['direct_ref_count'] ?? 0);
+        $totalCount = (int) ($user['total_ref_count'] ?? 0);
 
         $this->json([
             'ok' => true,
-            'invite_link' => $botUsername !== '' ? 'https://t.me/' . $botUsername . '?start=' . $user['referral_code'] : '',
+            'invite_link' => $registry->buildReferralLink($platform, (string) $user['referral_code']),
+            'gateway_link' => $registry->buildLandingLink((string) $user['referral_code'], $platform),
             'referral_code' => $user['referral_code'],
-            'direct' => array_map(static fn($r) => [
-                'name' => trim(($r['first_name'] ?? '') . ' ' . ($r['last_name'] ?? '')) ?: 'کاربر',
-                'username' => $r['username'],
-                'joined_at' => fa_date($r['joined_at'], false),
-                'qualified' => !empty($r['qualified_at']),
-                'status' => $r['status'],
-                'refs' => (int) $r['direct_ref_count'],
-            ], $direct),
-            'levels' => array_map(static fn($l) => ['level' => (int) $l['level'], 'count' => (int) $l['c']], $levels),
+            'direct' => array_map(static function (array $r): array {
+                $ep = (string) ($r['entry_platform'] ?? MessengerCapabilities::TELEGRAM);
+                return [
+                    'name' => trim(($r['first_name'] ?? '') . ' ' . ($r['last_name'] ?? '')) ?: 'کاربر',
+                    'username' => $r['username'],
+                    'platform' => $ep,
+                    'platform_label' => MessengerCapabilities::label($ep),
+                    'joined_at' => fa_date($r['joined_at'], false),
+                    'qualified' => !empty($r['qualified_at']),
+                    'status' => $r['status'],
+                    'refs' => (int) $r['direct_ref_count'],
+                ];
+            }, $direct),
+            'indirect' => array_map(static function (array $r): array {
+                $ep = (string) ($r['entry_platform'] ?? MessengerCapabilities::TELEGRAM);
+                $layer = max(1, (int) $r['depth'] - 1);
+                $fn = trim((string) ($r['first_name'] ?? ''));
+                $masked = $fn !== '' ? (mb_substr($fn, 0, 2) . '•••') : 'کاربر شبکه';
+                return [
+                    'name' => $masked,
+                    'layer' => $layer,
+                    'layer_label' => 'لایه ' . fa_digits($layer),
+                    'platform_label' => MessengerCapabilities::label($ep),
+                    'joined_at' => fa_date($r['joined_at'], false),
+                    'qualified' => !empty($r['qualified_at']),
+                ];
+            }, $indirectRows),
+            'levels' => $levels,
             'totals' => [
-                'direct' => (int) $user['direct_ref_count'],
-                'network' => (int) $user['total_ref_count'],
+                'direct' => $directCount,
+                'indirect' => max(0, $totalCount - $directCount),
+                'network' => $totalCount,
+                'direct_earned' => (int) ($earnMap[0]['amount'] ?? 0),
+                'indirect_earned' => array_sum(array_map(
+                    static fn(int $k) => $k >= 1 ? (int) ($earnMap[$k]['amount'] ?? 0) : 0,
+                    array_keys($earnMap)
+                )),
             ],
         ]);
+    }
+
+    /** ارسال بنر تبلیغاتی انتخابی کاربر + کپشن و لینک دعوت به گفتگوی خصوصی او در پیام‌رسان */
+    public function sendInviteBanner(): void
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return;
+        }
+        Csrf::verify();
+        $platform = WebAppAuthService::currentPlatform();
+        if (!MessengerCapabilities::supports($platform, 'send_photo') || $platform === MessengerCapabilities::EITAA) {
+            $this->fail('ارسال مستقیم بنر به گفتگو در این پیام‌رسان پشتیبانی نمی‌شود؛ از دکمه اشتراک‌گذاری یا ذخیره تصویر همراه با کپی متن دعوت استفاده کنید.');
+            return;
+        }
+
+        $bannerId = (int) ($_POST['banner_id'] ?? 0);
+        $withFullCaption = !isset($_POST['full_caption']) || !empty($_POST['full_caption']);
+        $db = Database::instance();
+        $userSvc = new UserService($db);
+        $acc = $userSvc->messengerAccountForPlatform((int) $user['id'], $platform);
+        $chatId = $acc !== null && !empty($acc['external_chat_id'])
+            ? (string) $acc['external_chat_id']
+            : ($acc !== null && !empty($acc['external_user_id']) ? (string) $acc['external_user_id'] : WebAppAuthService::currentExternalId());
+
+        if ($chatId === '' && $platform === MessengerCapabilities::TELEGRAM && (int) $user['telegram_id'] > 0) {
+            $chatId = (string) $user['telegram_id'];
+        }
+        if ($chatId === '') {
+            $this->fail('شناسه گفتگو یافت نشد. ابتدا ربات را در پیام‌رسان باز کنید.');
+            return;
+        }
+
+        try {
+            $driver = (new MessengerRegistry($db))->driver($platform);
+            $handler = new BotHandler($db, $driver);
+            $res = $handler->sendInviteBannerToUser($user, $chatId, $bannerId, $withFullCaption);
+            if (empty($res['ok'])) {
+                $this->fail((string) ($res['error'] ?? 'ارسال بنر به گفتگو ناموفق بود.'));
+                return;
+            }
+            $this->ok('بنر تبلیغاتی همراه با لینک دعوت اختصاصی شما به گفتگوی ربات ارسال شد! کافی است آن را برای دوستان فوروارد کنید.');
+        } catch (\Throwable $e) {
+            $this->fail('ارسال بنر انجام نشد: ' . $e->getMessage());
+        }
+    }
+
+    /** ثبت احصای آماری کپی/اشتراک قالب پیام یا بنر در استودیوی دعوت */
+    public function trackInviteShare(): void
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return;
+        }
+        Csrf::verify();
+        $type = (string) ($_POST['type'] ?? '');
+        $id = (int) ($_POST['id'] ?? 0);
+        if (in_array($type, ['message', 'banner'], true) && $id > 0) {
+            try {
+                (new InviteContentService())->recordShare($type, $id);
+            } catch (\Throwable) {
+            }
+        }
+        $this->ok('ثبت شد.');
+    }
+
+    /** ساخت کد یک‌بارمصرف ۱۵ دقیقه‌ای برای اتصال پیام‌رسان دیگر به همین حساب */
+    public function createLinkToken(): void
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return;
+        }
+        Csrf::verify();
+        try {
+            $tok = (new UserService())->createLinkToken((int) $user['id'], 900);
+            $this->ok('کد اتصال یک‌بارمصرف ساخته شد. تا ۱۵ دقیقه در پیام‌رسان دیگر وارد کنید.', [
+                'token' => $tok['code'],
+                'code' => $tok['code'],
+                'start_param' => $tok['start_param'],
+                'expires_at' => fa_date($tok['expires_at']),
+                'ttl_minutes' => (int) ($tok['ttl_minutes'] ?? 15),
+            ]);
+        } catch (\Throwable $e) {
+            $this->fail($e->getMessage());
+        }
+    }
+
+    /** مصرف کد اتصال ساخته‌شده در پیام‌رسان دیگر و اتصال امن پیام‌رسان فعلی به حساب اصلی */
+    public function redeemLinkToken(): void
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return;
+        }
+        Csrf::verify();
+        $code = trim((string) ($_POST['code'] ?? ''));
+        if ($code === '') {
+            $this->fail('کد اتصال (مانند LNK-...) را وارد کنید.');
+            return;
+        }
+        $platform = WebAppAuthService::currentPlatform();
+        $extId = WebAppAuthService::currentExternalId();
+        if ($extId === '') {
+            $this->fail('شناسه پیام‌رسان جاری قابل تشخیص نیست.');
+            return;
+        }
+
+        $res = (new UserService())->redeemLinkToken($code, $platform, [
+            'id' => $extId,
+            'chat_id' => $extId,
+            'first_name' => $user['first_name'] ?? null,
+            'last_name' => $user['last_name'] ?? null,
+            'username' => $user['username'] ?? null,
+        ]);
+        if (empty($res['ok'])) {
+            $this->fail((string) ($res['error'] ?? 'اتصال حساب انجام نشد.'));
+            return;
+        }
+
+        // به‌روزرسانی سشن به حساب اصلی متصل‌شده
+        $mergedUser = $res['user'] ?? null;
+        if (is_array($mergedUser) && !empty($mergedUser['id'])) {
+            $_SESSION['miniapp_user_id'] = (int) $mergedUser['id'];
+            $_SESSION['miniapp_telegram_id'] = (int) $mergedUser['telegram_id'];
+        }
+        $this->ok((string) ($res['message'] ?? 'پیام‌رسان شما با موفقیت به حساب اصلی متصل شد!'));
+    }
+
+    /** ذخیره شماره موبایل دریافت‌شده از SDK مینی‌اپ (ایتا، بله، تلگرام) */
+    public function savePhone(): void
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return;
+        }
+        Csrf::verify();
+        $rawPhone = trim((string) ($_POST['phone'] ?? ''));
+        $digits = preg_replace('~\D+~', '', $rawPhone) ?? '';
+        if (strlen($digits) < 10 || strlen($digits) > 15) {
+            $this->fail('شماره تماس معتبر نیست.');
+            return;
+        }
+        $normalized = '+' . ltrim($digits, '0');
+        if (str_starts_with($digits, '09') && strlen($digits) === 11) {
+            $normalized = '+98' . substr($digits, 1);
+        } elseif (str_starts_with($digits, '9') && strlen($digits) === 10) {
+            $normalized = '+98' . $digits;
+        }
+
+        $db = Database::instance();
+        $platform = WebAppAuthService::currentPlatform();
+        $userSvc = new UserService($db);
+        $userSvc->setPhone((int) $user['id'], $normalized);
+        $fresh = $userSvc->find((int) $user['id']) ?? $user;
+        $qualified = $userSvc->maybeQualify($fresh, false, $platform);
+        Notifier::flushDeferred();
+
+        $this->ok(
+            $qualified
+                ? 'شماره تماس ثبت شد و پاداش شما فعال گردید! 🎁'
+                : 'شماره تماس با موفقیت ثبت شد.',
+            ['phone' => $normalized, 'qualified' => $qualified]
+        );
+    }
+
+    /** ثبت مجوز ارسال پیام در ایتا پس از فراخوانی Eitaa.WebApp.requestWriteAccess */
+    public function saveWriteAccess(): void
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return;
+        }
+        Csrf::verify();
+        $allowed = !empty($_POST['allowed']);
+        $platform = WebAppAuthService::currentPlatform();
+        $extId = WebAppAuthService::currentExternalId();
+        if ($extId !== '') {
+            (new UserService())->touchMessengerActivity($platform, $extId, (int) $user['id'], [], $allowed);
+        }
+        $this->ok($allowed ? 'دریافت اعلان در پیام‌رسان فعال شد.' : 'وضعیت ذخیره شد.');
+    }
+
+    /** بررسی یا خوداظهاری عضویت در کانال‌های اجباری داخل مینی‌اپ */
+    public function verifyChannels(): void
+    {
+        $user = $this->user();
+        if ($user === null) {
+            return;
+        }
+        Csrf::verify();
+        $db = Database::instance();
+        $platform = WebAppAuthService::currentPlatform();
+        $extId = WebAppAuthService::currentExternalId();
+        $userSvc = new UserService($db);
+        $memSvc = new MembershipService($db);
+        $selfConfirm = !empty($_POST['self_confirm']);
+
+        if (!MessengerCapabilities::supports($platform, 'channel_check_api') && $selfConfirm) {
+            $userSvc->markChannelsVerified((int) $user['id']);
+            $fresh = $userSvc->find((int) $user['id']) ?? $user;
+            $qualified = $userSvc->maybeQualify($fresh, false, $platform);
+            Notifier::flushDeferred();
+            $this->ok($qualified ? 'عضویت ثبت شد و پاداش شما فعال گردید! 🎁' : 'عضویت شما ثبت شد.', ['qualified' => $qualified]);
+            return;
+        }
+
+        $gate = $memSvc->gate($user, $platform, $extId !== '' ? $extId : null);
+        if (!$gate['passed'] && ($gate['reason'] ?? '') === 'channels') {
+            if (!empty($gate['self_confirm']) && $selfConfirm) {
+                $userSvc->markChannelsVerified((int) $user['id']);
+            } else {
+                $names = implode('، ', array_map(static fn(array $c): string => (string) $c['title'], $gate['channels'] ?? []));
+                $this->fail('ابتدا در کانال‌های زیر عضو شوید و دوباره بزنید: ' . $names);
+                return;
+            }
+        }
+
+        $userSvc->markChannelsVerified((int) $user['id']);
+        $fresh = $userSvc->find((int) $user['id']) ?? $user;
+        $qualified = $userSvc->maybeQualify($fresh, false, $platform);
+        Notifier::flushDeferred();
+        $this->ok($qualified ? 'عضویت تأیید شد و پاداش شما فعال گردید! 🎁' : 'عضویت در کانال‌ها با موفقیت تأیید شد.', ['qualified' => $qualified]);
     }
 
     public function transactions(): void
@@ -538,21 +946,24 @@ final class DashboardApiController extends Controller
             return;
         }
         $subject = trim((string) ($_POST['subject'] ?? ''));
+        $platform = WebAppAuthService::currentPlatform();
         $id = SupportService::create((int) $user['id'], mb_substr($message, 0, 3000), $subject !== '' ? $subject : null);
-        // اطلاع به مدیران دارای شناسه تلگرام
         try {
             $admins = Database::instance()->all('SELECT telegram_user_id FROM admins WHERE telegram_user_id IS NOT NULL AND is_active = 1 LIMIT 3');
             $tg = new TelegramService();
-            foreach ($admins as $admin) {
-                if ($tg->isConfigured()) {
-                    $tg->sendMessage((int) $admin['telegram_user_id'],
-                        "📩 پیام پشتیبانی جدید\nاز: " . trim($user['first_name'] . ' ' . $user['last_name'])
-                        . "\n\n" . mb_substr($message, 0, 600));
+            if ($tg->isConfigured()) {
+                foreach ($admins as $admin) {
+                    $tg->sendMessage(
+                        (int) $admin['telegram_user_id'],
+                        "📩 پیام پشتیبانی جدید (" . MessengerCapabilities::label($platform) . ")\nاز: "
+                        . trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? ''))
+                        . "\n\n" . mb_substr($message, 0, 600)
+                    );
                 }
             }
         } catch (\Throwable) {
         }
-        $this->ok('پیام شما ثبت شد. پاسخ از طریق ربات و پنل ارسال می‌شود.', ['ticket_id' => $id]);
+        $this->ok('پیام شما ثبت شد. پاسخ از طریق پیام‌رسان و پنل ارسال می‌شود.', ['ticket_id' => $id]);
     }
 
     public function network(array $params): void
@@ -561,18 +972,24 @@ final class DashboardApiController extends Controller
         if ($user === null) {
             return;
         }
-        $depth = min(8, max(1, (int) ($_GET['depth'] ?? 3)));
+        $depth = min(9, max(1, (int) ($_GET['depth'] ?? 4)));
         $rows = (new UserService())->descendants((int) $user['id'], $depth, 500);
         $this->json([
             'ok' => true,
             'depth' => $depth,
-            'nodes' => array_map(static fn($r) => [
-                'id' => (int) $r['descendant_id'],
-                'name' => trim(($r['first_name'] ?? '') . ' ' . ($r['last_name'] ?? '')) ?: 'کاربر',
-                'level' => (int) $r['depth'],
-                'joined_at' => fa_date($r['joined_at'], false),
-                'refs' => (int) $r['direct_ref_count'],
-            ], $rows),
+            'nodes' => array_map(static function (array $r): array {
+                $d = (int) $r['depth'];
+                $layer = max(0, $d - 1);
+                return [
+                    'id' => (int) $r['descendant_id'],
+                    'name' => trim(($r['first_name'] ?? '') . ' ' . ($r['last_name'] ?? '')) ?: 'کاربر',
+                    'level' => $d,
+                    'layer' => $layer,
+                    'layer_label' => $layer === 0 ? 'لایه ۰ (مستقیم)' : ('لایه ' . fa_digits($layer)),
+                    'joined_at' => fa_date($r['joined_at'], false),
+                    'refs' => (int) $r['direct_ref_count'],
+                ];
+            }, $rows),
         ]);
     }
 
@@ -590,12 +1007,12 @@ final class DashboardApiController extends Controller
             return;
         }
         $qualified = (new UserService())->updateProfile((int) $user['id'], $first, $last);
+        Notifier::flushDeferred();
         $this->ok($qualified ? 'پروفایل ذخیره شد و پاداش خوش‌آمدگویی شما فعال گردید! 🎁' : 'پروفایل ذخیره شد.', [
             'qualified' => $qualified,
         ]);
     }
 
-    /** @param array $tx */
     public static function txToArray(array $tx): array
     {
         return [

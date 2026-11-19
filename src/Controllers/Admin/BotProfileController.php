@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace RB\Controllers\Admin;
 
 use RB\Http\AdminController;
+use RB\Messengers\MessengerCapabilities;
+use RB\Messengers\MessengerRegistry;
 use RB\Services\AuditService;
 use RB\Services\SettingsService;
 use RB\Services\TelegramService;
@@ -25,12 +27,20 @@ final class BotProfileController extends AdminController
     public function index(): void
     {
         $db = Database::instance();
+        $selectedPlatform = strtolower(trim((string) ($_GET['platform'] ?? MessengerCapabilities::TELEGRAM)));
+        if (!MessengerCapabilities::isSupported($selectedPlatform)) {
+            $selectedPlatform = MessengerCapabilities::TELEGRAM;
+        }
+        $registry = new MessengerRegistry($db);
+        $allMessengers = $registry->allConnections();
+
         TelegramService::forgetSettingsCache();
         $tg = new TelegramService(null, $db);
         $settings = TelegramService::settings($db);
 
-        // در اولین مراجعه پس از اتصال ربات، اطلاعات پروفایل را یک‌بار از تلگرام همگام کن
-        if ($tg->isConfigured()
+        // در اولین مراجعه پس از اتصال ربات تلگرام، اطلاعات پروفایل را یک‌بار از تلگرام همگام کن
+        if ($selectedPlatform === MessengerCapabilities::TELEGRAM
+            && $tg->isConfigured()
             && ($settings['connection_status'] ?? '') === 'connected'
             && empty($settings['profile_synced_at'])
             && $db->columnExists('telegram_settings', 'profile_synced_at')
@@ -47,7 +57,10 @@ final class BotProfileController extends AdminController
         $hasPhoto = $this->resolveStoredPhotoPath($settings) !== null || !empty($settings['bot_photo_file_id']);
 
         $this->render('admin/bot_profile/index', [
-            'title' => 'پروفایل و ظاهر ربات',
+            'title' => 'پروفایل و ظاهر ربات‌ها',
+            'selectedPlatform' => $selectedPlatform,
+            'allMessengers' => $allMessengers,
+            'currentMessenger' => $allMessengers[$selectedPlatform] ?? null,
             'settings' => $settings,
             'configured' => $tg->isConfigured(),
             'maskedToken' => $tg->maskedToken(),
@@ -59,10 +72,22 @@ final class BotProfileController extends AdminController
         ]);
     }
 
-    /** استعلام و همگام‌سازی زنده اطلاعات، نام، Bio، توضیحات و تصویر فعلی ربات از تلگرام */
+    /** استعلام و همگام‌سازی زنده اطلاعات ربات (تلگرام، بله، روبیکا) */
     public function sync(): void
     {
         $db = Database::instance();
+        $platform = strtolower(trim((string) ($_POST['platform'] ?? ($_GET['platform'] ?? MessengerCapabilities::TELEGRAM))));
+        if ($platform !== MessengerCapabilities::TELEGRAM && MessengerCapabilities::isSupported($platform)) {
+            $res = (new MessengerRegistry($db))->syncProfile($platform, current_admin_id());
+            if ($this->wantsJson()) {
+                $res['ok'] ? $this->ok($res['message'] ?? 'همگام‌سازی انجام شد.', $res) : $this->fail($res['message'] ?? 'خطا در همگام‌سازی.');
+                return;
+            }
+            $this->flash($res['ok'] ? 'success' : 'error', (string) ($res['message'] ?? ''));
+            Request::redirect(url('admin/bot-profile?platform=' . $platform));
+            return;
+        }
+
         $tg = new TelegramService(null, $db);
         if (!$tg->isConfigured()) {
             $this->failOrRedirect('ابتدا توکن ربات را در بخش «اتصال به ربات» ثبت کنید.');
@@ -94,6 +119,21 @@ final class BotProfileController extends AdminController
     public function save(): void
     {
         $db = Database::instance();
+        $platform = strtolower(trim((string) ($_POST['platform'] ?? MessengerCapabilities::TELEGRAM)));
+        if ($platform !== MessengerCapabilities::TELEGRAM && MessengerCapabilities::isSupported($platform)) {
+            $name = trim((string) ($_POST['bot_name'] ?? ''));
+            $shortDesc = trim((string) ($_POST['bot_short_description'] ?? ''));
+            $fullDesc = trim((string) ($_POST['bot_description'] ?? ''));
+            $res = (new MessengerRegistry($db))->saveProfile($platform, $name, $shortDesc, $fullDesc, true, current_admin_id());
+            if ($this->wantsJson()) {
+                $res['ok'] ? $this->ok($res['message'] ?? 'ذخیره شد.', $res) : $this->fail($res['message'] ?? 'خطا در ذخیره.');
+                return;
+            }
+            $this->flash($res['ok'] ? 'success' : 'error', (string) ($res['message'] ?? ''));
+            Request::redirect(url('admin/bot-profile?platform=' . $platform));
+            return;
+        }
+
         $tg = new TelegramService(null, $db);
         $settings = TelegramService::settings($db);
 

@@ -20,7 +20,7 @@ final class UserController extends AdminController
     public function index(): void
     {
         $users = new UserService();
-        $filters = $this->filters(['q', 'status', 'has_refs', 'has_income', 'with_phone', 'suspicious']);
+        $filters = $this->filters(['q', 'status', 'platform', 'has_refs', 'has_income', 'with_phone', 'suspicious']);
         $from = $this->dateFilter('from');
         $to = $this->dateFilter('to');
         if ($from) { $filters['from'] = $from; }
@@ -88,6 +88,8 @@ final class UserController extends AdminController
             'security' => $security,
             'reconcile' => $reconcile,
             'stats' => $users->stats($id),
+            'messengerAccounts' => $users->messengerAccounts($id),
+            'layerEarnings' => $users->layerEarningsSummary($id),
             'settings' => CommissionSettings::current(),
         ]);
     }

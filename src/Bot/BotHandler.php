@@ -3,270 +3,395 @@ declare(strict_types=1);
 
 namespace RB\Bot;
 
+use RB\Messengers\IncomingUpdate;
+use RB\Messengers\MessengerCapabilities;
+use RB\Messengers\MessengerDriverInterface;
+use RB\Messengers\MessengerRegistry;
+use RB\Messengers\RubikaDriver;
+use RB\Messengers\TelegramDriver;
 use RB\Services\CampaignService;
 use RB\Services\CommissionSettings;
+use RB\Services\InviteContentService;
 use RB\Services\MembershipService;
 use RB\Services\MenuService;
 use RB\Services\Notifier;
+use RB\Services\RankingService;
 use RB\Services\ReferralMessageService;
+use RB\Services\SecurityService;
 use RB\Services\SettingsService;
+use RB\Services\StatsService;
 use RB\Services\SupportService;
 use RB\Services\TelegramService;
 use RB\Services\UserService;
 use RB\Services\WalletService;
 use RB\Services\WithdrawalService;
+use RB\Support\Config;
 use RB\Support\Database;
-use RB\Support\ErrorHandler;
+use RB\Support\Money;
 use RB\Support\RateLimiter;
 use RB\Support\Request;
 
 /**
- * پردازش آپدیت‌های تلگرام
- * تمام منطق در بک‌اند اجرا می‌شود؛ ربات فقط لایه‌ی رابط کاربری است.
+ * پردازنده یکپارچه ربات چندپیام‌رسانی (تلگرام، بله، روبیکا و پیام‌رسان‌های آینده)
+ *
+ * تمام منطق ثبت‌نام، ارجاع، درآمد لایه‌ای، کیف پول، استودیو دعوت و پشتیبانی در هسته مشترک اجرا می‌شود
+ * و درایور هر پیام‌رسان صرفاً لایه نمایش و ارتباط با API رسمی آن پیام‌رسان را بر عهده دارد.
  */
 final class BotHandler
 {
     private Database $db;
-    private TelegramService $tg;
+    private MessengerDriverInterface $driver;
+    private MessengerRegistry $registry;
+    private string $platform;
     private UserService $users;
     private BotSession $session;
+    private InviteContentService $inviteContent;
     private int $maxDepth;
 
-    public function __construct(?Database $db = null)
+    public function __construct(?Database $db = null, \RB\Services\TelegramService|MessengerDriverInterface|null $driver = null)
     {
         $this->db = $db ?? Database::instance();
-        $this->tg = new TelegramService(null, $this->db);
+        $this->registry = new MessengerRegistry($this->db);
+        if ($driver instanceof \RB\Services\TelegramService) {
+            $conn = $this->registry->rawConnection(MessengerCapabilities::TELEGRAM) ?? ['platform' => MessengerCapabilities::TELEGRAM, 'is_enabled' => 1];
+            $this->driver = new \RB\Messengers\TelegramDriver($conn, $this->db, null, $driver);
+        } else {
+            $this->driver = $driver ?? $this->registry->driver(MessengerCapabilities::TELEGRAM);
+        }
+        $this->platform = $this->driver->platform();
         $this->users = new UserService($this->db);
         $this->session = new BotSession($this->db);
-        $this->maxDepth = (int) \RB\Support\Config::get('app.max_referral_depth', 8);
+        $this->inviteContent = new InviteContentService($this->db);
+        $this->maxDepth = (int) Config::get('app.max_referral_depth', 8);
     }
 
-    public function handle(array $update): void
+    /** پردازش آپدیت خام (۱۰۰٪ سازگار با TelegramWebhookController و تست‌های قبلی) */
+    public function handle(array $update, string $endpointHint = ''): void
     {
         try {
-            $this->db->transaction(function () use ($update) {
-                $this->executeUpdate($update);
+            $this->db->transaction(function () use ($update, $endpointHint) {
+                $this->executeUpdate($update, $endpointHint);
             });
         } catch (\Throwable $e) {
-            // اگر تراکنش Rollback شد، هیچ اعلان معوقی نباید به تلگرام ارسال شود
             Notifier::clearDeferred();
             throw $e;
         }
-        // ارسال اعلان‌های معوق (دعوت موفق، پورسانت و...) فقط پس از COMMIT قطعی
         Notifier::flushDeferred();
     }
 
-    /**
-     * پردازش آپدیت داخل یک تراکنش دیتابیس.
-     *
-     * هر آپدیت (اعم از پیام یا callback) در یک تراکنش واحد اجرا می‌شود تا اگر
-     * وسط کار خطایی رخ داد، هیچ اثر مالی نیمه‌کاره‌ای باقی نماند. اگر کار
-     * شکست بخورد، خطا به بالادست پرتاب می‌شود و لایهٔ وب‌هوک/polling آن را
-     * با کد 500 گزارش می‌کند تا تلگرام آپدیت را دوباره بفرستد.
-     */
-    public function executeUpdate(array $update): void
+    /** پردازش یک IncomingUpdate استاندارد (از وب‌هوک بله/روبیکا یا Polling) */
+    public function handleNormalized(IncomingUpdate $upd): void
     {
         try {
-            $this->db->run(
-                'UPDATE telegram_settings SET last_update_at = :now, updates_count = updates_count + 1, updated_at = :now2',
-                ['now' => now(), 'now2' => now()]
-            );
-        } catch (\Throwable) {
+            $this->db->transaction(function () use ($upd) {
+                $this->processIncoming($upd);
+            });
+        } catch (\Throwable $e) {
+            Notifier::clearDeferred();
+            throw $e;
+        }
+        Notifier::flushDeferred();
+    }
+
+    public function executeUpdate(array $update, string $endpointHint = ''): void
+    {
+        if ($this->platform === MessengerCapabilities::TELEGRAM) {
+            try {
+                $this->db->run(
+                    'UPDATE telegram_settings SET last_update_at = :now, updates_count = updates_count + 1, updated_at = :now2',
+                    ['now' => now(), 'now2' => now()]
+                );
+            } catch (\Throwable) {
+            }
         }
 
-        if (isset($update['message'])) {
-            $this->dispatchMessage($update['message']);
-        } elseif (isset($update['callback_query'])) {
-            $this->dispatchCallback($update['callback_query']);
-        } elseif (isset($update['my_chat_member']) || isset($update['chat_member'])) {
-            // بی‌اهمیت برای منطق فعلی
+        $parsed = $this->driver->parseWebhookPayload($update, $endpointHint);
+        foreach ($parsed as $upd) {
+            $this->processIncoming($upd);
         }
     }
 
-    // ------------------------------------------------------------------ پیام‌ها
-    private function dispatchMessage(array $message): void
+    private function processIncoming(IncomingUpdate $upd): void
     {
-        $from = $message['from'] ?? [];
-        $chatId = $message['chat']['id'] ?? null;
-        $telegramId = (int) ($from['id'] ?? 0);
-        if ($chatId === null || $telegramId <= 0 || !empty($from['is_bot'])) {
+        if ($upd->isBot || $upd->externalUserId === '' || $upd->chatId === '') {
             return;
         }
 
-        $text = trim((string) ($message['text'] ?? ''));
+        // رویداد توقف ربات توسط کاربر (مثلاً StoppedBot در روبیکا)
+        if ($upd->kind === 'stopped') {
+            $this->users->markMessengerBlocked($this->platform, $upd->externalUserId, true);
+            return;
+        }
 
-        // ---- محدودیت نرخ: از سیل‌آب پیام و بازپخش (replay) جلوگیری می‌کند
-        if (RateLimiter::tooMany('bot:' . $telegramId, 30, 60)) {
-            if (!empty($message['message_id'])) {
-                // فقط یک بار در دقیقه پاسخ می‌دهیم تا خودمان هم سیل نسازیم
-                if (!RateLimiter::tooMany('bot:notice:' . $telegramId, 1, 60)) {
-                    $this->send($chatId, '⏳ تعداد پیام‌های شما زیاد است. لطفاً یک دقیقه صبر کنید.');
-                }
+        if ($upd->chatType !== 'private') {
+            if ($upd->kind === 'contact') {
+                $this->send($upd->chatId, 'ارسال شماره تماس فقط در چت خصوصی با ربات امکان‌پذیر است.');
             }
             return;
         }
 
-        $this->logMessage($telegramId, 'in', $text !== '' ? 'message' : 'media', $message);
+        if ($upd->kind === 'callback') {
+            $this->dispatchCallbackUpdate($upd);
+            return;
+        }
 
-        // ---- دستور /start
-        if (str_starts_with($text, '/start')) {
-            $payload = null;
-            if (preg_match('~^/start\s+(\S+)~', $text, $m)) {
+        // محدودیت نرخ ضد اسپم به تفکیک پیام‌رسان و کاربر
+        $rateKey = 'bot:' . $this->platform . ':' . $upd->externalUserId;
+        if (RateLimiter::tooMany($rateKey, 30, 60)) {
+            if ($upd->messageId !== null && !RateLimiter::tooMany('bot:notice:' . $this->platform . ':' . $upd->externalUserId, 1, 60)) {
+                $this->send($upd->chatId, '⏳ تعداد پیام‌های شما زیاد است. لطفاً یک دقیقه صبر کنید.');
+            }
+            return;
+        }
+
+        $existingUser = $this->users->findByMessenger($this->platform, $upd->externalUserId);
+        $this->driver->logMessage(
+            $existingUser ? (int) $existingUser['id'] : null,
+            $upd->chatId,
+            'in',
+            $upd->kind,
+            ['text' => $upd->text, 'start' => $upd->startPayload],
+            'ok',
+            $upd->messageId
+        );
+
+        $text = trim($upd->text);
+
+        // لغو عملیات چندمرحله‌ای
+        if ($text === '/cancel' || $text === 'انصراف') {
+            if ($existingUser !== null) {
+                $this->clearUserSession($existingUser);
+                $this->sendMainMenu($existingUser, $upd->chatId, '✅ عملیات لغو شد. گزینه مورد نظر را از منو انتخاب کنید:');
+            }
+            return;
+        }
+
+        // ۱) رویداد /start یا StartedBot همراه کد دعوت یا کد اتصال حساب
+        if ($upd->kind === 'started' || str_starts_with($text, '/start')) {
+            $payload = $upd->startPayload;
+            if (($payload === null || $payload === '') && preg_match('~^/start(?:@[A-Za-z0-9_]+)?\s+(\S+)~iu', $text, $m)) {
                 $payload = $m[1];
             }
-            $this->cmdStart($telegramId, $from, $payload, $chatId);
+            $this->cmdStart($upd, $payload);
             return;
         }
 
+        // ۲) دستورات عمومی
         if ($text === '/help' || $text === '/راهنما') {
-            $this->sendGuide($telegramId, $chatId);
+            $this->sendGuide($upd->chatId);
             return;
         }
 
-        if ($text === '/admin') {
-            $this->cmdAdmin($telegramId, $chatId);
+        if ($text === '/admin' && $this->platform === MessengerCapabilities::TELEGRAM && ctype_digit($upd->externalUserId)) {
+            $this->cmdAdmin((int) $upd->externalUserId, $upd->chatId);
             return;
         }
 
-        $user = $this->users->findByTelegramId($telegramId);
+        // ۳) یافتن کاربر ثبت‌شده (در روبیکا اگر کاربر مستقیم پیام داد، به‌صورت امن ثبت‌نام اولیه می‌شود)
+        $user = $existingUser;
         if ($user === null) {
-            $this->send($chatId, "برای استفاده از ربات ابتدا دستور /start را ارسال کنید.");
-            return;
-        }
-        $this->users->touchActivity((int) $user['id'], Request::ip());
-
-        // ---- بررسی وضعیت مسدودی
-        if ($user['status'] === 'blocked') {
-            $this->send($chatId, '⛔️ حساب شما توسط مدیریت مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.');
-            return;
-        }
-
-        // ---- وضعیت گفتگو (جریان چندمرحله‌ای)
-        $session = $this->session->get($telegramId);
-        if ($session !== null && (int) ($session['user_id'] ?? 0) !== (int) $user['id']) {
-            // نشست باقی‌مانده از کاربر دیگر/حذف‌شده — پاک می‌شود
-            $this->session->clear($telegramId);
-            $session = null;
-        }
-        if ($session !== null && $session['step'] !== null) {
-            if ($this->handleStep($user, $session, $text, $message, $chatId)) {
+            if ($this->platform === MessengerCapabilities::RUBIKA) {
+                $this->cmdStart($upd, $upd->startPayload);
                 return;
+            }
+            $this->send($upd->chatId, 'برای استفاده از ربات ابتدا دستور /start را ارسال کنید.');
+            return;
+        }
+
+        $this->users->touchActivity((int) $user['id'], Request::ip());
+        $this->users->upsertMessengerAccount((int) $user['id'], $this->platform, $upd->userPayload(), false, 'bot_auth', true);
+
+        if (($user['status'] ?? 'active') === 'blocked') {
+            $this->send($upd->chatId, '⛔️ حساب شما توسط مدیریت مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.');
+            return;
+        }
+
+        // ۴) دستور سریع اتصال حساب بین پیام‌رسان‌ها: /link یا /link LNK-XXXXXX
+        if (str_starts_with(strtolower($text), '/link')) {
+            $parts = preg_split('~\s+~', $text, 2);
+            $arg = isset($parts[1]) ? trim($parts[1]) : '';
+            if ($arg !== '') {
+                $res = $this->users->redeemLinkToken($arg, $this->platform, $upd->userPayload());
+                if ($res['ok'] && isset($res['user'])) {
+                    $this->clearUserSession($user);
+                    $this->sendMainMenu($res['user'], $upd->chatId, $res['message']);
+                } else {
+                    $this->send($upd->chatId, '❌ ' . $res['message']);
+                }
+                return;
+            }
+            $this->actLinkAccount($user, $upd->chatId);
+            return;
+        }
+
+        // ۵) دریافت شماره تماس (Request Contact / AskMyPhoneNumber)
+        if ($upd->kind === 'contact' && $upd->contactPhone !== null) {
+            $this->handleContact($user, $upd);
+            return;
+        }
+
+        // ۶) مدیریت گفتگوهای چندمرحله‌ای (برداشت، تیکت، پروفایل، کد اتصال)
+        $session = $this->getUserSession($user);
+        if ($session !== null && $session['step'] !== null) {
+            // اگر کاربر وسط مرحله یکی از دکمه‌های اصلی منو را زد، مرحله قبلی را ببند
+            if (MenuService::actionByTitle($text) === null && $text !== '🏠 منوی اصلی' && $text !== '/menu') {
+                if ($this->handleStep($user, $session, $text, $upd->chatId, $upd)) {
+                    return;
+                }
+            } else {
+                $this->clearUserSession($user);
             }
         }
 
-        // ---- دریافت شماره تماس (Request Contact)
-        if (isset($message['contact']['phone_number'])) {
-            $this->handleContact($user, $message, $chatId);
-            return;
-        }
-
-        // ---- گیت‌های ورود (کانال اجباری / شماره تماس)
-        if (!$this->passGates($user, $chatId)) {
+        // ۷) بررسی دروازه‌های اجباری ورود
+        if (!$this->passGates($user, $upd->chatId, $upd->externalUserId)) {
             return;
         }
         if (!empty($user['referred_by']) && empty($user['qualified_at'])) {
             $fresh = $this->users->find((int) $user['id']) ?? $user;
-            if ($this->users->maybeQualify($fresh)) {
+            if ($this->users->maybeQualify($fresh, false, $this->platform)) {
                 Notifier::flushDeferred();
                 $user = $this->users->find((int) $user['id']) ?? $fresh;
             }
         }
 
-        // ---- دکمه‌های منو
+        // ۸) دستورات میانبر متنی
+        $shortcutMap = [
+            '/invite'    => 'invite',
+            '/wallet'    => 'wallet',
+            '/referrals' => 'referrals',
+            '/income'    => 'income',
+            '/withdraw'  => 'withdraw',
+            '/support'   => 'support',
+            '/account'   => 'account',
+        ];
+        if (isset($shortcutMap[strtolower($text)])) {
+            $this->dispatchAction($user, $shortcutMap[strtolower($text)], $upd->chatId);
+            return;
+        }
+
+        // ۹) دکمه‌های منوی اصلی
         $action = MenuService::actionByTitle($text);
         if ($action !== null) {
-            $this->dispatchAction($user, $action, $chatId, $message['message_id'] ?? null);
+            $this->dispatchAction($user, $action, $upd->chatId);
             return;
         }
 
         if ($text === '🏠 منوی اصلی' || $text === '/menu') {
-            $prompt = SettingsService::botUiMode() === 'miniapp'
-                ? '📱 برای مدیریت حساب، دعوت دوستان، مشاهده نمودارها و برداشت وجه، دکمه «ورود به پنل کاربری» را در پایین صفحه لمس کنید:'
-                : 'منوی اصلی — یک گزینه را انتخاب کنید:';
-            $this->sendMainMenu($user, $chatId, $prompt);
+            $ui = SettingsService::resolveUiModeFor($this->platform);
+            $prompt = $ui['effective'] === 'miniapp'
+                ? '📱 برای مدیریت حساب، دعوت دوستان، مشاهده بنرها و برداشت وجه، دکمه «ورود به پنل کاربری» را لمس کنید:'
+                : '🏠 منوی اصلی — گزینه مورد نظر خود را انتخاب کنید:';
+            $this->sendMainMenu($user, $upd->chatId, $prompt);
             return;
         }
 
         if ($text === '/app') {
-            if (SettingsService::miniappActive()) {
-                $this->tg->sendMessage(
-                    $chatId,
-                    "📱 <b>پنل کاربری (Mini App)</b>\n\nبرای باز کردن پنل گرافیکی، نمودار دعوت‌ها و کیف پول روی دکمه زیر بزنید:",
-                    ['reply_markup' => $this->panelButton()]
+            $ui = SettingsService::resolveUiModeFor($this->platform);
+            if ($ui['show_miniapp']) {
+                $this->driver->sendMessage(
+                    $upd->chatId,
+                    "📱 <b>پنل کاربری (Mini App)</b>\n\nبرای باز کردن پنل گرافیکی، استودیو دعوت و کیف پول روی دکمه زیر بزنید:",
+                    ['inline_rows' => $this->panelInlineRows()]
                 );
             } else {
-                $this->sendMainMenu($user, $chatId, '⌨️ ربات در حالت دکمه‌ای فعال است — از منوی زیر گزینه مورد نظر را انتخاب کنید:');
+                $this->sendMainMenu($user, $upd->chatId, '⌨️ تمام امکانات از طریق دکمه‌های زیر در دسترس شماست:');
             }
             return;
         }
 
-        // ---- متن پیش‌فرض
-        $this->send($chatId, "متوجه نشدم. لطفاً از دکمه‌های منو استفاده کنید یا /menu را بزنید.");
+        $this->send($upd->chatId, 'متوجه نشدم. لطفاً از دکمه‌های منو استفاده کنید یا دستور /menu را ارسال نمایید.');
     }
 
-    // ------------------------------------------------------------------ /start
-    private function cmdStart(int $telegramId, array $from, ?string $payload, int|string $chatId): void
+    // ------------------------------------------------------------------ /start و ثبت‌نام یکپارچه
+
+    private function cmdStart(IncomingUpdate $upd, ?string $payload): void
     {
-        $before = $this->users->findByTelegramId($telegramId);
+        $before = $this->users->findByMessenger($this->platform, $upd->externalUserId);
         $isNew = $before === null;
 
-        if ($before !== null && $before['status'] === 'blocked') {
-            $this->send($chatId, '⛔️ حساب شما مسدود است.');
+        if ($before !== null && ($before['status'] ?? 'active') === 'blocked') {
+            $this->send($upd->chatId, '⛔️ حساب شما مسدود است.');
             return;
         }
 
-        $result = $this->users->registerFromTelegram($from, $payload, ['ip' => Request::ip()]);
+        // غنی‌سازی پروفایل در روبیکا با متد رسمی getChat هنگام اولین ورود
+        $userPayload = $upd->userPayload();
+        if ($isNew && $this->driver instanceof RubikaDriver && empty($userPayload['first_name'])) {
+            try {
+                $chatInfo = $this->driver->fetchChatInfo($upd->chatId);
+                if (!empty($chatInfo['first_name'])) {
+                    $userPayload['first_name'] = (string) $chatInfo['first_name'];
+                }
+                if (!empty($chatInfo['last_name'])) {
+                    $userPayload['last_name'] = (string) $chatInfo['last_name'];
+                }
+                if (!empty($chatInfo['username'])) {
+                    $userPayload['username'] = (string) $chatInfo['username'];
+                }
+            } catch (\Throwable) {
+            }
+        }
+
+        $result = $this->users->registerFromMessenger($this->platform, $userPayload, $payload, [
+            'ip' => Request::ip(),
+            'source_platform' => $this->platform,
+        ]);
         $user = $result['user'] ?? null;
         if ($user === null) {
-            $this->send($chatId, 'خطا در ثبت‌نام. لطفاً دوباره تلاش کنید.');
+            $this->send($upd->chatId, 'خطا در ثبت‌نام. لطفاً دوباره تلاش کنید.');
             return;
         }
 
-        // اتصال پیام /start ثبت‌شده به شناسهٔ کاربر تازه
+        // اگر ورود با توکن یک‌بارمصرف اتصال حساب انجام شد
+        if (!empty($result['linked'])) {
+            $this->clearUserSession($user);
+            $this->sendMainMenu($user, $upd->chatId, (string) ($result['link_message'] ?? '✅ حساب شما با موفقیت متصل شد.'));
+            return;
+        }
+
+        // اتصال پیام ورودی /start به شناسه کاربر
         try {
             $this->db->run(
-                'UPDATE telegram_messages SET user_id = :u WHERE telegram_id = :t AND user_id IS NULL',
-                ['u' => (int) $user['id'], 't' => $telegramId]
+                'UPDATE telegram_messages SET user_id = :u WHERE chat_id = :c AND user_id IS NULL',
+                ['u' => (int) $user['id'], 'c' => $upd->chatId]
             );
         } catch (\Throwable) {
         }
 
-        // ثبت رویداد مشکوک: تلاش برای استفاده از لینک خود
-        if ($payload !== null) {
-            $code = strtoupper(trim($payload));
-            if (str_starts_with($code, 'REF_')) {
-                $code = substr($code, 4);
-            }
+        // ثبت تلاش خودمعرفی در گزارش امنیتی
+        if ($payload !== null && trim($payload) !== '' && !str_starts_with(strtoupper(trim($payload)), 'LNK')) {
+            $code = $this->users->normalizeCode($payload);
             $referrer = $this->users->findByCode($code);
-            if ($referrer && (int) $referrer['telegram_id'] === $telegramId) {
-                \RB\Services\SecurityService::log('self_referral_attempt', 'medium', ['payload' => $payload], (int) $user['id']);
+            if ($referrer !== null && (int) $referrer['id'] === (int) $user['id']) {
+                SecurityService::log('self_referral_attempt', 'medium', [
+                    'platform' => $this->platform,
+                    'payload' => $payload,
+                ], (int) $user['id']);
             }
         }
 
-        $this->session->clear($telegramId);
+        $this->clearUserSession($user);
 
         $fresh = $this->users->find((int) $user['id']) ?? $user;
-        $isReferredStart = ($isNew || !empty($result['referral_applied'])) && !empty($fresh['referred_by']);
+        $isReferredStart = $isNew && !empty($fresh['referred_by']);
         $settings = CommissionSettings::current($this->db, true);
 
-        // بررسی دروازه‌های اجباری ورود (شماره تماس و عضویت کانال) پیش از هرگونه پرداخت پاداش
+        // بررسی دروازه‌های اجباری ورود متناسب با پیام‌رسان
         $membership = new MembershipService($this->db);
-        $gate = $membership->gate($fresh);
+        $gate = $membership->gate($fresh, $this->platform, $upd->externalUserId);
         $fresh = $this->users->find((int) $fresh['id']) ?? $fresh;
 
         if (!$gate['passed']) {
-            // اگر کاربر از طریق لینک دعوت آمده است، ابتدا پیام خوش‌آمدگویی انگیزشی و راهنمای دریافت پاداش را نمایش بده
             if ($isReferredStart) {
-                $welcomeText = $this->referredStartText($fresh, $settings);
-                $this->tg->sendMessage($chatId, $welcomeText);
+                $this->driver->sendMessage($upd->chatId, $this->referredStartText($fresh, $settings));
             }
-            $this->sendMembershipGate($fresh, $chatId, $gate);
+            $this->sendMembershipGate($fresh, $upd->chatId, $gate);
             Notifier::flushDeferred();
             return;
         }
 
-        // دروازه‌ها عبور شده‌اند؛ اکنون بررسی کن آیا تمام شرایط پرداخت پاداش تکمیل شده است
-        $this->users->maybeQualify($fresh);
+        $this->users->maybeQualify($fresh, false, $this->platform);
         Notifier::flushDeferred();
         $user = $this->users->find((int) $fresh['id']) ?? $fresh;
 
@@ -274,18 +399,13 @@ final class BotHandler
             ? $this->referredStartText($user, $settings)
             : $this->startText($isNew, $user);
 
-        $this->sendMainMenu($user, $chatId, $welcomeMessage);
+        $this->sendMainMenu($user, $upd->chatId, $welcomeMessage);
 
-        // اگر کاربر دعوت‌شده هنوز شرط تکمیل‌نشده‌ای دارد (مثلاً پروفایل، شماره یا کانالِ شرط پاداش)، دکمه اقدام مستقیم بفرست
         if ($isReferredStart && empty($user['qualified_at'])) {
-            $this->sendPendingConditionActions($user, $chatId, $settings);
+            $this->sendPendingConditionActions($user, $upd->chatId, $settings);
         }
     }
 
-    /**
-     * دستور /admin — پنل مدیریت فقط برای ادمین‌های فعال تلگرامی.
-     * (پیش‌تر این متد وجود نداشت و /admin باعث خطای مرگبار می‌شد.)
-     */
     private function cmdAdmin(int $telegramId, int|string $chatId): void
     {
         $admin = $this->db->first(
@@ -293,20 +413,16 @@ final class BotHandler
             ['t' => $telegramId]
         );
         if ($admin === null) {
-            // پاسخ یکسان با «دستور ناموجود» تا شناسایی ادمین‌ها ممکن نباشد
-            $this->send($chatId, "دستور نامعتبر است. برای دیدن منو /menu را بزنید.");
+            $this->send($chatId, 'دستور نامعتبر است. برای دیدن منو /menu را بزنید.');
             return;
         }
-
         $rows = [
             [['text' => '📊 آمار سریع', 'callback_data' => 'admin:stats']],
             [['text' => '🛠 ورود به پنل مدیریت', 'callback_data' => 'admin:panel']],
         ];
-        $this->tg->sendMessage($chatId, "🛠 <b>پنل مدیریت</b>\n\n"
+        $this->driver->sendMessage($chatId, "🛠 <b>پنل مدیریت</b>\n\n"
             . 'خوش آمدید' . (!empty($admin['name']) ? ' ' . e((string) $admin['name']) : '') . ".\n"
-            . 'گزینه مورد نظر را انتخاب کنید:', [
-                'reply_markup' => TelegramService::inlineKeyboard($rows),
-            ]);
+            . 'گزینه مورد نظر را انتخاب کنید:', ['inline_rows' => $rows]);
     }
 
     private function startText(bool $isNew, array $user): string
@@ -314,29 +430,30 @@ final class BotHandler
         $name = trim((string) (($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? ''))) ?: 'دوست عزیز';
         $key = $isNew ? 'start_message_new' : 'start_message_returning';
         $default = $isNew
-            ? "سلام {name} عزیز 👋\nبه <b>{app_name}</b> خوش آمدید!\n\nبا دعوت دوستان خود درآمد کسب کنید:\n• هر معرفی معتبر = پاداش نقدی\n• پورسانت چندلایه تا {max_levels} سطح\n• برداشت وجه از طریق کیف پول\n\nاز منوی زیر شروع کنید 👇"
-            : "سلام {name} عزیز 👋\nخوش برگشتید به <b>{app_name}</b>.\n\nاز منوی زیر بخش مورد نظر را انتخاب کنید 👇";
+            ? "سلام {name} عزیز 👋\nبه <b>{app_name}</b> خوش آمدید!\n\nبا دعوت دوستان خود درآمد نقدی کسب کنید:\n• پاداش دعوت مستقیم (لایه ۰): <b>{inviter_reward}</b>\n• هدیه خوش‌آمدگویی دوست دعوت‌شده: <b>{invitee_reward}</b>\n• درآمد غیرمستقیم تا {max_levels} لایه\n\nاز منوی زیر شروع کنید 👇"
+            : "سلام {name} عزیز 👋\nبه <b>{app_name}</b> خوش برگشتید.\n\nاز منوی زیر بخش مورد نظر را انتخاب کنید 👇";
         $template = (string) SettingsService::get($key, $default);
 
-        $commissionSettings = CommissionSettings::current($this->db);
+        $cs = CommissionSettings::current($this->db);
         $text = str_replace(
             [
                 '{name}', '{app_name}', '{username}', '{max_levels}', '{min_withdraw}',
                 '{direct_reward}', '{inviter_reward}', '{invitee_reward}', '{welcome_reward}',
-                '[پاداش دعوت‌کننده]', '[پاداش دعوت‌شده]',
+                '{messenger}', '[پاداش دعوت‌کننده]', '[پاداش دعوت‌شده]',
             ],
             [
                 e($name),
                 e((string) SettingsService::get('app_name', 'رفرال‌بات')),
-                $user['username'] ? '@' . e((string) $user['username']) : e($name),
-                fa_digits($this->maxDepth),
+                !empty($user['username']) ? '@' . e((string) $user['username']) : e($name),
+                fa_digits($cs->maxLevels),
                 wtoman(SettingsService::int('min_withdraw_amount', 30000)),
-                wtoman($commissionSettings->effectiveDirectReward()),
-                wtoman($commissionSettings->effectiveDirectReward()),
-                wtoman($commissionSettings->effectiveInviteeReward()),
-                wtoman($commissionSettings->effectiveInviteeReward()),
-                wtoman($commissionSettings->effectiveDirectReward()),
-                wtoman($commissionSettings->effectiveInviteeReward()),
+                wtoman($cs->effectiveDirectReward()),
+                wtoman($cs->effectiveDirectReward()),
+                wtoman($cs->effectiveInviteeReward()),
+                wtoman($cs->effectiveInviteeReward()),
+                e(MessengerCapabilities::label($this->platform)),
+                wtoman($cs->effectiveDirectReward()),
+                wtoman($cs->effectiveInviteeReward()),
             ],
             $template
         );
@@ -350,11 +467,10 @@ final class BotHandler
         return $text;
     }
 
-    /** متن خوش‌آمدگویی و راهنمای تکمیل ثبت‌نام ویژه کاربرانی که با لینک دعوت وارد ربات شده‌اند */
     private function referredStartText(array $user, ?CommissionSettings $settings = null): string
     {
         $settings ??= CommissionSettings::current($this->db);
-        $text = ReferralMessageService::renderReferredWelcomeMessage($user, null, $settings, $this->db);
+        $text = ReferralMessageService::renderReferredWelcomeMessage($user, null, $settings, $this->db, $this->platform);
         if (SettingsService::bool('show_rules_in_start', true)) {
             $rules = trim((string) SettingsService::get('start_rules_text', ''));
             if ($rules !== '') {
@@ -364,7 +480,25 @@ final class BotHandler
         return $text;
     }
 
-    /** ارسال دکمه‌های تعاملی برای تکمیل شرایط باقی‌مانده دریافت پاداش دعوت */
+    private function channelJoinUrl(array $channel): ?string
+    {
+        if (!empty($channel['invite_link'])) {
+            return (string) $channel['invite_link'];
+        }
+        $chatId = trim((string) ($channel['chat_id'] ?? ''));
+        $slug = ltrim((string) ($channel['username'] ?? ($chatId !== '' && str_starts_with($chatId, '@') ? $chatId : '')), '@');
+        if ($slug === '') {
+            return null;
+        }
+        $p = strtolower((string) ($channel['platform'] ?? $this->platform));
+        return match ($p) {
+            MessengerCapabilities::BALE   => 'https://ble.ir/' . $slug,
+            MessengerCapabilities::RUBIKA => 'https://rubika.ir/' . $slug,
+            MessengerCapabilities::EITAA  => 'https://eitaa.com/' . $slug,
+            default                       => 'https://t.me/' . $slug,
+        };
+    }
+
     private function sendPendingConditionActions(array $user, int|string $chatId, ?CommissionSettings $settings = null): void
     {
         $settings ??= CommissionSettings::current($this->db);
@@ -374,19 +508,21 @@ final class BotHandler
         }
         $rows = [];
         $membership = new MembershipService($this->db);
+        $supportsCheck = MessengerCapabilities::supports($this->platform, 'channel_check_api');
+
         foreach ($pending as $item) {
             $key = (string) ($item['key'] ?? '');
             if ($key === 'channels') {
-                foreach ($membership->activeChannels() as $channel) {
-                    $url = $channel['invite_link'] ?: (str_starts_with((string) $channel['chat_id'], '@')
-                        ? 'https://t.me/' . ltrim((string) $channel['chat_id'], '@')
-                        : null);
-                    if ($url) {
+                foreach ($membership->activeChannels($this->platform) as $channel) {
+                    $url = $this->channelJoinUrl($channel);
+                    if ($url !== null) {
                         $rows[] = [['text' => '📢 عضویت در ' . $channel['title'], 'url' => $url]];
                     }
                 }
-                $rows[] = [['text' => '✅ بررسی عضویت کانال و فعال‌سازی پاداش', 'callback_data' => 'gate:check']];
-            } elseif ($key === 'phone') {
+                $cb = $supportsCheck ? 'gate:check' : 'gate:self_confirm';
+                $lbl = $supportsCheck ? '✅ بررسی عضویت کانال و فعال‌سازی پاداش' : '✅ عضو شدم — ادامه و فعال‌سازی';
+                $rows[] = [['text' => $lbl, 'callback_data' => $cb]];
+            } elseif ($key === 'phone' && MessengerCapabilities::supports($this->platform, 'request_contact')) {
                 $rows[] = [['text' => '📱 ثبت و تأیید شماره تماس', 'callback_data' => 'qualify:phone']];
             } elseif ($key === 'profile') {
                 $rows[] = [['text' => '✏️ تکمیل نام و نام خانوادگی پروفایل', 'callback_data' => 'qualify:profile']];
@@ -399,17 +535,16 @@ final class BotHandler
         $prompt = $inviteeReward > 0
             ? '👇 برای تکمیل مراحل و دریافت <b>' . wtoman($inviteeReward) . '</b> پاداش خوش‌آمدگویی، از گزینه‌های زیر استفاده کنید:'
             : '👇 برای تکمیل مراحل ثبت‌نام از گزینه‌های زیر استفاده کنید:';
-        $this->tg->sendMessage($chatId, $prompt, [
-            'reply_markup' => TelegramService::inlineKeyboard($rows),
-        ]);
+        $this->driver->sendMessage($chatId, $prompt, ['inline_rows' => $rows]);
     }
 
-    // ------------------------------------------------------------------ گیت‌ها
-    private function passGates(array $user, int|string $chatId): bool
+    // ------------------------------------------------------------------ گیت‌های ورود و شماره تماس
+
+    private function passGates(array $user, int|string $chatId, ?string $externalUserId = null): bool
     {
         $wasVerified = !empty($user['channels_verified']);
         $membership = new MembershipService($this->db);
-        $gate = $membership->gate($user);
+        $gate = $membership->gate($user, $this->platform, $externalUserId);
         if (!$gate['passed']) {
             $this->sendMembershipGate($user, $chatId, $gate);
             return false;
@@ -417,7 +552,7 @@ final class BotHandler
         if (!$wasVerified) {
             $fresh = $this->users->find((int) $user['id']);
             if ($fresh !== null && !empty($fresh['channels_verified'])) {
-                $this->users->maybeQualify($fresh);
+                $this->users->maybeQualify($fresh, false, $this->platform);
                 Notifier::flushDeferred();
             }
         }
@@ -428,12 +563,8 @@ final class BotHandler
     {
         if ($gate['reason'] === 'contact') {
             $text = (string) SettingsService::get('contact_request_message', 'برای ادامه، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید.');
-            $this->tg->sendMessage($chatId, $text, [
-                'reply_markup' => [
-                    'keyboard' => [[['text' => '📱 ارسال شماره تماس', 'request_contact' => true]]],
-                    'resize_keyboard' => true,
-                    'one_time_keyboard' => true,
-                ],
+            $this->driver->sendMessage($chatId, $text, [
+                'reply_rows' => [[['text' => '📱 ارسال شماره تماس', 'request_contact' => true]]],
             ]);
             return;
         }
@@ -441,90 +572,115 @@ final class BotHandler
         if ($gate['reason'] === 'channels') {
             $rows = [];
             foreach ($gate['channels'] as $channel) {
-                $url = $channel['invite_link'] ?: (str_starts_with((string) $channel['chat_id'], '@')
-                    ? 'https://t.me/' . ltrim((string) $channel['chat_id'], '@')
-                    : null);
-                if ($url) {
+                $url = $this->channelJoinUrl($channel);
+                if ($url !== null) {
                     $rows[] = [['text' => '📢 ' . $channel['title'], 'url' => $url]];
                 }
             }
-            $rows[] = [['text' => '✅ بررسی عضویت', 'callback_data' => 'gate:check']];
+            $isSelfConfirm = !empty($gate['self_confirm']);
+            $rows[] = [[
+                'text' => $isSelfConfirm ? '✅ عضو کانال شدم — ادامه' : '✅ بررسی عضویت',
+                'callback_data' => $isSelfConfirm ? 'gate:self_confirm' : 'gate:check',
+            ]];
             $message = (string) SettingsService::get('join_channels_message', 'برای استفاده از ربات ابتدا در کانال‌های زیر عضو شوید:');
             if (!empty($gate['errors'])) {
                 $message .= "\n\n⚠️ " . implode("\n⚠️ ", $gate['errors']);
             }
-            $this->tg->sendMessage($chatId, $message, [
-                'reply_markup' => TelegramService::inlineKeyboard($rows),
-            ]);
-            return;
+            $this->driver->sendMessage($chatId, $message, ['inline_rows' => $rows]);
         }
     }
 
-    private function handleContact(array $user, array $message, int|string $chatId): void
+    private function handleContact(array $user, IncomingUpdate $upd): void
     {
-        $contact = $message['contact'];
+        // در تلگرام و بله تطبیق دقیق contact.user_id با فرستنده الزامی است (ضد ارسال مخاطب دفترچه تلفن)
+        if ($this->platform === MessengerCapabilities::TELEGRAM) {
+            if ($upd->contactUserId === null || $upd->contactUserId === '') {
+                SecurityService::log('contact_without_user_id', 'medium', ['platform' => $this->platform], (int) $user['id']);
+                $this->send($upd->chatId, '❌ لطفاً با دکمهٔ «ارسال شماره تماس» شمارهٔ خودتان را ارسال کنید، نه از دفترچه تلفن.');
+                return;
+            }
+            if ((string) $upd->contactUserId !== (string) $upd->externalUserId) {
+                SecurityService::log('contact_mismatch', 'high', [
+                    'platform' => $this->platform,
+                    'contact_user_id' => $upd->contactUserId,
+                ], (int) $user['id']);
+                $this->send($upd->chatId, '❌ این شماره متعلق به حساب تلگرام شما نیست. لطفاً با دکمه «ارسال شماره تماس» شماره خودتان را ارسال کنید.');
+                return;
+            }
+        } elseif ($this->platform === MessengerCapabilities::BALE && $upd->contactUserId !== null && $upd->contactUserId !== '') {
+            if ((string) $upd->contactUserId !== (string) $upd->externalUserId) {
+                SecurityService::log('contact_mismatch', 'high', ['platform' => 'bale'], (int) $user['id']);
+                $this->send($upd->chatId, '❌ این شماره متعلق به حساب بله شما نیست.');
+                return;
+            }
+        }
 
-        // فقط در چت خصوصی و فقط شمارهٔ خودِ فرستنده
-        $chatType = (string) ($message['chat']['type'] ?? '');
-        if ($chatType !== 'private') {
-            $this->send($chatId, 'ارسال شماره تماس فقط در چت خصوصی با ربات امکان‌پذیر است.');
-            return;
-        }
-        if (empty($contact['user_id'])) {
-            // مخاطبی که با دفترچه تلفن ارسال شده، قابل تطبیق نیست
-            \RB\Services\SecurityService::log('contact_without_user_id', 'medium', [], (int) $user['id']);
-            $this->send($chatId, '❌ لطفاً با دکمهٔ «ارسال شماره تماس» شمارهٔ خودتان را ارسال کنید، نه از دفترچه تلفن.');
-            return;
-        }
-        // تطبیق شماره با شناسه تلگرام فرستنده
-        if ((int) ($contact['user_id'] ?? 0) !== (int) $user['telegram_id']) {
-            \RB\Services\SecurityService::log('contact_mismatch', 'high', [
-                'contact_user_id' => (int) ($contact['user_id'] ?? 0),
-            ], (int) $user['id']);
-            $this->send($chatId, '❌ این شماره متعلق به حساب تلگرام شما نیست. لطفاً با دکمه «ارسال شماره تماس» شماره خودتان را ارسال کنید.');
-            return;
-        }
-        $phone = preg_replace('~[^0-9+]~', '', (string) $contact['phone_number']);
+        $phone = preg_replace('~[^0-9+]~', '', (string) $upd->contactPhone);
         if ($phone === null || strlen($phone) < 8) {
-            $this->send($chatId, 'شماره تماس نامعتبر است.');
+            $this->send($upd->chatId, 'شماره تماس نامعتبر است.');
             return;
         }
         $this->users->setPhone((int) $user['id'], $phone);
         Notifier::flushDeferred();
         $user = $this->users->find((int) $user['id']) ?? $user;
 
-        // اگر پس از ثبت شماره تماس، عضویت اجباری کانال هم فعال باشد، بلافاصله مرحله بعد را نمایش بده
-        $gate = (new MembershipService($this->db))->gate($user);
+        $gate = (new MembershipService($this->db))->gate($user, $this->platform, $upd->externalUserId);
         $user = $this->users->find((int) $user['id']) ?? $user;
         if (!$gate['passed']) {
-            $this->send($chatId, '✅ شماره تماس شما با موفقیت تأیید و ثبت شد. لطفاً مرحله بعدی را تکمیل کنید:');
-            $this->sendMembershipGate($user, $chatId, $gate);
+            $this->send($upd->chatId, '✅ شماره تماس شما با موفقیت تأیید و ثبت شد. لطفاً مرحله بعدی را تکمیل کنید:');
+            $this->sendMembershipGate($user, $upd->chatId, $gate);
             return;
         }
 
-        // اگر کاربر از قبل عضو کانال بوده، gate بالا channels_verified را فعال کرده است؛ شرایط پاداش را دوباره بررسی کن
-        $this->users->maybeQualify($user);
+        $this->users->maybeQualify($user, false, $this->platform);
         Notifier::flushDeferred();
         $user = $this->users->find((int) $user['id']) ?? $user;
 
-        $this->sendMainMenu($user, $chatId, "✅ شماره تماس شما با موفقیت ثبت شد.\n\nاز منوی زیر گزینه مورد نظر را انتخاب کنید:");
+        $this->sendMainMenu($user, $upd->chatId, "✅ شماره تماس شما با موفقیت ثبت شد.\n\nاز منوی زیر گزینه مورد نظر را انتخاب کنید:");
         if (!empty($user['referred_by']) && empty($user['qualified_at'])) {
-            $this->sendPendingConditionActions($user, $chatId);
+            $this->sendPendingConditionActions($user, $upd->chatId);
         }
     }
 
-    // ------------------------------------------------------------------ وضعیت‌ها
-    private function handleStep(array $user, array $session, string $text, array $message, int|string $chatId): bool
+    // ------------------------------------------------------------------ مدیریت نشست و مراحل گفتگو
+
+    private function sessionKey(array $user): int
+    {
+        return (int) $user['telegram_id'];
+    }
+
+    private function getUserSession(array $user): ?array
+    {
+        $key = $this->sessionKey($user);
+        $session = $this->session->get($key);
+        if ($session !== null && (int) ($session['user_id'] ?? 0) !== (int) $user['id']) {
+            $this->session->clear($key);
+            return null;
+        }
+        return $session;
+    }
+
+    private function setUserStep(array $user, string $step, array $payload = [], int $ttl = 900): void
+    {
+        $this->session->setStep($this->sessionKey($user), (int) $user['id'], $step, $payload, $ttl);
+    }
+
+    private function clearUserSession(array $user): void
+    {
+        $this->session->clear($this->sessionKey($user));
+    }
+
+    private function handleStep(array $user, array $session, string $text, int|string $chatId, IncomingUpdate $upd): bool
     {
         $step = (string) $session['step'];
-        $payload = $session['payload'];
+        $payload = (array) ($session['payload'] ?? []);
 
         switch ($step) {
             case 'withdraw_amount':
-                $amount = \RB\Support\Money::parseToman($text);
+                $amount = Money::parseToman($text);
                 $min = (int) ($payload['min'] ?? SettingsService::int('min_withdraw_amount', 30000));
                 if ($amount === null || $amount <= 0) {
-                    $this->send($chatId, '❌ مبلغ نامعتبر است. لطفاً فقط عدد وارد کنید.');
+                    $this->send($chatId, '❌ مبلغ نامعتبر است. لطفاً فقط عدد وارد کنید (یا /cancel برای انصراف).');
                     return true;
                 }
                 if ($amount < $min) {
@@ -535,12 +691,7 @@ final class BotHandler
                     $this->send($chatId, '❌ مبلغ درخواستی بیشتر از موجودی قابل برداشت شما (' . wtoman((int) $user['wallet_balance']) . ') است.');
                     return true;
                 }
-                $this->session->setStep(
-                    (int) $user['telegram_id'],
-                    (int) $user['id'],
-                    'withdraw_card',
-                    ['amount' => $amount, 'min' => $min]
-                );
+                $this->setUserStep($user, 'withdraw_card', ['amount' => $amount, 'min' => $min]);
                 $this->send($chatId, '💳 لطفاً <b>شماره کارت</b> خود را (۱۶ رقم، بدون فاصله) ارسال کنید:');
                 return true;
 
@@ -551,7 +702,7 @@ final class BotHandler
                     $this->send($chatId, '❌ ' . $validation['error']);
                     return true;
                 }
-                $this->session->setStep((int) $user['telegram_id'], (int) $user['id'], 'withdraw_holder', [
+                $this->setUserStep($user, 'withdraw_holder', [
                     'amount' => (int) ($payload['amount'] ?? 0),
                     'card' => $validation['normalized'],
                     'min' => $payload['min'] ?? 0,
@@ -567,15 +718,13 @@ final class BotHandler
                 $service = new WithdrawalService($this->db);
                 try {
                     $request = $service->create((int) $user['id'], (int) $payload['amount'], (string) $payload['card'], trim($text), Request::ip());
-                    $this->session->clear((int) $user['telegram_id']);
+                    $this->clearUserSession($user);
                     $info = $service->statusLabel((string) $request['status']);
-                    $this->tg->sendMessage($chatId, "✅ درخواست برداشت شما ثبت شد.\n\n"
-                        . "مبلغ: <b>" . wtoman((int) $request['amount']) . "</b>\n"
-                        . "کد پیگیری: <code>" . $request['request_code'] . "</code>\n"
-                        . "وضعیت: " . $info . "\n\n"
-                        . "مبلغ تا زمان پردازش در حساب شما رزرو شده است و پس از تأیید مدیریت پرداخت می‌شود.", [
-                            'reply_markup' => TelegramService::replyKeyboard(MenuService::replyKeyboardRows($user)),
-                        ]);
+                    $this->sendMainMenu($user, $chatId, "✅ درخواست برداشت شما ثبت شد.\n\n"
+                        . 'مبلغ: <b>' . wtoman((int) $request['amount']) . "</b>\n"
+                        . 'کد پیگیری: <code>' . $request['request_code'] . "</code>\n"
+                        . 'وضعیت: ' . $info . "\n\n"
+                        . 'مبلغ تا زمان پردازش در حساب شما رزرو شده است و پس از تأیید مدیریت پرداخت می‌شود.');
                 } catch (\Throwable $e) {
                     $this->send($chatId, '❌ ' . $e->getMessage());
                 }
@@ -587,7 +736,7 @@ final class BotHandler
                     return true;
                 }
                 SupportService::create((int) $user['id'], trim($text));
-                $this->session->clear((int) $user['telegram_id']);
+                $this->clearUserSession($user);
                 $this->send($chatId, "✅ پیام شما ثبت شد.\nتیم پشتیبانی در اسرع وقت پاسخ می‌دهد.");
                 return true;
 
@@ -600,33 +749,45 @@ final class BotHandler
                 }
                 $this->users->updateProfile((int) $user['id'], $parts[0], trim($parts[1]));
                 Notifier::flushDeferred();
-                $this->session->clear((int) $user['telegram_id']);
+                $this->clearUserSession($user);
                 $fresh = $this->users->find((int) $user['id']) ?? $user;
                 $this->sendMainMenu($fresh, $chatId, '✅ پروفایل شما (' . e($parts[0] . ' ' . trim($parts[1])) . ') با موفقیت تکمیل و ذخیره شد.');
                 if (!empty($fresh['referred_by']) && empty($fresh['qualified_at'])) {
                     $this->sendPendingConditionActions($fresh, $chatId);
                 }
                 return true;
+
+            case 'enter_link_code':
+                $res = $this->users->redeemLinkToken($text, $this->platform, $upd->userPayload());
+                $this->clearUserSession($user);
+                if ($res['ok'] && isset($res['user'])) {
+                    $this->sendMainMenu($res['user'], $chatId, $res['message']);
+                } else {
+                    $this->send($chatId, '❌ ' . $res['message']);
+                }
+                return true;
         }
         return false;
     }
 
-    // ------------------------------------------------------------------ اکشن‌ها
-    private function dispatchAction(array $user, string $action, int|string $chatId, ?int $messageId = null): void
+    // ------------------------------------------------------------------ اکشن‌های منو
+
+    private function dispatchAction(array $user, string $action, int|string $chatId): void
     {
         switch ($action) {
-            case 'account':    $this->actAccount($user, $chatId); break;
-            case 'invite':     $this->actInvite($user, $chatId); break;
-            case 'referrals':  $this->actReferrals($user, $chatId); break;
-            case 'income':     $this->actIncome($user, $chatId); break;
-            case 'wallet':     $this->actWallet($user, $chatId); break;
-            case 'withdraw':   $this->actWithdraw($user, $chatId); break;
-            case 'history':    $this->actHistory($user, $chatId); break;
-            case 'campaigns':  $this->actCampaigns($user, $chatId); break;
-            case 'ranking':    $this->actRanking($user, $chatId); break;
+            case 'account':       $this->actAccount($user, $chatId); break;
+            case 'invite':        $this->actInvite($user, $chatId); break;
+            case 'referrals':     $this->actReferrals($user, $chatId); break;
+            case 'income':        $this->actIncome($user, $chatId); break;
+            case 'wallet':        $this->actWallet($user, $chatId); break;
+            case 'withdraw':      $this->actWithdraw($user, $chatId); break;
+            case 'history':       $this->actHistory($user, $chatId); break;
+            case 'link_account':  $this->actLinkAccount($user, $chatId); break;
+            case 'campaigns':     $this->actCampaigns($user, $chatId); break;
+            case 'ranking':       $this->actRanking($user, $chatId); break;
             case 'notifications': $this->actNotifications($user, $chatId); break;
-            case 'support':    $this->actSupport($user, $chatId); break;
-            case 'guide':      $this->sendGuide((int) $user['telegram_id'], $chatId); break;
+            case 'support':       $this->actSupport($user, $chatId); break;
+            case 'guide':         $this->sendGuide($chatId); break;
             default:
                 $this->send($chatId, 'این بخش در حال حاضر فعال نیست.');
         }
@@ -635,87 +796,341 @@ final class BotHandler
     private function actAccount(array $user, int|string $chatId): void
     {
         $wallet = (new WalletService($this->db))->summary((int) $user['id']);
-        $text = "👤 <b>حساب کاربری من</b>\n\n"
-            . "نام: " . e(trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')) ?: '—') . "\n"
-            . "شناسه تلگرام: <code>" . (int) $user['telegram_id'] . "</code>\n"
-            . "نام کاربری: " . ($user['username'] ? '@' . e($user['username']) : '—') . "\n"
-            . "کد دعوت: <code>" . e($user['referral_code']) . "</code>\n"
-            . "وضعیت حساب: " . ($user['status'] === 'active' ? '✅ فعال' : ($user['status'] === 'blocked' ? '⛔️ مسدود' : '⚠️ در بررسی')) . "\n"
-            . "تاریخ عضویت: " . fa_date($user['joined_at']) . "\n"
-            . "شماره تماس: " . ($user['phone'] ? e($user['phone']) : 'ثبت نشده') . "\n\n"
-            . "👥 زیرمجموعه مستقیم: " . fa_digits((int) $user['direct_ref_count']) . "\n"
-            . "🌐 کل شبکه: " . fa_digits((int) $user['total_ref_count']) . "\n"
-            . "💰 درآمد کل: " . wtoman($wallet['total_earned']) . "\n"
-            . "👛 موجودی: " . wtoman($wallet['balance']);
-        $this->tg->sendMessage($chatId, $text);
-    }
+        $accounts = $this->users->messengerAccounts((int) $user['id']);
+        $linkedBadges = array_map(static fn(array $a): string => MessengerCapabilities::badge((string) $a['platform']), $accounts);
+        $currentAcc = $this->users->messengerAccountForPlatform((int) $user['id'], $this->platform);
+        $extIdDisplay = $currentAcc['external_user_id'] ?? ((int) $user['telegram_id'] > 0 ? (string) $user['telegram_id'] : '—');
+        $direct = (int) $user['direct_ref_count'];
+        $indirect = max(0, (int) $user['total_ref_count'] - $direct);
 
-    private function actInvite(array $user, int|string $chatId): void
-    {
-        $link = $this->referralLink($user);
-        $settings = CommissionSettings::current($this->db);
-        $text = ReferralMessageService::renderInviteMessage($user, $link, $settings, $this->db);
-        $shareText = ReferralMessageService::renderShareText($user, $link, $settings, $this->db);
-        $share = 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode($shareText);
-        $this->tg->sendMessage($chatId, $text, [
-            'reply_markup' => TelegramService::inlineKeyboard([
-                [['text' => '📤 ارسال و دعوت دوستان', 'url' => $share]],
-                [['text' => '🔄 بروزرسانی لینک و مبالغ', 'callback_data' => 'menu:invite']],
-            ]),
+        $text = "👤 <b>حساب کاربری مرکزی من</b>\n\n"
+            . 'نام: ' . e(trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')) ?: '—') . "\n"
+            . 'پیام‌رسان فعلی: ' . e(MessengerCapabilities::badge($this->platform)) . ' (<code>' . e((string) $extIdDisplay) . "</code>)\n"
+            . 'پیام‌رسان‌های متصل: ' . e($linkedBadges ? implode('، ', $linkedBadges) : MessengerCapabilities::badge($this->platform)) . "\n"
+            . 'نام کاربری: ' . (!empty($user['username']) ? '@' . e((string) $user['username']) : '—') . "\n"
+            . 'کد دعوت یکتا: <code>' . e((string) $user['referral_code']) . "</code>\n"
+            . 'وضعیت حساب: ' . ($user['status'] === 'active' ? '✅ فعال' : ($user['status'] === 'blocked' ? '⛔️ مسدود' : '⚠️ در بررسی')) . "\n"
+            . 'تاریخ عضویت: ' . fa_date($user['joined_at']) . "\n"
+            . 'شماره تماس: ' . (!empty($user['phone']) ? e((string) $user['phone']) : 'ثبت نشده') . "\n\n"
+            . '👥 دعوت مستقیم (لایه ۰): <b>' . fa_digits($direct) . " نفر</b>\n"
+            . '🌐 زیرمجموعه غیرمستقیم (لایه‌های ۱+): <b>' . fa_digits($indirect) . " نفر</b>\n"
+            . '💰 مجموع درآمد: <b>' . wtoman($wallet['total_earned']) . "</b>\n"
+            . '👛 موجودی قابل برداشت: <b>' . wtoman($wallet['balance']) . '</b>';
+
+        $this->driver->sendMessage($chatId, $text, [
+            'inline_rows' => [
+                [['text' => '🔄 اتصال سایر پیام‌رسان‌ها به همین کیف پول', 'callback_data' => 'menu:link_account']],
+            ],
         ]);
     }
 
-    private function actReferrals(array $user, int|string $chatId): void
+    // ------------------------------------------------------------------ استودیو ۴ حالته دعوت دوستان و بنر تبلیغاتی
+
+    private function actInvite(array $user, int|string $chatId, int $msgId = 0): void
     {
-        $direct = $this->users->directReferrals((int) $user['id'], 10);
-        $text = "👥 <b>زیرمجموعه‌های من</b>\n\n"
-            . "زیرمجموعه مستقیم: <b>" . fa_digits((int) $user['direct_ref_count']) . "</b>\n"
-            . "کل شبکه: <b>" . fa_digits((int) $user['total_ref_count']) . "</b>\n\n";
-        if (!$direct) {
-            $text .= "هنوز زیرمجموعه‌ای ندارید.\nلینک دعوت خود را برای دوستانتان بفرستید.";
-        } else {
-            $text .= "<b>۱۰ زیرمجموعه اخیر:</b>\n";
-            foreach ($direct as $ref) {
-                $name = trim(($ref['first_name'] ?? '') . ' ' . ($ref['last_name'] ?? '')) ?: 'کاربر';
-                $text .= '• ' . e($name) . ($ref['username'] ? ' (@' . e($ref['username']) . ')' : '') . ' — ' . fa_date($ref['joined_at'], false) . "\n";
+        $link = $this->referralLink($user, $this->platform);
+        $settings = CommissionSettings::current($this->db);
+        $messages = $this->inviteContent->listMessages(true);
+        $banners = $this->inviteContent->listBanners(true);
+
+        $selected = null;
+        if ($msgId > 0) {
+            foreach ($messages as $m) {
+                if ((int) $m['id'] === $msgId) {
+                    $selected = $m;
+                    break;
+                }
             }
-            $text .= "\nبرای مشاهده جزئیات کامل، به پنل کاربری مراجعه کنید.";
         }
-        $this->tg->sendMessage($chatId, $text, ['reply_markup' => $this->panelButton()]);
+        $selected ??= ($messages[0] ?? null);
+
+        // اگر مدیر در تنظیمات عمومی پیام سفارشی ثبت کرده و کاربر قالب خاصی نخواسته، آن را رعایت کن
+        $customLegacy = trim((string) (SettingsService::get('invite_message_text', '') ?? ''));
+        if ($msgId === 0 && $customLegacy !== '') {
+            $text = ReferralMessageService::renderInviteMessage($user, $link, $settings, $this->db);
+        } elseif ($selected !== null) {
+            $text = $this->inviteContent->renderMessage($selected, $user, $link, $this->platform, true, $settings);
+        } else {
+            $text = ReferralMessageService::renderInviteMessage($user, $link, $settings, $this->db);
+        }
+
+        $rows = [];
+
+        // دکمه اشتراک‌گذاری بومی تلگرام و دکمه کپی لینک (تلگرام و بله)
+        if ($this->platform === MessengerCapabilities::TELEGRAM && str_starts_with($link, 'https://')) {
+            $sharePlain = $selected !== null
+                ? trim(str_replace($link, '', $this->inviteContent->renderMessage($selected, $user, $link, $this->platform, false, $settings)))
+                : ReferralMessageService::renderShareText($user, $link, $settings, $this->db);
+            $shareUrl = 'https://t.me/share/url?url=' . rawurlencode($link) . '&text=' . rawurlencode(mb_substr($sharePlain, 0, 850));
+            $rows[] = [['text' => '📤 ارسال سریع متن دعوت به دوستان', 'url' => $shareUrl]];
+        }
+        if (MessengerCapabilities::supports($this->platform, 'copy_text_button') && str_starts_with($link, 'https://')) {
+            $rows[] = [['text' => '📋 کپی لینک اختصاصی دعوت', 'copy_text' => ['text' => $link]]];
+        }
+
+        // ۴ حالت اشتراک‌گذاری: بنر + کپشن، بنر تکی، تعویض متن آماده، و لینک مستقیم همه پیام‌رسان‌ها
+        if ($banners !== []) {
+            $defBannerId = (int) $banners[0]['id'];
+            $rows[] = [
+                ['text' => '🖼 بنر + کپشن دعوت', 'callback_data' => 'invite:bcap:' . $defBannerId],
+                ['text' => '🎨 بنر تبلیغاتی', 'callback_data' => 'invite:bimg:' . $defBannerId],
+            ];
+        }
+        if (count($messages) > 1) {
+            $nextMsg = $this->nextItem($messages, (int) ($selected['id'] ?? 0));
+            $rows[] = [
+                ['text' => '📝 پیام آماده بعدی (' . fa_digits(count($messages)) . ' قالب)', 'callback_data' => 'invite:msg:' . (int) $nextMsg['id']],
+                ['text' => '🔗 لینک مستقیم پیام‌رسان‌ها', 'callback_data' => 'invite:links'],
+            ];
+        } else {
+            $rows[] = [['text' => '🔗 لینک مستقیم دعوت در پیام‌رسان‌ها', 'callback_data' => 'invite:links']];
+        }
+
+        $this->driver->sendMessage($chatId, $text, ['inline_rows' => $rows]);
     }
 
-    private function actIncome(array $user, int|string $chatId): void
+    /** ارسال بنر تبلیغاتی دعوت (با کپشن کامل یا با لینک کوتاه یکتا) + کش هوشمند file_id */
+    public function sendInviteBannerToUser(array $user, int|string $chatId, int $bannerId = 0, bool $withFullCaption = true): array
+    {
+        $banners = array_values(array_filter(
+            $this->inviteContent->listBanners(true),
+            static fn(array $b): bool => !empty($b['file_exists'])
+        ));
+        if ($banners === []) {
+            $this->send($chatId, 'در حال حاضر بنر تبلیغاتی فعالی تعریف نشده است؛ می‌توانید از پیام‌های آماده دعوت استفاده کنید.');
+            return ['ok' => false, 'error' => 'بنری فعال نیست'];
+        }
+
+        $banner = null;
+        foreach ($banners as $b) {
+            if ((int) $b['id'] === $bannerId) {
+                $banner = $b;
+                break;
+            }
+        }
+        $banner ??= $banners[0];
+
+        $filePath = $this->inviteContent->bannerFilePath($banner);
+        if ($filePath === null) {
+            return ['ok' => false, 'error' => 'فایل بنر یافت نشد'];
+        }
+
+        $link = $this->referralLink($user, $this->platform);
+        $caption = $this->inviteContent->renderBannerCaption($banner, $user, $link, $this->platform, $withFullCaption, true);
+        $cachedFileId = $this->inviteContent->cachedFileId($banner, $this->platform);
+
+        $rows = [];
+        if (MessengerCapabilities::supports($this->platform, 'copy_text_button') && str_starts_with($link, 'https://')) {
+            $rows[] = [['text' => '📋 کپی لینک دعوت', 'copy_text' => ['text' => $link]]];
+        }
+        if (count($banners) > 1) {
+            $next = $this->nextItem($banners, (int) $banner['id']);
+            $modeKey = $withFullCaption ? 'bcap' : 'bimg';
+            $rows[] = [['text' => '🎨 طرح بنر بعدی (' . fa_digits(count($banners)) . ' طرح)', 'callback_data' => 'invite:' . $modeKey . ':' . (int) $next['id']]];
+        }
+        $toggleMode = $withFullCaption ? 'bimg' : 'bcap';
+        $toggleLabel = $withFullCaption ? '🖼 دریافت بدون متن طولانی' : '📝 دریافت با کپشن کامل';
+        $rows[] = [
+            ['text' => $toggleLabel, 'callback_data' => 'invite:' . $toggleMode . ':' . (int) $banner['id']],
+            ['text' => '↩️ پیام‌های دعوت', 'callback_data' => 'menu:invite'],
+        ];
+
+        $res = $this->driver->sendPhoto($chatId, $filePath, $caption, [
+            'file_id' => $cachedFileId,
+            'inline_rows' => $rows,
+        ]);
+
+        // اگر file_id کش‌شده قدیمی بود، بدون کش دوباره بفرست
+        if (empty($res['ok']) && $cachedFileId !== null) {
+            $res = $this->driver->sendPhoto($chatId, $filePath, $caption, ['inline_rows' => $rows]);
+        }
+
+        if (!empty($res['ok'])) {
+            $this->inviteContent->recordShare('banner', (int) $banner['id']);
+            if (!empty($res['file_id']) && $res['file_id'] !== $cachedFileId) {
+                $this->inviteContent->rememberFileId((int) $banner['id'], $this->platform, (string) $res['file_id']);
+            }
+        }
+        return $res;
+    }
+
+    /** نمایش لینک‌های مستقیم و یکتای دعوت کاربر در تمام پیام‌رسان‌های فعال */
+    private function actInviteLinks(array $user, int|string $chatId): void
+    {
+        $code = (string) $user['referral_code'];
+        $links = $this->registry->allReferralLinksForCode($code, true, $this->platform);
+        $landing = $this->registry->buildLandingLink($code, $this->platform);
+
+        $lines = [
+            "🔗 <b>لینک‌های اختصاصی و یکتای دعوت شما</b>",
+            '🔑 کد معرفی مشترک در همه پیام‌رسان‌ها: <code>' . e($code) . '</code>',
+            '',
+        ];
+        foreach ($links as $item) {
+            $lines[] = $item['icon'] . ' <b>' . e($item['name']) . ':</b>';
+            $lines[] = '<code>' . e($item['link']) . '</code>';
+            $lines[] = '';
+        }
+        $lines[] = '🌐 <b>لینک هوشمند انتخاب پیام‌رسان (مناسب بیو و استوری):</b>';
+        $lines[] = '<code>' . e($landing) . '</code>';
+        $lines[] = "\n💡 هر دوستی با هر کدام از لینک‌های بالا عضو شود، پاداش آن مستقیماً به کیف پول واحد شما واریز می‌گردد.";
+
+        $rows = [];
+        $primary = $links[$this->platform]['link'] ?? $landing;
+        if (MessengerCapabilities::supports($this->platform, 'copy_text_button') && str_starts_with($primary, 'https://')) {
+            $rows[] = [['text' => '📋 کپی لینک ' . MessengerCapabilities::label($this->platform), 'copy_text' => ['text' => $primary]]];
+        }
+        $rows[] = [['text' => '↩️ بازگشت به پیام و بنر دعوت', 'callback_data' => 'menu:invite']];
+
+        $this->driver->sendMessage($chatId, implode("\n", $lines), ['inline_rows' => $rows]);
+    }
+
+    private function nextItem(array $items, int $currentId): array
+    {
+        $count = count($items);
+        for ($i = 0; $i < $count; $i++) {
+            if ((int) $items[$i]['id'] === $currentId) {
+                return $items[($i + 1) % $count];
+            }
+        }
+        return $items[0];
+    }
+
+    // ------------------------------------------------------------------ اتصال امن بین پیام‌رسان‌ها
+
+    private function actLinkAccount(array $user, int|string $chatId, bool $generateNow = false): void
+    {
+        $accounts = $this->users->messengerAccounts((int) $user['id']);
+        $lines = ["🔄 <b>اتصال امن حساب در پیام‌رسان‌ها</b>\n"];
+        $lines[] = 'حساب‌های متصل به کیف پول شما:';
+        foreach ($accounts as $acc) {
+            $lines[] = '• ' . MessengerCapabilities::badge((string) $acc['platform']) . ' — <code>' . e((string) $acc['external_user_id']) . '</code> ✅';
+        }
+        $lines[] = '';
+
+        $rows = [];
+        if ($generateNow) {
+            $tok = $this->users->createLinkToken((int) $user['id'], 900);
+            $lines[] = '🔐 <b>کد اتصال یک‌بارمصرف شما (معتبر تا ۱۵ دقیقه):</b>';
+            $lines[] = '<code>' . e($tok['code']) . '</code>';
+            $lines[] = '';
+            $lines[] = "برای اتصال حساب خود در پیام‌رسان دیگر (مثلاً تلگرام، بله، روبیکا یا ایتا)، ربات ما را در آن پیام‌رسان باز کرده و دستور زیر را ارسال کنید (یا در برنامک ایتا وارد نمایید):";
+            $lines[] = '<code>/link ' . e($tok['code']) . '</code>';
+            $lines[] = "\n⚠️ این کد محرمانه است و هرگز آن را در اختیار دیگران قرار ندهید.";
+
+            if (MessengerCapabilities::supports($this->platform, 'copy_text_button')) {
+                $rows[] = [['text' => '📋 کپی کد اتصال', 'copy_text' => ['text' => $tok['code']]]];
+            }
+        } else {
+            $lines[] = 'اگر در پیام‌رسان‌های دیگر هم عضو ربات هستید، می‌توانید با کد تأیید یک‌بارمصرف آن‌ها را به همین کیف پول و کد دعوت یکتا متصل کنید.';
+            $rows[] = [['text' => '🔑 دریافت کد اتصال یک‌بارمصرف', 'callback_data' => 'link:gen']];
+        }
+        $rows[] = [['text' => '📥 ثبت کد دریافت‌شده از پیام‌رسان دیگر', 'callback_data' => 'link:enter']];
+
+        $this->driver->sendMessage($chatId, implode("\n", $lines), ['inline_rows' => $rows]);
+    }
+
+    // ------------------------------------------------------------------ زیرمجموعه‌ها و درآمد لایه‌ای شفاف
+
+    private function actReferrals(array $user, int|string $chatId): void
+    {
+        $byLayer = $this->users->downlineByLayer((int) $user['id'], 8, 200);
+        $directCount = (int) ($byLayer[0]['count'] ?? $user['direct_ref_count']);
+        $indirectCount = 0;
+        foreach ($byLayer as $lk => $info) {
+            if ($lk >= 1) {
+                $indirectCount += (int) $info['count'];
+            }
+        }
+
+        $text = "👥 <b>زیرمجموعه‌های من (به تفکیک لایه)</b>\n\n"
+            . '• لایه ۰ (دعوت مستقیم): <b>' . fa_digits($directCount) . " نفر</b>\n"
+            . '• لایه‌های ۱+ (غیرمستقیم): <b>' . fa_digits($indirectCount) . " نفر</b>\n"
+            . '• کل شبکه شما: <b>' . fa_digits($directCount + $indirectCount) . " نفر</b>\n";
+
+        if ($byLayer !== []) {
+            $text .= "\n📊 <b>آمار هر لایه:</b>\n";
+            foreach ($byLayer as $lk => $info) {
+                $text .= '▫️ ' . $info['label'] . ': <b>' . fa_digits($info['count']) . ' نفر</b>'
+                    . ($info['earned'] > 0 ? ' — ' . wtoman($info['earned']) : '') . "\n";
+            }
+        }
+
+        $direct = $this->users->directReferrals((int) $user['id'], 8);
+        if (!$direct) {
+            $text .= "\nهنوز دعوت مستقیمی ثبت نشده است؛ از بخش «دعوت و بنر تبلیغاتی» لینک خود را برای دوستانتان بفرستید.";
+        } else {
+            $text .= "\n<b>آخرین دعوت‌های مستقیم (لایه ۰):</b>\n";
+            foreach ($direct as $ref) {
+                $name = trim(($ref['first_name'] ?? '') . ' ' . ($ref['last_name'] ?? '')) ?: 'کاربر';
+                $pIcon = MessengerCapabilities::icon((string) ($ref['entry_platform'] ?? 'telegram'));
+                $qMark = !empty($ref['qualified_at']) ? '✅' : '⏳';
+                $text .= $qMark . ' ' . $pIcon . ' ' . e($name) . ' — ' . fa_date($ref['joined_at'], false) . "\n";
+            }
+        }
+
+        $this->driver->sendMessage($chatId, $text, ['inline_rows' => $this->panelInlineRows()]);
+    }
+
+    public function actIncome(array $user, int|string $chatId): void
     {
         $wallet = (new WalletService($this->db))->summary((int) $user['id']);
-        $welcomeLine = ($wallet['welcome_earned'] ?? 0) > 0 || CommissionSettings::current($this->db)->inviteeEnabled
-            ? "پاداش خوش‌آمدگویی دعوت: " . wtoman((int) ($wallet['welcome_earned'] ?? 0)) . "\n"
-            : '';
-        $text = "💰 <b>درآمد من</b>\n\n"
-            . "پاداش معرفی مستقیم: " . wtoman($wallet['direct_earned']) . "\n"
-            . $welcomeLine
-            . "پورسانت لایه‌ای: " . wtoman($wallet['layer_earned']) . "\n"
-            . "جایزه کمپین‌ها: " . wtoman($wallet['campaign_earned']) . "\n"
-            . "─────────────────\n"
-            . "مجموع درآمد: <b>" . wtoman($wallet['total_earned']) . "</b>\n"
-            . "موجودی قابل برداشت: <b>" . wtoman($wallet['balance']) . "</b>\n"
-            . "در انتظار پرداخت: " . wtoman($wallet['pending']);
-        $this->tg->sendMessage($chatId, $text, ['reply_markup' => $this->panelButton()]);
+        $summary = $this->users->layerEarningsSummary((int) $user['id']);
+
+        $lines = ["💰 <b>گزارش شفاف درآمد من</b>\n"];
+        $lines[] = '• پاداش دعوت مستقیم (لایه ۰): <b>' . wtoman($wallet['direct_earned']) . '</b>';
+        if (($wallet['welcome_earned'] ?? 0) > 0 || CommissionSettings::current($this->db)->inviteeEnabled) {
+            $lines[] = '• پاداش خوش‌آمدگویی ورود: <b>' . wtoman((int) ($wallet['welcome_earned'] ?? 0)) . '</b>';
+        }
+        $lines[] = '• درآمد لایه‌های غیرمستقیم (لایه ۱+): <b>' . wtoman($wallet['layer_earned']) . '</b>';
+        if ((int) ($wallet['campaign_earned'] ?? 0) > 0) {
+            $lines[] = '• جوایز جشنواره‌ها: <b>' . wtoman((int) $wallet['campaign_earned']) . '</b>';
+        }
+
+        // تفکیک لایه‌های ۱ به بالا در صورت داشتن درآمد یا عضو
+        $indirectLayers = array_filter($summary['layers'], static fn(array $l): bool => $l['layer'] >= 1 && ($l['total_amount'] > 0 || $l['users_count'] > 0));
+        if ($indirectLayers !== []) {
+            $lines[] = "\n📈 <b>تفکیک لایه‌های غیرمستقیم:</b>";
+            foreach ($indirectLayers as $l) {
+                $lines[] = '  ▫️ لایه ' . fa_digits($l['layer']) . ': ' . wtoman($l['paid_amount'])
+                    . ' (' . fa_digits($l['users_count']) . ' نفر)'
+                    . ($l['pending_amount'] > 0 ? ' + ' . wtoman($l['pending_amount']) . ' در انتظار' : '');
+            }
+        }
+
+        // تفکیک پیام‌رسان‌ها در صورت فعالیت چندپیام‌رسانی
+        if (count($summary['by_platform']) > 1) {
+            $lines[] = "\n💬 <b>درآمد به تفکیک پیام‌رسان:</b>";
+            foreach ($summary['by_platform'] as $bp) {
+                $lines[] = '  ' . $bp['icon'] . ' ' . e($bp['name']) . ': ' . wtoman($bp['paid_amount']);
+            }
+        }
+
+        $lines[] = '─────────────────';
+        $lines[] = 'مجموع درآمد واریزشده: <b>' . wtoman($wallet['total_earned']) . '</b>';
+        if ($summary['total_pending'] > 0) {
+            $lines[] = 'پورسانت در انتظار تأیید: ' . wtoman($summary['total_pending']);
+        }
+        $lines[] = 'موجودی قابل برداشت: <b>' . wtoman($wallet['balance']) . '</b>';
+        $lines[] = 'برداشت در انتظار پرداخت: ' . wtoman($wallet['pending']);
+
+        $this->driver->sendMessage($chatId, implode("\n", $lines), ['inline_rows' => $this->panelInlineRows()]);
     }
 
     private function actWallet(array $user, int|string $chatId): void
     {
         $wallet = (new WalletService($this->db))->summary((int) $user['id']);
-        $text = "👛 <b>کیف پول</b>\n\n"
-            . "موجودی قابل برداشت: <b>" . wtoman($wallet['balance']) . "</b>\n"
-            . "در انتظار پرداخت: " . wtoman($wallet['pending']) . "\n"
-            . "مجموع دریافتی: " . wtoman($wallet['total_earned']) . "\n"
-            . "مجموع برداشت‌ها: " . wtoman($wallet['total_withdrawn']) . "\n"
-            . "حداقل مبلغ برداشت: " . wtoman(SettingsService::int('min_withdraw_amount', 30000));
-        $this->tg->sendMessage($chatId, $text, [
-            'reply_markup' => TelegramService::inlineKeyboard([
+        $text = "👛 <b>کیف پول مرکزی</b>\n\n"
+            . 'موجودی قابل برداشت: <b>' . wtoman($wallet['balance']) . "</b>\n"
+            . 'در انتظار پرداخت: ' . wtoman($wallet['pending']) . "\n"
+            . 'مجموع دریافتی: ' . wtoman($wallet['total_earned']) . "\n"
+            . 'مجموع برداشت‌ها: ' . wtoman($wallet['total_withdrawn']) . "\n"
+            . 'حداقل مبلغ برداشت: ' . wtoman(SettingsService::int('min_withdraw_amount', 30000));
+        $this->driver->sendMessage($chatId, $text, [
+            'inline_rows' => [
                 [['text' => '🏦 درخواست برداشت', 'callback_data' => 'menu:withdraw']],
                 [['text' => '🧾 تاریخچه تراکنش‌ها', 'callback_data' => 'menu:history']],
-            ]),
+            ],
         ]);
     }
 
@@ -729,17 +1144,17 @@ final class BotHandler
         }
         if ($balance < $min) {
             $this->send($chatId, "❗️ موجودی شما برای برداشت کافی نیست.\n\n"
-                . "موجودی فعلی: " . wtoman($balance) . "\n"
-                . "حداقل مبلغ برداشت: " . wtoman($min) . "\n\n"
-                . "با دعوت دوستان بیشتر، موجودی خود را افزایش دهید.");
+                . 'موجودی فعلی: ' . wtoman($balance) . "\n"
+                . 'حداقل مبلغ برداشت: ' . wtoman($min) . "\n\n"
+                . 'با دعوت دوستان بیشتر، موجودی خود را افزایش دهید.');
             return;
         }
-        $this->session->setStep((int) $user['telegram_id'], (int) $user['id'], 'withdraw_amount', ['min' => $min]);
-        $this->tg->sendMessage($chatId, "🏦 <b>درخواست برداشت</b>\n\n"
-            . "موجودی قابل برداشت: " . wtoman($balance) . "\n"
-            . "حداقل مبلغ: " . wtoman($min) . "\n\n"
-            . "لطفاً مبلغ مورد نظر را <b>فقط به عدد (تومان)</b> ارسال کنید:", [
-                'reply_markup' => ['remove_keyboard' => true],
+        $this->setUserStep($user, 'withdraw_amount', ['min' => $min]);
+        $this->driver->sendMessage($chatId, "🏦 <b>درخواست برداشت</b>\n\n"
+            . 'موجودی قابل برداشت: ' . wtoman($balance) . "\n"
+            . 'حداقل مبلغ: ' . wtoman($min) . "\n\n"
+            . "لطفاً مبلغ مورد نظر را <b>فقط به عدد (تومان)</b> ارسال کنید:\n<i>(برای انصراف /cancel را ارسال کنید)</i>", [
+                'remove_keyboard' => true,
             ]);
     }
 
@@ -756,7 +1171,7 @@ final class BotHandler
                     . "\n   " . fa_date($row['created_at']) . ' | ' . TransactionLabels::status((string) $row['status']) . "\n";
             }
         }
-        $this->tg->sendMessage($chatId, $text, ['reply_markup' => $this->panelButton()]);
+        $this->driver->sendMessage($chatId, $text, ['inline_rows' => $this->panelInlineRows()]);
     }
 
     private function actCampaigns(array $user, int|string $chatId): void
@@ -775,27 +1190,27 @@ final class BotHandler
                     . 'پایان: ' . fa_date($campaign['ends_at'], false) . "\n\n";
             }
         }
-        $this->tg->sendMessage($chatId, $text);
+        $this->driver->sendMessage($chatId, $text);
     }
 
     private function actRanking(array $user, int|string $chatId): void
     {
-        if (!\RB\Services\RankingService::enabled()) {
+        if (!RankingService::enabled()) {
             $this->send($chatId, 'بخش رتبه‌بندی در حال حاضر غیرفعال است.');
             return;
         }
-        $top = \RB\Services\RankingService::top(10);
-        $rank = \RB\Services\RankingService::rankOf((int) $user['id']);
-        $text = "🏆 <b>رتبه‌بندی کاربران</b>\n\n";
+        $top = RankingService::top(10);
+        $rank = RankingService::rankOf((int) $user['id']);
+        $text = "🏆 <b>رتبه‌بندی برترین دعوت‌کنندگان</b>\n\n";
         $i = 1;
         foreach ($top as $row) {
             $name = trim(($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? '')) ?: 'کاربر';
             $text .= fa_digits($i++) . '. ' . e(mb_substr($name, 0, 20)) . ' — ' . fa_digits((int) $row['direct_ref_count']) . " معرفی\n";
         }
         if ($rank !== null) {
-            $text .= "\n📍 رتبه شما: <b>" . fa_digits($rank) . " از " . fa_digits(\RB\Services\RankingService::totalParticipants()) . "</b>";
+            $text .= "\n📍 رتبه شما: <b>" . fa_digits($rank) . ' از ' . fa_digits(RankingService::totalParticipants()) . '</b>';
         }
-        $this->tg->sendMessage($chatId, $text);
+        $this->driver->sendMessage($chatId, $text);
     }
 
     private function actNotifications(array $user, int|string $chatId): void
@@ -812,96 +1227,103 @@ final class BotHandler
                 $text .= '• <b>' . e($row['title']) . "</b>\n   " . fa_date($row['created_at']) . "\n" . mb_substr(strip_tags((string) $row['body']), 0, 160) . "\n\n";
             }
         }
-        $this->tg->sendMessage($chatId, $text);
+        $this->driver->sendMessage($chatId, $text);
     }
 
     private function actSupport(array $user, int|string $chatId): void
     {
-        $this->session->setStep((int) $user['telegram_id'], (int) $user['id'], 'support_message');
+        $this->setUserStep($user, 'support_message');
         $this->send($chatId, "☎️ <b>پشتیبانی</b>\n\nلطفاً پیام یا سؤال خود را در یک پیام ارسال کنید. تیم پشتیبانی پاسخ خواهد داد.");
     }
 
-    private function sendGuide(int $telegramId, int|string $chatId): void
+    private function sendGuide(int|string $chatId): void
     {
-        $text = (string) SettingsService::get('guide_text', "📖 <b>راهنمای استفاده</b>\n\n"
-            . "۱) لینک دعوت خود را از بخش «لینک دعوت من» کپی کنید.\n"
-            . "۲) آن را برای دوستانتان ارسال کنید.\n"
-            . "۳) پس از عضویت و واجد شرایط شدن هر نفر، پاداش به کیف پول شما اضافه می‌شود.\n"
-            . "۴) پورسانت لایه‌ای از فعالیت زیرمجموعه‌های سطوح بالاتر نیز به شما تعلق می‌گیرد.\n"
-            . "۵) از بخش «برداشت وجه» می‌توانید درخواست برداشت ثبت کنید.\n\n"
-            . "برای مشاهده پنل کامل، دکمه زیر را بزنید.");
-        $this->tg->sendMessage($chatId, $text, ['reply_markup' => $this->panelButton()]);
+        $text = (string) SettingsService::get('guide_text', "📖 <b>راهنمای کسب درآمد</b>\n\n"
+            . "۱) از بخش «دعوت و بنر تبلیغاتی»، متن آماده، بنر گرافیکی یا لینک اختصاصی خود را دریافت کنید.\n"
+            . "۲) آن را در تلگرام، بله، روبیکا یا ایتا برای دوستانتان بفرستید.\n"
+            . "۳) به ازای هر دعوت مستقیم (لایه ۰) پاداش ثابت نقدی به کیف پول شما واریز می‌شود.\n"
+            . "۴) وقتی دوستان شما دیگران را دعوت کنند، پورسانت لایه‌های غیرمستقیم (لایه ۱ به بعد) نیز دریافت می‌کنید.\n"
+            . "۵) از بخش «درخواست برداشت» موجودی کیف پول خود را تسویه نمایید.");
+        $this->driver->sendMessage($chatId, $text, ['inline_rows' => $this->panelInlineRows()]);
     }
 
     private function sendMainMenu(array $user, int|string $chatId, string $text): void
     {
-        $this->tg->sendMessage($chatId, $text, [
-            'reply_markup' => TelegramService::replyKeyboard(MenuService::replyKeyboardRows($user)),
-        ]);
+        $rows = MenuService::replyKeyboardRows($user, $this->platform);
+        $opts = $rows !== [] ? ['reply_rows' => $rows] : [];
+        $this->driver->sendMessage($chatId, $text, $opts);
     }
 
-    /**
-     * دکمه «پنل کاربری».
-     *
-     * ⚠️ تلگرام دکمه‌ی web_app را فقط با https می‌پذیرد؛ اگر آدرس Mini App روی http
-     * باشد (نصب روی هاست بدون SSL)، فرستادن چنین دکمه‌ای باعث می‌شود تلگرام کل پیام
-     * را با خطای 400 رد کند و کاربر هیچ پاسخی نمی‌گیرد. پس در این حالت دکمه‌ی
-     * معمولی url فرستاده می‌شود که هم روی http کار می‌کند و هم پیام را خراب نمی‌کند.
-     */
-    private function panelButton(): array
+    /** دکمه شیشه‌ای باز کردن Mini App با رعایت کامل قابلیت واقعی پیام‌رسان و حالت نمایش */
+    private function panelInlineRows(): array
     {
+        if (!MessengerCapabilities::supports($this->platform, 'miniapp')) {
+            return [];
+        }
         $mode = (string) (SettingsService::get('miniapp_mode', 'auto') ?? 'auto');
-        $uiMode = (string) (SettingsService::get('bot_ui_mode', '') ?? '');
+        $uiMode = SettingsService::normalizeUiMode((string) (SettingsService::get('bot_ui_mode', 'hybrid') ?? 'hybrid'));
         if ($mode === 'off' || $uiMode === 'buttons') {
-            return TelegramService::inlineKeyboard([]);
+            return [];
         }
-        $base = (string) (SettingsService::get('miniapp_url', '') ?: '');
+        $base = trim((string) (SettingsService::get('miniapp_url', '') ?: ''));
         if ($base === '') {
-            return TelegramService::inlineKeyboard([]);
+            return [];
         }
-        // web_app فقط با https؛ روی http دکمه‌ی url معمولی تا پیام رد نشود
-        $isHttps = str_starts_with($base, 'https://');
-        $button = ['text' => $isHttps ? '📱 باز کردن پنل کاربری' : '🌐 باز کردن پنل در مرورگر'];
+        $isHttps = str_starts_with(strtolower($base), 'https://');
         if ($isHttps) {
-            $button['web_app'] = ['url' => $base];
-        } else {
-            $button['url'] = $base;
+            $appUrl = $this->driver->buildMiniAppUrl($base);
+            return $appUrl !== '' ? [[['text' => '📱 باز کردن پنل کاربری', 'web_app' => ['url' => $appUrl]]]] : [];
         }
-        return TelegramService::inlineKeyboard([[$button]]);
+        // روی HTTP غیر امن برای جلوگیری از خطای 400 تلگرام، فقط دکمه url وب نمایش داده می‌شود
+        if ($this->platform === MessengerCapabilities::TELEGRAM) {
+            return [[['text' => '🌐 باز کردن پنل در مرورگر', 'url' => $base]]];
+        }
+        return [];
     }
 
-    // ------------------------------------------------------------------ کال‌بک‌ها
-    private function dispatchCallback(array $callback): void
+    // ------------------------------------------------------------------ کال‌بک‌های شیشه‌ای
+
+    private function dispatchCallbackUpdate(IncomingUpdate $upd): void
     {
-        $callbackId = (string) ($callback['id'] ?? '');
-        $data = (string) ($callback['data'] ?? '');
-        $from = $callback['from'] ?? [];
-        $telegramId = (int) ($from['id'] ?? 0);
-        $message = $callback['message'] ?? [];
-        $chatId = $message['chat']['id'] ?? null;
+        $callbackId = (string) ($upd->callbackId ?? '');
+        $data = (string) ($upd->callbackData ?? '');
+        $chatId = $upd->chatId;
 
-        $user = $this->users->findByTelegramId($telegramId);
+        $user = $this->users->findByMessenger($this->platform, $upd->externalUserId);
         if ($user === null) {
-            $this->tg->answerCallbackQuery($callbackId, 'ابتدا /start را بزنید.', true);
+            $this->driver->answerCallback($callbackId, 'ابتدا /start را بزنید.', true);
             return;
         }
-        if ($user['status'] === 'blocked') {
-            $this->tg->answerCallbackQuery($callbackId, 'حساب شما مسدود است.', true);
+        if (($user['status'] ?? 'active') === 'blocked') {
+            $this->driver->answerCallback($callbackId, 'حساب شما مسدود است.', true);
             return;
         }
 
+        // تأیید تعاملی عضویت کانال در پیام‌رسان‌های فاقد getChatMember (مانند روبیکا)
+        if ($data === 'gate:self_confirm') {
+            $this->users->markChannelsVerified((int) $user['id']);
+            Notifier::flushDeferred();
+            $updated = $this->users->find((int) $user['id']) ?? $user;
+            $this->driver->answerCallback($callbackId, '✅ ثبت شد.');
+            $this->sendMainMenu($updated, $chatId, '✅ عضویت شما ثبت شد. اکنون می‌توانید از تمام امکانات ربات استفاده کنید.');
+            if (!empty($updated['referred_by']) && empty($updated['qualified_at'])) {
+                $this->sendPendingConditionActions($updated, $chatId);
+            }
+            return;
+        }
+
+        // بررسی خودکار عضویت کانال (تلگرام و بله)
         if ($data === 'gate:check') {
             $membership = new MembershipService($this->db);
-            $gate = $membership->gate($user);
+            $gate = $membership->gate($user, $this->platform, $upd->externalUserId);
 
-            // حتی اگر force_channel_membership خاموش ولی شرط channels در پورسانت فعال باشد، کانال‌های فعال را بررسی کن
             if ($gate['passed'] && empty($user['channels_verified']) && !$membership->enforcementEnabled()) {
-                $activeChannels = $membership->activeChannels();
-                if ($activeChannels !== [] && $this->tg->isConfigured()) {
+                $activeChannels = $membership->activeChannels($this->platform);
+                if ($activeChannels !== [] && $this->driver->isConfigured() && $this->driver->supports('channel_check_api')) {
                     $notJoined = [];
                     $apiErrors = [];
                     foreach ($activeChannels as $ch) {
-                        $chk = $this->tg->checkMembership($ch, (int) $user['telegram_id']);
+                        $chk = $this->driver->checkChannelMembership($ch, $upd->externalUserId);
                         if (!$chk['ok']) {
                             $apiErrors[] = $ch['title'];
                             continue;
@@ -915,74 +1337,97 @@ final class BotHandler
                     } elseif ($apiErrors === []) {
                         $this->db->update('users', ['channels_verified' => 1, 'updated_at' => now()], 'id = :id', ['id' => (int) $user['id']]);
                     }
-                } elseif ($activeChannels === []) {
+                } elseif ($activeChannels === [] || !$this->driver->supports('channel_check_api')) {
                     $this->db->update('users', ['channels_verified' => 1, 'updated_at' => now()], 'id = :id', ['id' => (int) $user['id']]);
                 }
             }
 
             if ($gate['passed']) {
                 $fresh = $this->users->find((int) $user['id']) ?? $user;
-                $this->users->maybeQualify($fresh);
+                $this->users->maybeQualify($fresh, false, $this->platform);
                 Notifier::flushDeferred();
                 $updated = $this->users->find((int) $user['id']) ?? $fresh;
-                $this->tg->answerCallbackQuery($callbackId, '✅ عضویت تأیید شد.');
-                if ($chatId !== null) {
-                    $this->sendMainMenu($updated, $chatId, '✅ عضویت شما در کانال‌ها تأیید شد. اکنون می‌توانید از تمامی امکانات ربات استفاده کنید.');
-                    if (!empty($updated['referred_by']) && empty($updated['qualified_at'])) {
-                        $this->sendPendingConditionActions($updated, $chatId);
-                    }
+                $this->driver->answerCallback($callbackId, '✅ عضویت تأیید شد.');
+                $this->sendMainMenu($updated, $chatId, '✅ عضویت شما در کانال‌ها تأیید شد. اکنون می‌توانید از تمامی امکانات ربات استفاده کنید.');
+                if (!empty($updated['referred_by']) && empty($updated['qualified_at'])) {
+                    $this->sendPendingConditionActions($updated, $chatId);
                 }
             } elseif (($gate['reason'] ?? '') === 'contact') {
-                $this->tg->answerCallbackQuery($callbackId, '📱 ابتدا شماره تماس خود را ارسال کنید.', true);
-                if ($chatId !== null) {
-                    $this->sendMembershipGate($user, $chatId, $gate);
-                }
+                $this->driver->answerCallback($callbackId, '📱 ابتدا شماره تماس خود را ارسال کنید.', true);
+                $this->sendMembershipGate($user, $chatId, $gate);
             } else {
-                $this->tg->answerCallbackQuery($callbackId, '❌ هنوز عضو همه کانال‌های اجباری نیستید.', true);
+                $this->driver->answerCallback($callbackId, '❌ هنوز عضو همه کانال‌های اجباری نیستید.', true);
             }
             return;
         }
 
         if ($data === 'qualify:phone') {
-            $this->tg->answerCallbackQuery($callbackId, '');
-            if ($chatId !== null) {
-                $text = (string) SettingsService::get('contact_request_message', 'برای تکمیل ثبت‌نام و فعال‌سازی پاداش، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید:');
-                $this->tg->sendMessage($chatId, $text, [
-                    'reply_markup' => [
-                        'keyboard' => [[['text' => '📱 ارسال شماره تماس', 'request_contact' => true]]],
-                        'resize_keyboard' => true,
-                        'one_time_keyboard' => true,
-                    ],
-                ]);
-            }
+            $this->driver->answerCallback($callbackId, '');
+            $text = (string) SettingsService::get('contact_request_message', 'برای تکمیل ثبت‌نام و فعال‌سازی پاداش، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید:');
+            $this->driver->sendMessage($chatId, $text, [
+                'reply_rows' => [[['text' => '📱 ارسال شماره تماس', 'request_contact' => true]]],
+            ]);
             return;
         }
 
         if ($data === 'qualify:profile') {
-            $this->tg->answerCallbackQuery($callbackId, '');
-            if ($chatId !== null) {
-                $this->session->setStep((int) $user['telegram_id'], (int) $user['id'], 'complete_profile_name', []);
-                $this->send($chatId, "✏️ لطفاً <b>نام و نام خانوادگی</b> خود را با یک فاصله ارسال کنید (مثال: <code>علی رضایی</code>):\n\n<i>برای انصراف /cancel را بفرستید.</i>");
+            $this->driver->answerCallback($callbackId, '');
+            $this->setUserStep($user, 'complete_profile_name', []);
+            $this->send($chatId, "✏️ لطفاً <b>نام و نام خانوادگی</b> خود را با یک فاصله ارسال کنید (مثال: <code>علی رضایی</code>):\n\n<i>برای انصراف /cancel را بفرستید.</i>");
+            return;
+        }
+
+        // کال‌بک‌های استودیو دعوت (متن، بنر، بنر+کپشن، لینک مستقیم)
+        if (str_starts_with($data, 'invite:')) {
+            $this->driver->answerCallback($callbackId, '');
+            if (!$this->passGates($user, $chatId, $upd->externalUserId)) {
+                return;
             }
+            $parts = explode(':', $data, 3);
+            $sub = $parts[1] ?? '';
+            $idArg = isset($parts[2]) ? (int) $parts[2] : 0;
+            if ($sub === 'msg') {
+                $this->inviteContent->recordShare('message', $idArg);
+                $this->actInvite($user, $chatId, $idArg);
+            } elseif ($sub === 'bcap') {
+                $this->sendInviteBannerToUser($user, $chatId, $idArg, true);
+            } elseif ($sub === 'bimg') {
+                $this->sendInviteBannerToUser($user, $chatId, $idArg, false);
+            } elseif ($sub === 'links') {
+                $this->actInviteLinks($user, $chatId);
+            }
+            return;
+        }
+
+        // کال‌بک‌های اتصال امن حساب بین پیام‌رسان‌ها
+        if ($data === 'link:gen') {
+            $this->driver->answerCallback($callbackId, '🔑 کد اتصال ساخته شد.');
+            $this->actLinkAccount($user, $chatId, true);
+            return;
+        }
+        if ($data === 'link:enter') {
+            $this->driver->answerCallback($callbackId, '');
+            $this->setUserStep($user, 'enter_link_code', []);
+            $this->send($chatId, "📥 لطفاً کد اتصال ۱۲ کاراکتری دریافت‌شده از پیام‌رسان دیگر خود را ارسال کنید (مثال: <code>LNK-A1B2C3D4E5F6</code>):\n\n<i>برای انصراف /cancel را بفرستید.</i>");
             return;
         }
 
         if (str_starts_with($data, 'menu:')) {
             $action = substr($data, 5);
-            $this->tg->answerCallbackQuery($callbackId, '');
-            if (!$this->passGates($user, $chatId ?? $telegramId)) {
+            $this->driver->answerCallback($callbackId, '');
+            if (!$this->passGates($user, $chatId, $upd->externalUserId)) {
                 return;
             }
-            $this->dispatchAction($user, $action, $chatId ?? $telegramId);
+            $this->dispatchAction($user, $action, $chatId);
             return;
         }
 
-        if ($data === 'admin:panel' || $data === 'admin:stats') {
-            $this->handleAdminCallback($callbackId, $data, $user, $chatId ?? $telegramId);
+        if (($data === 'admin:panel' || $data === 'admin:stats') && $this->platform === MessengerCapabilities::TELEGRAM) {
+            $this->handleAdminCallback($callbackId, $data, $user, $chatId);
             return;
         }
 
-        $this->tg->answerCallbackQuery($callbackId, '');
+        $this->driver->answerCallback($callbackId, '');
     }
 
     private function handleAdminCallback(string $callbackId, string $data, array $user, int|string $chatId): void
@@ -992,24 +1437,24 @@ final class BotHandler
             ['t' => (int) $user['telegram_id']]
         );
         if ($admin === null) {
-            $this->tg->answerCallbackQuery($callbackId, 'شما دسترسی مدیریتی ندارید.', true);
+            $this->driver->answerCallback($callbackId, 'شما دسترسی مدیریتی ندارید.', true);
             return;
         }
         if ($data === 'admin:stats') {
-            $stats = \RB\Services\StatsService::overview();
-            $this->tg->answerCallbackQuery($callbackId, '');
-            $this->tg->sendMessage($chatId, "📊 <b>آمار سریع</b>\n\n"
+            $stats = StatsService::overview();
+            $this->driver->answerCallback($callbackId, '');
+            $this->driver->sendMessage($chatId, "📊 <b>آمار سریع</b>\n\n"
                 . 'کاربران: ' . fa_digits($stats['total_users']) . "\n"
                 . 'امروز: ' . fa_digits($stats['new_today']) . "\n"
                 . 'پورسانت پرداختی: ' . wtoman($stats['total_commissions']) . "\n"
                 . 'برداشت در انتظار: ' . wtoman($stats['pending_withdrawals_amount']));
             return;
         }
-        $this->tg->answerCallbackQuery($callbackId, '');
+        $this->driver->answerCallback($callbackId, '');
         $token = $this->magicLoginToken((int) $admin['id']);
         $base = rtrim((string) (SettingsService::get('panel_url', '') ?: Request::origin()), '/');
         $url = $base . '/admin/login?t=' . $token;
-        $this->tg->sendMessage($chatId, "🛠 <b>ورود به پنل مدیریت</b>\n\n"
+        $this->driver->sendMessage($chatId, "🛠 <b>ورود به پنل مدیریت</b>\n\n"
             . "این لینک یک‌بارمصرف است و تا ۲ دقیقه اعتبار دارد:\n"
             . '<a href="' . e($url) . '">ورود به پنل مدیریت</a>', ['disable_web_page_preview' => true]);
     }
@@ -1027,36 +1472,28 @@ final class BotHandler
         return $token;
     }
 
-    // ------------------------------------------------------------------ کمکی
-    public function referralLink(array $user): string
+    // ------------------------------------------------------------------ متدهای کمکی
+
+    public function referralLink(array $user, ?string $platform = null): string
     {
-        $settings = TelegramService::settings($this->db);
-        $username = (string) ($settings['bot_username'] ?? '');
-        $base = $username !== '' ? 'https://t.me/' . $username : (string) SettingsService::get('bot_link_base', '');
-        return rtrim($base, '/') . '?start=' . $user['referral_code'];
+        $plat = $platform ?? $this->platform;
+        $code = (string) ($user['referral_code'] ?? '');
+        if ($plat === MessengerCapabilities::TELEGRAM) {
+            $settings = TelegramService::settings($this->db);
+            $username = ltrim(trim((string) ($settings['bot_username'] ?? '')), '@');
+            if ($username !== '') {
+                return 'https://t.me/' . $username . '?start=' . $code;
+            }
+            $base = trim((string) SettingsService::get('bot_link_base', ''));
+            if ($base !== '') {
+                return rtrim($base, '/') . '?start=' . $code;
+            }
+        }
+        return $this->registry->buildReferralLink($plat, $code);
     }
 
     private function send(int|string $chatId, string $text): void
     {
-        $this->tg->sendMessage($chatId, $text);
-    }
-
-    private function logMessage(int $telegramId, string $direction, string $kind, array $payload): void
-    {
-        try {
-            $user = $this->users->findByTelegramId($telegramId);
-            $this->db->insert('telegram_messages', [
-                'user_id' => $user['id'] ?? null,
-                'telegram_id' => $telegramId,
-                'direction' => $direction,
-                'kind' => $kind,
-                'payload' => json_encode($payload, JSON_UNESCAPED_UNICODE),
-                'chat_id' => (string) ($payload['chat']['id'] ?? ''),
-                'message_id' => (string) ($payload['message_id'] ?? ''),
-                'status' => 'ok',
-                'created_at' => now(),
-            ]);
-        } catch (\Throwable) {
-        }
+        $this->driver->sendMessage($chatId, $text);
     }
 }

@@ -49,7 +49,21 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
         <div class="table-wrap">
             <table class="table">
                 <tbody>
-                <tr><td class="text-muted" style="width:45%">شماره تماس</td><td><?= $user['phone'] ? e($user['phone']) : '<span class="text-muted">ثبت نشده</span>' ?></td></tr>
+                <tr><td class="text-muted" style="width:45%">پیام‌رسان‌های متصل</td><td>
+                    <?php if (!empty($messengerAccounts)): ?>
+                        <div class="flex gap-1 wrap">
+                            <?php foreach ($messengerAccounts as $ma): ?>
+                                <span class="badge badge-<?= !empty($ma['is_primary']) ? 'brand' : 'info' ?> no-dot">
+                                    <?= e(\RB\Messengers\MessengerCapabilities::label((string) $ma['platform'])) ?>
+                                    <span class="ltr">(<?= e((string) $ma['external_user_id']) ?>)</span>
+                                </span>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php else: ?>
+                        <span class="badge badge-brand no-dot"><?= e(\RB\Messengers\MessengerCapabilities::label((string) ($user['entry_platform'] ?? 'telegram'))) ?></span>
+                    <?php endif; ?>
+                </td></tr>
+                <tr><td class="text-muted">شماره تماس</td><td><?= $user['phone'] ? e($user['phone']) : '<span class="text-muted">ثبت نشده</span>' ?></td></tr>
                 <tr><td class="text-muted">تاریخ عضویت</td><td><?= fa_date($user['joined_at']) ?></td></tr>
                 <tr><td class="text-muted">آخرین فعالیت</td><td><?= fa_date($user['last_activity_at']) ?></td></tr>
                 <tr><td class="text-muted">تاریخ واجد شرایط شدن</td><td><?= fa_date($user['qualified_at']) ?></td></tr>

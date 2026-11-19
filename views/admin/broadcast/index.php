@@ -30,14 +30,25 @@ $totalTargets = array_sum($counts);
                     <label class="form-label">عنوان داخلی کمپین</label>
                     <input type="text" name="title" class="form-control" maxlength="150" required placeholder="مثال: اطلاع‌رسانی جشنواره نوروز">
                 </div>
-                <div class="form-group">
-                    <label class="form-label">گروه مخاطبان</label>
-                    <select name="segment" class="form-select" id="segment">
-                        <?php foreach ($segments as $key => $label): ?>
-                            <option value="<?= e($key) ?>"><?= e($label) ?> (<?= fa_digits((int) ($counts[$key] ?? 0)) ?> نفر)</option>
-                        <?php endforeach; ?>
-                    </select>
-                    <div class="form-hint">مجموع مخاطبان تمام گروه‌ها: <?= fa_digits(number_format($totalTargets)) ?> نفر</div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">پیام‌رسان مقصد</label>
+                        <select name="target_platform" class="form-select" id="target-platform">
+                            <option value="all">🌐 همه پیام‌رسان‌های فعال (تلگرام + بله + روبیکا)</option>
+                            <option value="telegram">✈️ فقط تلگرام</option>
+                            <option value="bale">💬 فقط بله</option>
+                            <option value="rubika">🟣 فقط روبیکا</option>
+                        </select>
+                        <div class="form-hint">برای کاربران ایتا اعلان در بخش «اعلان‌ها»ی مینی‌اپ نمایش داده می‌شود.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">گروه مخاطبان</label>
+                        <select name="segment" class="form-select" id="segment">
+                            <?php foreach ($segments as $key => $label): ?>
+                                <option value="<?= e($key) ?>"><?= e($label) ?> (<?= fa_digits((int) ($counts[$key] ?? 0)) ?> نفر)</option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label class="form-label">متن پیام</label>
@@ -153,9 +164,11 @@ $totalTargets = array_sum($counts);
     const form = document.getElementById('broadcast-form');
 
     function payload() {
+        const tp = document.getElementById('target-platform');
         return {
             message_text: document.getElementById('message-text').value || '',
             segment: document.getElementById('segment').value,
+            target_platform: tp ? tp.value : 'all',
             segment_params: '{}'
         };
     }

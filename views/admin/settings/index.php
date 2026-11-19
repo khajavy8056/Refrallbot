@@ -260,40 +260,47 @@ $curInviteeAmt = wtoman($commission->effectiveInviteeReward());
                 </div>
 
                 <div class="divider"></div>
-                <div class="form-group">
-                    <label class="form-label">🎛 حالت رابط کاربری ربات (مینی‌اپ / دکمه‌ای)</label>
+                <div class="form-group" id="ui-mode">
+                    <label class="form-label">🎛 حالت نمایش رابط کاربری ربات در پیام‌رسان‌ها</label>
                     <?php
                     $botUiModeNow = \RB\Services\SettingsService::configuredBotUiMode();
                     $miniappUrlNow = (string) ($s('miniapp_url') ?: '');
+                    $platformUiModes = $platformUiModes ?? \RB\Services\SettingsService::allPlatformUiModes();
+                    $modeNames = ['miniapp' => '📱 فقط مینی‌اپ', 'buttons' => '⌨️ فقط دکمه‌های ربات', 'hybrid' => '✨ ترکیبی (مینی‌اپ + دکمه‌ها)'];
                     ?>
                     <select name="bot_ui_mode" class="form-select" id="miniapp-mode">
-                        <option value="buttons" <?= $botUiModeNow === 'buttons' ? 'selected' : '' ?>>⌨️ حالت دکمه‌ای — فقط دکمه‌های داخل ربات (مینی‌اپ خاموش)</option>
-                        <option value="miniapp" <?= $botUiModeNow === 'miniapp' ? 'selected' : '' ?>>📱 حالت مینی‌اپ — تمرکز روی وب‌اپ گرافیکی تلگرام (HTTPS)</option>
-                        <option value="hybrid" <?= $botUiModeNow === 'hybrid' ? 'selected' : '' ?>>✨ حالت ترکیبی — هم مینی‌اپ و هم دکمه‌های کامل ربات</option>
+                        <option value="miniapp" <?= $botUiModeNow === 'miniapp' ? 'selected' : '' ?>>📱 فقط مینی‌اپ (Mini App Only — نیازمند HTTPS)</option>
+                        <option value="buttons" <?= $botUiModeNow === 'buttons' ? 'selected' : '' ?>>⌨️ فقط دکمه‌های ربات (Bot Buttons Only — بدون نیاز به مینی‌اپ)</option>
+                        <option value="hybrid" <?= $botUiModeNow === 'hybrid' ? 'selected' : '' ?>>✨ ترکیبی — مینی‌اپ + دکمه‌های کامل ربات (پیشنهادی)</option>
                     </select>
                     <div class="form-hint">
-                        هر زمان بخواهید می‌توانید بین «مینی‌اپ»، «دکمه‌ای» و «ترکیبی» جابه‌جا شوید (از بخش
-                        <a href="<?= url('admin/telegram#bot-mode') ?>">اتصال به ربات</a> هم با یک کلیک قابل تغییر است).
-                        در صورت نداشتن SSL گزینه «حالت دکمه‌ای» را انتخاب کنید.
+                        سامانه این انتخاب را به‌صورت هوشمند با قابلیت رسمی هر پیام‌رسان تطبیق می‌دهد (بله و تلگرام از هر ۳ حالت پشتیبانی می‌کنند؛ روبیکا همیشه دکمه‌ای کامل و ایتا مبتنی بر برنامک است).
                     </div>
                 </div>
                 <div class="form-group" id="miniapp-url-group">
-                    <label class="form-label">آدرس پنل کاربری (اختیاری)</label>
+                    <label class="form-label">آدرس HTTPS مینی‌اپ (برای تلگرام، بله و ایتا)</label>
                     <input type="text" name="miniapp_url" class="form-control ltr" maxlength="255"
                            value="<?= e($miniappUrlNow) ?>" placeholder="https://example.com/app">
                     <div class="form-hint">
-                        فقط با <span class="ltr mono">https://</span> معتبر کار می‌کند.
+                        مینی‌اپ فقط روی <span class="ltr mono">https://</span> معتبر اجرا می‌شود. بله با <code>?platform=bale</code> و ایتا با <code>?platform=eitaa</code> متصل می‌شوند.
                         <?php if ($miniappUrlNow !== '' && !str_starts_with($miniappUrlNow, 'https://')): ?>
-                            <span style="color:var(--danger,#dc2626)">آدرس فعلی HTTPS نیست، بنابراین دکمه Mini App در ربات غیرفعال می‌ماند.</span>
+                            <span style="color:var(--danger,#dc2626)">آدرس فعلی HTTPS نیست؛ ربات‌های تلگرام و بله به‌صورت خودکار به حالت دکمه‌ای بازمی‌گردند.</span>
                         <?php endif; ?>
                     </div>
                 </div>
-                <?php if (!$miniappActive): ?>
-                    <div class="alert alert-info" style="margin-top:4px">
-                        <span class="alert-icon">ℹ️</span>
-                        <div>در حال حاضر پنل وب <b>غیرفعال</b> است. صفحه <span class="ltr mono">/app</span> پیام «از دکمه‌های ربات استفاده کنید» نشان می‌دهد و ربات هم دکمه‌ی Mini App نمی‌فرستد.</div>
-                    </div>
-                <?php endif; ?>
+                <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface-2);font-size:.78rem">
+                    <div class="font-bold mb-1">وضعیت مؤثر فعلی در هر پیام‌رسان:</div>
+                    <?php foreach ($platformUiModes as $pmKey => $pmInfo): ?>
+                        <?php
+                        $eff = (string) ($pmInfo['effective'] ?? ($pmInfo['mode'] ?? 'buttons'));
+                        $pLbl = (string) ($pmInfo['label'] ?? \RB\Messengers\MessengerCapabilities::label((string) $pmKey));
+                        ?>
+                        <div class="flex justify-between items-center" style="padding:3px 0;border-bottom:1px dashed var(--border)">
+                            <span><?= e($pLbl) ?></span>
+                            <span class="badge badge-brand no-dot"><?= e($modeNames[$eff] ?? $eff) ?></span>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
             </div>
             <div class="card-footer"><button class="btn" type="submit">💾 ذخیره</button></div>
         </form>

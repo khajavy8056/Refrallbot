@@ -10,8 +10,8 @@ require_once dirname(__DIR__) . '/src/bootstrap.php';
 // ---- هدرهای امنیتی
 $path = \RB\Support\Request::path();
 if (str_starts_with($path, '/app')) {
-    // Mini App در نسخهٔ وب تلگرام داخل iframe اجرا می‌شود
-    header("Content-Security-Policy: frame-ancestors 'self' https://web.telegram.org https://*.telegram.org");
+    // Mini App در نسخهٔ وب تلگرام، بله و ایتا داخل iframe اجرا می‌شود (بدون X-Frame-Options)
+    header("Content-Security-Policy: frame-ancestors 'self' https://web.telegram.org https://*.telegram.org https://web.bale.ai https://*.bale.ai https://*.ble.ir https://web.eitaa.com https://*.eitaa.com https://*.eitaayar.ir");
 } else {
     header('X-Frame-Options: SAMEORIGIN');
 }

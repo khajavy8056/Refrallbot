@@ -16,20 +16,20 @@ final class CommissionController extends AdminController
     public function index(): void
     {
         $db = Database::instance();
-        $settings = CommissionSettings::current(db(), true);
-        $versions = $db->all(
-            'SELECT * FROM commission_setting_versions ORDER BY version DESC LIMIT 15'
-        );
+        $settings = CommissionSettings::current($db, true);
+        $versions = $db->all('SELECT * FROM commission_setting_versions ORDER BY version DESC LIMIT 15');
 
         $this->render('admin/commissions/index', [
-            'title' => 'تنظیمات پورسانت',
+            'title' => 'تنظیمات پورسانت و درآمد لایه‌ای',
             'settings' => $settings,
             'versions' => $versions,
+            'percentBases' => CommissionSettings::PERCENT_BASES,
             'stats' => [
-                'total_commissions' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status = 'approved'"),
-                'direct_paid' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status = 'approved' AND type = 'direct'"),
-                'welcome_paid' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status = 'approved' AND type = 'welcome'"),
-                'by_level' => $db->all("SELECT level, COUNT(*) c, COALESCE(SUM(amount),0) s FROM referral_commissions WHERE status='approved' GROUP BY level ORDER BY level"),
+                'total_commissions' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status IN ('approved','credited')"),
+                'direct_paid' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status IN ('approved','credited') AND type = 'direct'"),
+                'indirect_paid' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status IN ('approved','credited') AND type = 'level' AND level >= 1"),
+                'welcome_paid' => (int) $db->value("SELECT COALESCE(SUM(amount),0) FROM referral_commissions WHERE status IN ('approved','credited') AND type = 'welcome'"),
+                'by_level' => $db->all("SELECT level, COUNT(*) c, COALESCE(SUM(amount),0) s FROM referral_commissions WHERE status IN ('approved','credited') AND type = 'level' AND level >= 1 GROUP BY level ORDER BY level"),
                 'events' => (int) $db->value('SELECT COUNT(*) FROM referral_events'),
             ],
         ]);
@@ -38,34 +38,48 @@ final class CommissionController extends AdminController
     public function save(): void
     {
         $levels = [];
-        $postedLevels = $_POST['levels'] ?? [];
-        $maxLevels = max(1, min(8, (int) en_digits((string) ($_POST['max_levels'] ?? '1'))));
-        // فقط لایه‌های داخل محدوده انتخاب‌شده ذخیره می‌شوند
-        for ($level = 1; $level <= 8; $level++) {
-            $rawPercent = trim(en_digits((string) ($postedLevels[$level]['percent'] ?? '0')));
+        $postedLevels = is_array($_POST['levels'] ?? null) ? $_POST['levels'] : [];
+        $maxLevels = max(1, min(CommissionSettings::MAX_SUPPORTED_LEVELS, (int) en_digits((string) ($_POST['max_levels'] ?? '1'))));
+
+        for ($level = 1; $level <= CommissionSettings::MAX_SUPPORTED_LEVELS; $level++) {
+            if ($level > $maxLevels) {
+                continue;
+            }
+            $row = is_array($postedLevels[$level] ?? null) ? $postedLevels[$level] : [];
+            $enabled = !empty($row['enabled']);
+            $calcType = strtolower(trim((string) ($row['calc_type'] ?? 'percent')));
+            if (!in_array($calcType, ['fixed', 'percent'], true)) {
+                $calcType = 'percent';
+            }
+
+            $rawPercent = trim(en_digits((string) ($row['percent'] ?? '0')));
             $percent = str_replace(['٪', '%', ' ', '٬', '،', ','], '', str_replace('٫', '.', $rawPercent));
             if ($percent === '') {
                 $percent = '0';
             }
-            $enabled = !empty($postedLevels[$level]['enabled']) && $level <= $maxLevels;
             if (!is_numeric($percent) || (float) $percent < 0 || (float) $percent > 100) {
-                $errMsg = 'درصد لایه ' . fa_digits($level) . ' نامعتبر است.';
-                if ($this->wantsJson()) {
-                    $this->fail($errMsg);
-                    return;
-                }
-                $this->flash('error', $errMsg);
-                Request::redirect(url('admin/commissions'));
+                $errMsg = 'درصد لایه ' . fa_digits($level) . ' باید عددی بین ۰ تا ۱۰۰ باشد.';
+                $this->abortSave($errMsg);
                 return;
             }
-            if ($level <= $maxLevels) {
-                $levels[] = ['level' => $level, 'percent' => Money::fromMicro(Money::toMicro($percent)), 'enabled' => $enabled];
-            }
+
+            $amount = Money::parseToman($row['amount'] ?? null) ?? 0;
+            $maxAmount = Money::parseToman($row['max_amount'] ?? null) ?? 0;
+
+            $levels[] = [
+                'level' => $level,
+                'enabled' => $enabled,
+                'calc_type' => $calcType,
+                'amount' => max(0, $amount),
+                'percent' => Money::fromMicro(Money::toMicro($percent)),
+                'max_amount' => max(0, $maxAmount),
+            ];
         }
 
         $conditions = array_values(array_filter((array) ($_POST['conditions'] ?? []), static fn($c) => is_string($c)));
 
         $data = [
+            'direct_calc_type' => (string) ($_POST['direct_calc_type'] ?? 'fixed'),
             'direct_reward' => Money::parseToman($_POST['direct_reward'] ?? null) ?? 0,
             'direct_enabled' => !empty($_POST['direct_enabled']),
             'invitee_reward' => Money::parseToman($_POST['invitee_reward'] ?? null) ?? 0,
@@ -100,17 +114,14 @@ final class CommissionController extends AdminController
                 'direct_enabled' => $data['direct_enabled'],
                 'invitee_reward' => $data['invitee_reward'],
                 'invitee_enabled' => $data['invitee_enabled'],
+                'multi_level_enabled' => $data['multi_level_enabled'],
                 'max_levels' => $data['max_levels'],
                 'percent_base' => $data['percent_base'],
+                'levels' => $levels,
             ], current_admin_id());
-            $message = 'تنظیمات پورسانت به‌صورت نسخه ' . fa_digits($version->version) . ' ذخیره شد. تراکنش‌های قبلی تغییری نمی‌کنند.';
+            $message = 'تنظیمات پورسانت به‌صورت نسخه ' . fa_digits($version->version) . ' ذخیره شد. محاسبات گذشته دست‌نخورده و غیرقابل‌تغییر باقی می‌مانند.';
         } catch (\Throwable $e) {
-            if ($this->wantsJson()) {
-                $this->fail('خطا در ذخیره: ' . $e->getMessage());
-                return;
-            }
-            $this->flash('error', 'خطا در ذخیره: ' . $e->getMessage());
-            Request::redirect(url('admin/commissions'));
+            $this->abortSave('خطا در ذخیره: ' . $e->getMessage());
             return;
         }
 
@@ -121,11 +132,22 @@ final class CommissionController extends AdminController
                 'direct_enabled' => (bool) $data['direct_enabled'],
                 'invitee_reward' => (int) $data['invitee_reward'],
                 'invitee_enabled' => (bool) $data['invitee_enabled'],
+                'multi_level_enabled' => (bool) $data['multi_level_enabled'],
                 'max_levels' => (int) $data['max_levels'],
             ]);
             return;
         }
         $this->flash('success', $message);
+        Request::redirect(url('admin/commissions'));
+    }
+
+    private function abortSave(string $errMsg): void
+    {
+        if ($this->wantsJson()) {
+            $this->fail($errMsg);
+            return;
+        }
+        $this->flash('error', $errMsg);
         Request::redirect(url('admin/commissions'));
     }
 }

@@ -50,6 +50,7 @@ final class DashboardController extends AdminController
             'activity' => StatsService::recentActivity(8),
             'settings' => CommissionSettings::current(),
             'telegram' => TelegramService::settings(),
+            'messengers' => StatsService::messengerPerformanceReport(),
             'botUiMode' => \RB\Services\SettingsService::botUiMode(),
         ]);
     }
