@@ -161,7 +161,7 @@ final class TrainingDownloadService
         $result = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $error = $result === false;
-        curl_close($ch);
+        unset($ch);
         return ['status'=>$status, 'location'=>$location, 'error'=>$error];
     }
 }
