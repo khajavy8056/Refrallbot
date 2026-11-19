@@ -189,6 +189,20 @@ final class SettingsService
         );
     }
 
+    /** ماتریس وضعیت نمایش فقط برای پیام‌رسان‌های فعال و با موفقیت متصل‌شده (نمایش در پنل مدیریت) */
+    public static function activePlatformUiModes(?\RB\Support\Database $db = null): array
+    {
+        $all = self::allPlatformUiModes();
+        $active = (new \RB\Messengers\MessengerRegistry($db))->activeConnectedPlatforms();
+        $out = [];
+        foreach ($active as $plat => $_name) {
+            if (isset($all[$plat])) {
+                $out[$plat] = $all[$plat];
+            }
+        }
+        return $out;
+    }
+
     /** حالت ذخیره‌شده توسط مدیر: buttons | miniapp | hybrid */
     public static function configuredBotUiMode(): string
     {

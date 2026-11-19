@@ -55,38 +55,75 @@ $growthTone = $ms['growth_pct'] > 0 ? 'success' : ($ms['growth_pct'] < 0 ? 'dang
     </div>
 </div>
 
-<?php if (!$overview['bot_connected']): ?>
+<?php $activeMessengers = (isset($messengers) && is_array($messengers)) ? $messengers : []; ?>
+<?php if ($activeMessengers === []): ?>
     <div class="alert alert-warning">
-        <span class="alert-icon">🤖</span>
+        <span class="alert-icon">📡</span>
         <div>
-            ربات تلگرام متصل نیست. برای فعالسازی دریافت کاربران و ارسال پیام،
-            <a href="<?= url('admin/telegram') ?>">توکن ربات را ثبت کنید</a>.
+            هنوز هیچ ربات پیام‌رسانی فعال و متصل نشده است. برای شروع جذب کاربر و ارسال پیام،
+            <a href="<?= url('admin/messengers') ?>">وارد بخش مدیریت پیام‌رسان‌ها شوید</a>.
         </div>
     </div>
-<?php elseif (!$overview['webhook_active']): ?>
+<?php elseif (isset($activeMessengers['telegram']) && !$overview['webhook_active'] && empty($activeMessengers['telegram']['polling_enabled'])): ?>
     <div class="alert alert-warning">
         <span class="alert-icon">🔗</span>
         <div>
-            ربات متصل است اما Webhook فعال نیست؛ ربات پیام‌ها را دریافت نمی‌کند.
-            <a href="<?= url('admin/telegram') ?>">همین حالا تنظیم کنید</a>.
+            ربات ✈️ تلگرام متصل است اما Webhook هنوز فعال نشده است.
+            <a href="<?= url('admin/messengers?tab=telegram') ?>">همین حالا تنظیم کنید</a>.
         </div>
     </div>
 <?php endif; ?>
 
-<?php if (!empty($messengers) && is_array($messengers)): ?>
+<?php if ($activeMessengers !== []): ?>
+    <!-- آمار تفکیکی مستقل پیام‌رسان‌های فعال و متصل (پیام‌رسان‌های غیرفعال هرگز نمایش داده نمی‌شوند) -->
     <div class="card mb-3">
-        <div class="card-body flex justify-between items-center wrap gap-2" style="padding:11px 16px">
-            <div class="flex items-center gap-2 wrap">
-                <strong class="text-sm">📡 وضعیت پیام‌رسان‌ها:</strong>
-                <?php foreach ($messengers as $mp => $mi): ?>
-                    <a href="<?= url('admin/messengers?tab=' . $mp) ?>" style="text-decoration:none" class="badge <?= e((string) ($mi['status_badge']['class'] ?? 'badge-muted')) ?>">
-                        <?= e(($mi['icon'] ?? '') . ' ' . ($mi['name'] ?? $mp)) ?> · <?= fa_digits((int) ($mi['registered_users'] ?? 0)) ?> کاربر
-                    </a>
-                <?php endforeach; ?>
+        <div class="card-header flex justify-between items-center wrap gap-2">
+            <div>
+                <h2 class="card-title mb-0">📡 آمار و وضعیت پیام‌رسان‌های فعال و متصل</h2>
+                <span class="card-subtitle">
+                    کل کاربران سیستم: <strong><?= fa_digits(number_format((int) $overview['total_users'])) ?> نفر</strong>
+                    · ربات‌های متصل: <strong><?= fa_digits(count($activeMessengers)) ?></strong>
+                </span>
             </div>
             <div class="flex gap-1 wrap">
-                <a href="<?= url('admin/invite-content') ?>" class="btn btn-ghost btn-sm">🖼 بنرها و پیام دعوت</a>
+                <a href="<?= url('admin/reports/messengers') ?>" class="btn btn-ghost btn-sm">📈 گزارش پیام‌رسان‌ها</a>
+                <a href="<?= url('admin/invite-content') ?>" class="btn btn-ghost btn-sm">🖼 بنر و پیام دعوت</a>
                 <a href="<?= url('admin/reports/layers') ?>" class="btn btn-ghost btn-sm">📊 گزارش لایه‌ها</a>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(235px,1fr));margin-bottom:0">
+                <?php foreach ($activeMessengers as $mp => $mi): ?>
+                    <div class="stat" style="border-top:3px solid <?= e((string) ($mi['color'] ?? 'var(--brand-500)')) ?>">
+                        <div class="stat-head flex justify-between items-center">
+                            <div class="flex items-center gap-1">
+                                <span style="font-size:1.15rem"><?= e((string) ($mi['icon'] ?? '🤖')) ?></span>
+                                <strong class="stat-label" style="font-size:.86rem"><?= e((string) ($mi['users_label'] ?? ('کاربران ' . ($mi['name'] ?? $mp)))) ?></strong>
+                            </div>
+                            <span class="badge badge-success no-dot" style="font-size:.68rem">متصل</span>
+                        </div>
+                        <div class="stat-value">
+                            <?= fa_digits(number_format((int) ($mi['independent_users'] ?? $mi['registered_users'] ?? 0))) ?><small> نفر</small>
+                        </div>
+                        <div class="stat-foot" style="line-height:1.85">
+                            <?php if (!empty($mi['bot_username'])): ?>
+                                <div class="ltr text-xs text-muted" style="text-align:right">@<?= e((string) $mi['bot_username']) ?></div>
+                            <?php endif; ?>
+                            <div>
+                                <span class="stat-chip positive">+<?= fa_digits((int) ($mi['today_users'] ?? 0)) ?> امروز</span>
+                                · 🕸 <?= fa_digits((int) ($mi['direct_referrals'] ?? 0)) ?> مستقیم / <?= fa_digits((int) ($mi['indirect_referrals'] ?? 0)) ?> غیرمستقیم
+                            </div>
+                            <div class="text-xs text-muted">
+                                💰 <?= wtoman((int) ($mi['total_paid'] ?? 0)) ?>
+                                · 📢 <?= fa_digits((int) ($mi['channel_members_total'] ?? 0)) ?> عضو کانال
+                                · ✉️ <?= fa_digits((int) ($mi['messages_sent'] ?? 0)) ?> پیام
+                                <?php if ((int) ($mi['error_count'] ?? 0) > 0): ?>
+                                    · <a href="<?= url('admin/reports/errors?platform=' . $mp) ?>" style="color:var(--danger,#dc2626)">⚠️ <?= fa_digits((int) $mi['error_count']) ?> خطا</a>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
             </div>
         </div>
     </div>
@@ -386,14 +423,18 @@ $growthTone = $ms['growth_pct'] > 0 ? 'success' : ($ms['growth_pct'] < 0 ? 'dang
                 <?php if (empty($recentUsers)): ?>
                     <tr><td colspan="4"><div class="empty"><div class="empty-icon">👤</div><div class="empty-text">هنوز کاربری ثبت نشده است.</div></div></td></tr>
                 <?php endif; ?>
-                <?php foreach ($recentUsers as $u): ?>
+                <?php foreach ($recentUsers as $u):
+                    $ruPlat = strtolower((string) ($u['entry_platform'] ?? 'telegram'));
+                    $ruBadge = \RB\Messengers\MessengerCapabilities::badge($ruPlat);
+                    $ruId = (int) ($u['telegram_id'] ?? 0) > 0 ? fa_digits((string) $u['telegram_id']) : ('#' . fa_digits((string) $u['id']));
+                ?>
                     <tr>
                         <td data-label="کاربر">
                             <a href="<?= url('admin/users/' . (int) $u['id']) ?>" class="user-cell">
                                 <div class="avatar avatar-sm"><?= e(mb_substr($u['first_name'] ?: '؟', 0, 1)) ?></div>
                                 <div>
                                     <div class="user-cell-name"><?= e(trim(($u['first_name'] ?? '') . ' ' . ($u['last_name'] ?? '')) ?: 'کاربر') ?></div>
-                                    <div class="user-cell-meta"><?= $u['username'] ? '@' . e($u['username']) : fa_digits((string) $u['telegram_id']) ?></div>
+                                    <div class="user-cell-meta"><?= e($ruBadge) ?> · <?= $u['username'] ? '@' . e($u['username']) : e($ruId) ?></div>
                                 </div>
                             </a>
                         </td>

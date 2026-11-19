@@ -35,14 +35,39 @@ return static function (SchemaBuilder $schema): void {
         return;
     }
 
-    // مسیر سازگاری هنگام ارتقای زنده از نسخه‌های v1.1.x / v1.2.0 که هنوز SchemaBuilder قدیمی در حافظه است
+    // مسیر سازگاری در صورت کش بودن SchemaBuilder قدیمی در OPcache (PDO خالص بدون وابستگی به متدهای جدید Database)
     $db = Database::instance();
     $pdo = $db->pdo();
-    $isSqlite = $db->isSqlite();
+    $isSqlite = method_exists($db, 'isSqlite')
+        ? $db->isSqlite()
+        : (strtolower((string) $pdo->getAttribute(\PDO::ATTR_DRIVER_NAME)) === 'sqlite');
     $q = $isSqlite ? '"' : '`';
 
-    $hasColumn = static function (string $table, string $column) use ($db, $pdo, $isSqlite, $q): bool {
-        if (!$db->tableExists($table)) {
+    $hasTable = static function (string $table) use ($pdo, $isSqlite): bool {
+        if ($isSqlite) {
+            $st = $pdo->prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = :t LIMIT 1");
+            $st->execute([':t' => $table]);
+            return $st->fetchColumn() !== false;
+        }
+        $like = str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $table);
+        $quoted = $pdo->quote($like);
+        if ($quoted === false) {
+            $quoted = "'" . str_replace("'", "''", $like) . "'";
+        }
+        $st = $pdo->query('SHOW TABLES LIKE ' . $quoted);
+        if ($st === false) {
+            return false;
+        }
+        while (($row = $st->fetch(\PDO::FETCH_NUM)) !== false) {
+            if (isset($row[0]) && strcasecmp((string) $row[0], $table) === 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    $hasColumn = static function (string $table, string $column) use ($pdo, $isSqlite, $q, $hasTable): bool {
+        if (!$hasTable($table)) {
             return false;
         }
         if ($isSqlite) {
@@ -58,7 +83,11 @@ return static function (SchemaBuilder $schema): void {
             return false;
         }
         $like = str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], $column);
-        $stmt = $pdo->query("SHOW COLUMNS FROM {$q}{$table}{$q} LIKE " . $db->quote($like));
+        $quoted = $pdo->quote($like);
+        if ($quoted === false) {
+            $quoted = "'" . str_replace("'", "''", $like) . "'";
+        }
+        $stmt = $pdo->query("SHOW COLUMNS FROM {$q}{$table}{$q} LIKE " . $quoted);
         if ($stmt === false) {
             return false;
         }
@@ -72,10 +101,18 @@ return static function (SchemaBuilder $schema): void {
     };
 
     foreach ($columns as [$table, $column, $mysqlDef, $sqliteDef]) {
-        if (!$db->tableExists($table) || $hasColumn($table, $column)) {
+        if (!$hasTable($table) || $hasColumn($table, $column)) {
             continue;
         }
         $def = $isSqlite ? $sqliteDef : $mysqlDef;
-        $pdo->exec("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$column}{$q} {$def}");
+        try {
+            $pdo->exec("ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$column}{$q} {$def}");
+        } catch (\PDOException $e) {
+            $code = (int) ($e->errorInfo[1] ?? 0);
+            if ($code === 1060 || str_contains(strtolower($e->getMessage()), 'duplicate column name')) {
+                continue;
+            }
+            throw $e;
+        }
     }
 };

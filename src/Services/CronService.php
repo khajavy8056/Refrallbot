@@ -91,9 +91,12 @@ final class CronService
                             if ($processed > 0) {
                                 $emit('دریافت پیام ' . MessengerCapabilities::label($plat) . ': ' . $processed . ' آپدیت پردازش شد.');
                             }
+                        } elseif (!empty($fetched['error'])) {
+                            MessengerRegistry::logError($plat, 'polling', (string) $fetched['error'], 'getUpdates', null, [], $db);
                         }
                     } catch (\Throwable $pe) {
                         // خطای یک پیام‌رسان هرگز روی پیام‌رسان‌های دیگر یا بقیه Cron اثر نمی‌گذارد
+                        MessengerRegistry::logError($plat, 'polling', $pe->getMessage(), 'getUpdates', null, [], $db);
                         $emit('هشدار Polling ' . MessengerCapabilities::label($plat) . ': ' . ErrorHandler::redact($pe->getMessage()));
                     }
                 }
@@ -140,6 +143,10 @@ final class CronService
                 if ($db->tableExists('messenger_processed_updates')) {
                     $cutoff = date('Y-m-d H:i:s', time() - 14 * 86400);
                     $db->run("DELETE FROM messenger_processed_updates WHERE created_at < :c AND status <> 'processing'", ['c' => $cutoff]);
+                }
+                if ($db->tableExists('messenger_error_logs')) {
+                    $errCutoff = date('Y-m-d H:i:s', time() - 30 * 86400);
+                    $db->run('DELETE FROM messenger_error_logs WHERE created_at < :c', ['c' => $errCutoff]);
                 }
                 (new UpdateDeduplicator($db))->prune();
 

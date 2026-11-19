@@ -265,7 +265,7 @@ $curInviteeAmt = wtoman($commission->effectiveInviteeReward());
                     <?php
                     $botUiModeNow = \RB\Services\SettingsService::configuredBotUiMode();
                     $miniappUrlNow = (string) ($s('miniapp_url') ?: '');
-                    $platformUiModes = $platformUiModes ?? \RB\Services\SettingsService::allPlatformUiModes();
+                    $platformUiModes = $platformUiModes ?? \RB\Services\SettingsService::activePlatformUiModes();
                     $modeNames = ['miniapp' => '📱 فقط مینی‌اپ', 'buttons' => '⌨️ فقط دکمه‌های ربات', 'hybrid' => '✨ ترکیبی (مینی‌اپ + دکمه‌ها)'];
                     ?>
                     <select name="bot_ui_mode" class="form-select" id="miniapp-mode">
@@ -274,33 +274,35 @@ $curInviteeAmt = wtoman($commission->effectiveInviteeReward());
                         <option value="hybrid" <?= $botUiModeNow === 'hybrid' ? 'selected' : '' ?>>✨ ترکیبی — مینی‌اپ + دکمه‌های کامل ربات (پیشنهادی)</option>
                     </select>
                     <div class="form-hint">
-                        سامانه این انتخاب را به‌صورت هوشمند با قابلیت رسمی هر پیام‌رسان تطبیق می‌دهد (بله و تلگرام از هر ۳ حالت پشتیبانی می‌کنند؛ روبیکا همیشه دکمه‌ای کامل و ایتا مبتنی بر برنامک است).
+                        سامانه این انتخاب را به‌صورت خودکار با قابلیت رسمی هر پیام‌رسان فعال و متصل تطبیق می‌دهد.
                     </div>
                 </div>
                 <div class="form-group" id="miniapp-url-group">
-                    <label class="form-label">آدرس HTTPS مینی‌اپ (برای تلگرام، بله و ایتا)</label>
+                    <label class="form-label">آدرس HTTPS مینی‌اپ (پنل وب کاربری)</label>
                     <input type="text" name="miniapp_url" class="form-control ltr" maxlength="255"
                            value="<?= e($miniappUrlNow) ?>" placeholder="https://example.com/app">
                     <div class="form-hint">
-                        مینی‌اپ فقط روی <span class="ltr mono">https://</span> معتبر اجرا می‌شود. بله با <code>?platform=bale</code> و ایتا با <code>?platform=eitaa</code> متصل می‌شوند.
+                        مینی‌اپ فقط روی <span class="ltr mono">https://</span> معتبر اجرا می‌شود و برای هر پیام‌رسان متصل پشتیبان Mini App به‌صورت خودکار تنظیم می‌گردد.
                         <?php if ($miniappUrlNow !== '' && !str_starts_with($miniappUrlNow, 'https://')): ?>
-                            <span style="color:var(--danger,#dc2626)">آدرس فعلی HTTPS نیست؛ ربات‌های تلگرام و بله به‌صورت خودکار به حالت دکمه‌ای بازمی‌گردند.</span>
+                            <span style="color:var(--danger,#dc2626)">آدرس فعلی HTTPS نیست؛ ربات به‌صورت خودکار به حالت دکمه‌ای بازمی‌گردد.</span>
                         <?php endif; ?>
                     </div>
                 </div>
-                <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface-2);font-size:.78rem">
-                    <div class="font-bold mb-1">وضعیت مؤثر فعلی در هر پیام‌رسان:</div>
-                    <?php foreach ($platformUiModes as $pmKey => $pmInfo): ?>
-                        <?php
-                        $eff = (string) ($pmInfo['effective'] ?? ($pmInfo['mode'] ?? 'buttons'));
-                        $pLbl = (string) ($pmInfo['label'] ?? \RB\Messengers\MessengerCapabilities::label((string) $pmKey));
-                        ?>
-                        <div class="flex justify-between items-center" style="padding:3px 0;border-bottom:1px dashed var(--border)">
-                            <span><?= e($pLbl) ?></span>
-                            <span class="badge badge-brand no-dot"><?= e($modeNames[$eff] ?? $eff) ?></span>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
+                <?php if (!empty($platformUiModes)): ?>
+                    <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface-2);font-size:.78rem">
+                        <div class="font-bold mb-1">وضعیت مؤثر فعلی در پیام‌رسان‌های فعال و متصل:</div>
+                        <?php foreach ($platformUiModes as $pmKey => $pmInfo): ?>
+                            <?php
+                            $eff = (string) ($pmInfo['effective'] ?? ($pmInfo['mode'] ?? 'buttons'));
+                            $pBadge = \RB\Messengers\MessengerCapabilities::badge((string) $pmKey);
+                            ?>
+                            <div class="flex justify-between items-center" style="padding:4px 0;border-bottom:1px dashed var(--border)">
+                                <span><strong><?= e($pBadge) ?></strong></span>
+                                <span class="badge badge-brand no-dot"><?= e($modeNames[$eff] ?? $eff) ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
             </div>
             <div class="card-footer"><button class="btn" type="submit">💾 ذخیره</button></div>
         </form>

@@ -106,11 +106,13 @@ return static function (Router $router): void {
     $router->post('/admin/bot-profile/photo', [Admin\BotProfileController::class, 'uploadPhoto'], ['admin', 'csrf']);
     $router->post('/admin/bot-profile/photo/remove', [Admin\BotProfileController::class, 'removePhoto'], ['admin', 'csrf']);
 
-    // کانال‌های اجباری (چندپیام‌رسانی)
+    // کانال‌های اجباری (چندپیام‌رسانی و شرطی میان‌پیام‌رسانی)
     $router->get('/admin/channels', [Admin\ChannelController::class, 'index'], ['admin']);
     $router->post('/admin/channels', [Admin\ChannelController::class, 'save'], ['admin', 'csrf']);
+    $router->post('/admin/channels/save', [Admin\ChannelController::class, 'save'], ['admin', 'csrf']);
     $router->post('/admin/channels/{id}/delete', [Admin\ChannelController::class, 'delete'], ['admin', 'csrf']);
     $router->post('/admin/channels/reorder', [Admin\ChannelController::class, 'reorder'], ['admin', 'csrf']);
+    $router->post('/admin/channels/settings', [Admin\ChannelController::class, 'reorder'], ['admin', 'csrf']);
 
     // پیام همگانی (چندپیام‌رسانی)
     $router->get('/admin/broadcast', [Admin\BroadcastController::class, 'index'], ['admin']);
@@ -131,6 +133,7 @@ return static function (Router $router): void {
     $router->post('/admin/campaigns/{id}/toggle', [Admin\CampaignController::class, 'toggle'], ['admin', 'csrf']);
 
     // گزارش‌ها و لایه‌ها
+    $router->post('/admin/reports/errors/clear', [Admin\ReportController::class, 'clearErrors'], ['admin', 'csrf']);
     $router->get('/admin/reports/{type}', [Admin\ReportController::class, 'index'], ['admin']);
     $router->get('/admin/reports/{type}/export', [Admin\ReportController::class, 'export'], ['admin']);
 

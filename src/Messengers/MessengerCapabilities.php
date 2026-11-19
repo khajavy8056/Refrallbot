@@ -337,6 +337,47 @@ final class MessengerCapabilities
         return self::icon($platform) . ' ' . self::label($platform);
     }
 
+    /** عنوان استاندارد تفکیک کاربران در پنل مدیریت: «کاربران تلگرام»، «کاربران روبیکا»، «کاربران ایتا»، «کاربران بله» */
+    public static function usersLabel(string $platform): string
+    {
+        return 'کاربران ' . self::label($platform);
+    }
+
+    public static function color(string $platform): string
+    {
+        $key = strtolower(trim($platform));
+        $all = self::all();
+        return (string) ($all[$key]['color'] ?? '#2563EB');
+    }
+
+    /**
+     * آیا کانال میزبانی‌شده روی این پیام‌رسان قابلیت بررسی واقعی و غیرجعلی عضویت (از جمله میان‌پیام‌رسانی) را دارد؟
+     *
+     * بر اساس مستندات رسمی:
+     *   - تلگرام (getChatMember) و بله (getChatMember): بله — با ربات فعال و ادمین در کانال + برای کاربران
+     *     سایر پیام‌رسان‌ها از طریق اتصال تأییدشده حساب (کد یک‌بارمصرف LNK) و استعلام زنده getChatMember.
+     *   - روبیکا (Bot API v3) و ایتا (EitaaYar / Mini App): خیر — API رسمی فاقد متد getChatMember است
+     *     و بنابراین اعمال اجباری میان‌پیام‌رسانی بدون راستی‌آزمایی واقعی مجاز نیست.
+     */
+    public static function canVerifyCrossMessengerChannel(string $channelPlatform): bool
+    {
+        return self::supports($channelPlatform, 'channel_check_api');
+    }
+
+    /** توضیح شفاف فنی درباره امکان یا محدودیت رسمی بررسی عضویت میان‌پیام‌رسانی برای مدیر */
+    public static function crossChannelNote(string $channelPlatform): string
+    {
+        $key = strtolower(trim($channelPlatform));
+        $name = self::label($key);
+        if (self::canVerifyCrossMessengerChannel($key)) {
+            return 'کانال‌های ' . $name . ' از متد رسمی getChatMember پشتیبانی می‌کنند (ربات ' . $name . ' باید ادمین کانال باشد). '
+                . 'در صورت الزام این کانال برای کاربران سایر پیام‌رسان‌های متصل، چون شناسه‌های کاربری پیام‌رسان‌ها مستقل است، '
+                . 'کاربر یک‌بار حساب ' . $name . ' خود را با لینک تأیید امن یک‌کلیکی متصل کرده و سپس عضویت واقعی او در کانال از طریق API رسمی ' . $name . ' بررسی و تأیید می‌شود.';
+        }
+        return 'محدودیت رسمی API ' . $name . ': متد استعلام عضویت کاربر در کانال (مشابه getChatMember) در API رسمی ' . $name . ' ارائه نشده است؛ '
+            . 'بنابراین برای جلوگیری از هرگونه بررسی صوری یا غیرواقعی، الزام میان‌پیام‌رسانی روی کانال‌های ' . $name . ' غیرفعال است و این کانال‌ها فقط به کاربران ورودی خود ' . $name . ' به شکل «نمایش لینک + تأیید کاربری» نمایش داده می‌شوند.';
+    }
+
     /**
      * تعیین هوشمند حالت نمایش مؤثر برای یک پیام‌رسان با توجه به تنظیم عمومی مدیر و قابلیت واقعی پیام‌رسان.
      *

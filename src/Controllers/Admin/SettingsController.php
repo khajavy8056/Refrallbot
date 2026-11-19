@@ -19,7 +19,7 @@ final class SettingsController extends AdminController
             'title' => 'تنظیمات سیستم',
             'settings' => SettingsService::all(),
             'miniappActive' => SettingsService::miniappActive(),
-            'platformUiModes' => SettingsService::allPlatformUiModes(),
+            'platformUiModes' => SettingsService::activePlatformUiModes(),
             'commission' => CommissionSettings::current(db(), true),
             'metrics' => RankingService::METRICS,
         ]);

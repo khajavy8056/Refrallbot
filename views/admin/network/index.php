@@ -12,11 +12,21 @@ $statusBadge = static fn(string $s): array => [
     </div>
 </div>
 
+<?php $activeMsg = (isset($activeMessengers) && is_array($activeMessengers)) ? $activeMessengers : []; ?>
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
-    <div class="stat"><div class="stat-head"><div class="stat-icon">🕸</div><div class="stat-label">کل ارتباطات شبکه</div></div><div class="stat-value"><?= fa_digits(number_format($stats['total_relations'])) ?></div><div class="stat-foot">ردیف در جدول بستار</div></div>
-    <div class="stat info"><div class="stat-head"><div class="stat-icon">👥</div><div class="stat-label">کاربران معرفی‌شده</div></div><div class="stat-value"><?= fa_digits(number_format($stats['with_refs'])) ?></div><div class="stat-foot">دارای معرف</div></div>
-    <div class="stat purple"><div class="stat-head"><div class="stat-icon">📏</div><div class="stat-label">عمیق‌ترین سطح</div></div><div class="stat-value"><?= fa_digits($stats['max_depth']) ?></div><div class="stat-foot">حداکثر ۸ سطح</div></div>
-    <div class="stat <?= $stats['orphans'] > 0 ? 'warning' : '' ?>"><div class="stat-head"><div class="stat-icon">⚠️</div><div class="stat-label">ناسازگاری شمارنده</div></div><div class="stat-value"><?= fa_digits(number_format($stats['orphans'])) ?></div><div class="stat-foot">شمارنده بدون ارتباط واقعی</div></div>
+    <div class="stat"><div class="stat-head"><div class="stat-icon">🕸</div><div class="stat-label">کل ارتباطات شبکه</div></div><div class="stat-value"><?= fa_digits(number_format($stats['total_relations'])) ?></div><div class="stat-foot">مجموع مستقیم و غیرمستقیم</div></div>
+    <div class="stat info"><div class="stat-head"><div class="stat-icon">🎯</div><div class="stat-label">کل دعوت مستقیم (L0)</div></div><div class="stat-value"><?= fa_digits(number_format($stats['with_refs'])) ?></div><div class="stat-foot">غیرمستقیم (L1..L8): <?= fa_digits(number_format((int) ($stats['indirect_refs'] ?? 0))) ?></div></div>
+    <div class="stat purple"><div class="stat-head"><div class="stat-icon">📏</div><div class="stat-label">عمیق‌ترین سطح</div></div><div class="stat-value"><?= fa_digits($stats['max_depth']) ?></div><div class="stat-foot">حداکثر ۸ سطح غیرمستقیم</div></div>
+    <?php foreach ($activeMsg as $mp => $mi): ?>
+        <div class="stat" style="border-top:3px solid <?= e((string) ($mi['color'] ?? 'var(--brand-500)')) ?>">
+            <div class="stat-head">
+                <div class="stat-icon"><?= e((string) ($mi['icon'] ?? '🤖')) ?></div>
+                <div class="stat-label">رفرال <?= e((string) ($mi['name'] ?? $mp)) ?></div>
+            </div>
+            <div class="stat-value"><?= fa_digits(number_format((int) ($mi['direct_referrals'] ?? 0))) ?><small> مستقیم</small></div>
+            <div class="stat-foot">غیرمستقیم: <?= fa_digits(number_format((int) ($mi['indirect_referrals'] ?? 0))) ?> · تاییدشده: <?= fa_digits((int) ($mi['qualified_referrals'] ?? 0)) ?></div>
+        </div>
+    <?php endforeach; ?>
 </div>
 
 <div class="card mb-3">
@@ -44,9 +54,13 @@ $statusBadge = static fn(string $s): array => [
         <?php else: ?>
             <div class="table-wrap">
                 <table class="table">
-                    <thead><tr><th>کاربر</th><th>شناسه تلگرام</th><th>زیرمجموعه مستقیم</th><th>کل شبکه</th><th></th></tr></thead>
+                    <thead><tr><th>کاربر</th><th>پیام‌رسان / شناسه</th><th>زیرمجموعه مستقیم</th><th>کل شبکه</th><th></th></tr></thead>
                     <tbody>
-                    <?php foreach ($roots as $root): ?>
+                    <?php foreach ($roots as $root):
+                        $rPlat = strtolower((string) ($root['entry_platform'] ?? 'telegram'));
+                        $rBadge = \RB\Messengers\MessengerCapabilities::badge($rPlat);
+                        $rDispId = (int) ($root['telegram_id'] ?? 0) > 0 ? fa_digits((string) $root['telegram_id']) : ('#' . fa_digits((string) $root['id']));
+                    ?>
                         <tr>
                             <td data-label="کاربر">
                                 <div class="user-cell">
@@ -55,7 +69,7 @@ $statusBadge = static fn(string $s): array => [
                                         <div class="user-cell-meta"><?= $root['username'] ? '@' . e($root['username']) : 'بدون یوزرنیم' ?></div></div>
                                 </div>
                             </td>
-                            <td class="num" data-label="شناسه"><?= fa_digits((string) $root['telegram_id']) ?></td>
+                            <td data-label="پیام‌رسان"><span class="badge badge-muted no-dot"><?= e($rBadge) ?></span> <span class="text-xs text-muted num"><?= e($rDispId) ?></span></td>
                             <td class="num" data-label="مستقیم"><?= fa_digits((int) $root['direct_ref_count']) ?></td>
                             <td data-label="کل شبکه"><span class="badge badge-brand no-dot"><?= fa_digits((int) $root['total_ref_count']) ?> نفر</span></td>
                             <td data-label=""><a href="<?= url('admin/network/' . $root['id']) ?>" class="btn btn-sm btn-secondary">مشاهده درخت</a></td>
@@ -79,12 +93,15 @@ $statusBadge = static fn(string $s): array => [
                 <table class="table">
                     <thead><tr><th>#</th><th>کاربر</th><th>کل شبکه</th><th>درآمد</th><th></th></tr></thead>
                     <tbody>
-                    <?php foreach ($topInviters as $i => $row): ?>
+                    <?php foreach ($topInviters as $i => $row):
+                        $tiPlat = strtolower((string) ($row['entry_platform'] ?? 'telegram'));
+                        $tiBadge = \RB\Messengers\MessengerCapabilities::badge($tiPlat);
+                    ?>
                         <tr>
                             <td data-label="#" class="num"><?= fa_digits($i + 1) ?></td>
                             <td data-label="کاربر">
                                 <?= e(trim($row['first_name'] . ' ' . $row['last_name'])) ?>
-                                <div class="user-cell-meta"><?= $row['username'] ? '@' . e($row['username']) : '—' ?></div>
+                                <div class="user-cell-meta"><?= e($tiBadge) ?> · <?= $row['username'] ? '@' . e($row['username']) : ('#' . fa_digits((string) $row['id'])) ?></div>
                             </td>
                             <td data-label="کل شبکه" class="num"><?= fa_digits((int) $row['total_ref_count']) ?></td>
                             <td data-label="درآمد" class="num"><?= wtoman($row['total_earned']) ?></td>

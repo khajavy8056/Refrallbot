@@ -14,11 +14,14 @@ final class BroadcastController extends AdminController
     public function index(): void
     {
         $db = Database::instance();
+        $msgSummary = \RB\Services\StatsService::segmentedMessengerSummary($db);
         $this->render('admin/broadcast/index', [
             'title' => 'ارسال پیام همگانی',
             'campaigns' => $db->all('SELECT * FROM broadcast_campaigns ORDER BY id DESC LIMIT 25'),
             'segments' => BroadcastService::SEGMENTS,
             'counts' => (new BroadcastService($db))->segmentCounts(),
+            'activeMessengers' => $msgSummary['active'],
+            'messengerTotals' => $msgSummary['totals'],
         ]);
     }
 
@@ -31,6 +34,10 @@ final class BroadcastController extends AdminController
         }
         $params = json_decode((string) ($_POST['segment_params'] ?? '{}'), true) ?: [];
         $targetPlatform = strtolower(trim((string) ($_POST['target_platform'] ?? ($params['target_platform'] ?? 'all'))));
+        if ($targetPlatform !== 'all' && !(new \RB\Messengers\MessengerRegistry())->isActiveAndConnected($targetPlatform)) {
+            $this->fail('پیام‌رسان انتخاب‌شده فعال و متصل نیست.');
+            return;
+        }
         $params['target_platform'] = $targetPlatform;
         $this->json([
             'ok' => true,
@@ -49,6 +56,10 @@ final class BroadcastController extends AdminController
         $segment = (string) ($_POST['segment'] ?? 'all');
         $params = json_decode((string) ($_POST['segment_params'] ?? '{}'), true) ?: [];
         $targetPlatform = strtolower(trim((string) ($_POST['target_platform'] ?? 'all')));
+        if ($targetPlatform !== 'all' && !(new \RB\Messengers\MessengerRegistry())->isActiveAndConnected($targetPlatform)) {
+            $this->fail('پیام‌رسان انتخاب‌شده فعال و متصل نیست.');
+            return;
+        }
         $params['target_platform'] = $targetPlatform;
 
         try {

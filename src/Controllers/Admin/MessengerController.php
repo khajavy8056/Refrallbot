@@ -41,12 +41,17 @@ final class MessengerController extends AdminController
             $perfByPlatform[(string) $row['platform']] = $row;
         }
 
+        $recentErrors = !empty($connections[$selected]['is_active_connected'])
+            ? $registry->recentErrors([$selected], null, 8)
+            : [];
+
         $this->render('admin/messengers/index', [
-            'title' => 'مدیریت پیام‌رسان‌ها (تلگرام، بله، روبیکا، ایتا)',
+            'title' => 'مدیریت پیام‌رسان‌ها',
             'connections' => $connections,
             'webhookUrls' => $webhookUrls,
             'selected' => $selected,
             'perfByPlatform' => $perfByPlatform,
+            'recentErrors' => $recentErrors,
             'uiMode' => SettingsService::configuredBotUiMode(),
             'platformUiModes' => SettingsService::allPlatformUiModes(),
             'miniappUrl' => SettingsService::miniappBaseUrl(),

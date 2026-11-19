@@ -32,6 +32,8 @@ final class DashboardController extends AdminController
         $series = StatsService::referralSeries($days);
         $memberAnalytics = StatsService::memberGrowthBreakdown($days);
 
+        $messengerSummary = StatsService::segmentedMessengerSummary();
+
         $this->render('admin/dashboard', [
             'title' => 'داشبورد',
             'overview' => $overview,
@@ -50,7 +52,8 @@ final class DashboardController extends AdminController
             'activity' => StatsService::recentActivity(8),
             'settings' => CommissionSettings::current(),
             'telegram' => TelegramService::settings(),
-            'messengers' => StatsService::messengerPerformanceReport(),
+            'messengers' => $messengerSummary['active'],
+            'messengerTotals' => $messengerSummary['totals'],
             'botUiMode' => \RB\Services\SettingsService::botUiMode(),
         ]);
     }

@@ -1105,26 +1105,15 @@ final class UserService
         }
         if (SettingsService::bool('force_channel_membership', false) && !in_array('channels', $normalized, true)) {
             $membership = new MembershipService($this->db);
-            $channels = $membership->activeChannels($plat);
-            if ($channels !== []) {
-                if ($plat === MessengerCapabilities::TELEGRAM) {
-                    $tg = new TelegramService(null, $this->db);
-                    if ($tg->isConfigured()) {
-                        $normalized[] = 'channels';
-                    }
-                } else {
-                    $driver = (new MessengerRegistry($this->db))->driver($plat);
-                    if ($driver->isConfigured()) {
-                        $normalized[] = 'channels';
-                    }
-                }
+            if ($membership->hasEnforceableChannelsFor($plat)) {
+                $normalized[] = 'channels';
             }
         }
 
-        // اگر در پیام‌رسان کاربر هیچ کانال فعالی تعریف نشده و API بررسی کانال هم ندارد، شرط channels باعث قفل شدن نشود
+        // اگر در پیام‌رسان کاربر هیچ کانال قابل اعمالی (بومی یا میان‌پیام‌رسانی) تعریف نشده و API بررسی کانال هم ندارد، شرط channels باعث قفل شدن نشود
         if ($platform !== null && $plat !== MessengerCapabilities::TELEGRAM && in_array('channels', $normalized, true)) {
             $membership = new MembershipService($this->db);
-            if ($membership->activeChannels($plat) === []) {
+            if (!$membership->hasEnforceableChannelsFor($plat)) {
                 $normalized = array_values(array_filter($normalized, static fn(string $c): bool => $c !== 'channels'));
                 if ($normalized === []) {
                     $normalized[] = 'joined';

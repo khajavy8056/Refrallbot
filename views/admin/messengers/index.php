@@ -47,21 +47,28 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
         $badge = $item['status_badge'] ?? ['label' => 'نامشخص', 'class' => 'badge-muted'];
         $perf = $perfByPlatform[$p] ?? [];
         $isCurrent = ($p === $selected);
+        $isActConn = !empty($item['is_active_connected']);
         $pUi = (string) ($platformUiModes[$p]['effective'] ?? ($item['ui_mode']['effective'] ?? 'buttons'));
         ?>
-        <a href="<?= url('admin/messengers?tab=' . $p) ?>" class="card" style="text-decoration:none;color:inherit;border-width:2px;border-color:<?= $isCurrent ? 'var(--brand-500)' : 'var(--border)' ?>;transition:all .15s">
+        <a href="<?= url('admin/messengers?tab=' . $p) ?>" class="card" style="text-decoration:none;color:inherit;border-width:2px;border-color:<?= $isCurrent ? 'var(--brand-500)' : 'var(--border)' ?>;transition:all .15s;opacity:<?= ($isActConn || $isCurrent) ? '1' : '.78' ?>">
             <div class="card-body" style="padding:14px 16px">
                 <div class="flex justify-between items-center mb-1">
                     <strong style="font-size:1rem"><?= e(($item['meta']['icon'] ?? '🤖') . ' ' . ($item['meta']['name'] ?? $p)) ?></strong>
                     <span class="badge <?= e($badge['class']) ?>"><?= e($badge['label']) ?></span>
                 </div>
-                <div class="text-xs text-muted ltr" style="margin-bottom:8px">
-                    <?= !empty($item['bot_username']) ? '@' . e($item['bot_username']) : 'نام کاربری ثبت نشده' ?>
-                </div>
-                <div class="flex justify-between text-xs" style="border-top:1px solid var(--border);padding-top:8px">
-                    <span>👥 <?= fa_digits((int) ($perf['registered_users'] ?? 0)) ?> کاربر</span>
-                    <span class="text-muted"><?= e($uiLabels[$pUi] ?? $pUi) ?></span>
-                </div>
+                <?php if ($isActConn): ?>
+                    <div class="text-xs text-muted ltr" style="margin-bottom:8px">
+                        <?= !empty($item['bot_username']) ? '@' . e($item['bot_username']) : 'متصل و فعال' ?>
+                    </div>
+                    <div class="flex justify-between text-xs" style="border-top:1px solid var(--border);padding-top:8px">
+                        <span><?= e($item['meta']['icon'] ?? '👥') ?> <?= e(MessengerCapabilities::usersLabel($p)) ?>: <strong><?= fa_digits((int) ($perf['independent_users'] ?? $perf['registered_users'] ?? 0)) ?></strong></span>
+                        <span class="text-muted"><?= e($uiLabels[$pUi] ?? $pUi) ?></span>
+                    </div>
+                <?php else: ?>
+                    <div class="text-xs text-muted" style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px">
+                        غیرفعال — برای اتصال و نمایش تنظیمات انتخاب کنید
+                    </div>
+                <?php endif; ?>
             </div>
         </a>
     <?php endforeach; ?>
@@ -157,7 +164,7 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
                 </label>
             </div>
 
-            <?php if (MessengerCapabilities::supports($selected, 'polling')): ?>
+            <?php if (!empty($conn['is_active_connected']) && MessengerCapabilities::supports($selected, 'polling')): ?>
                 <div class="form-group">
                     <label class="check-row">
                         <input type="checkbox" name="polling_enabled" value="1" <?= $conn['polling_enabled'] ? 'checked' : '' ?>>
@@ -167,7 +174,7 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
             <?php endif; ?>
 
             <div class="flex gap-1" style="flex-wrap:wrap">
-                <button type="submit" class="btn">💾 ذخیره و بررسی اتصال</button>
+                <button type="submit" class="btn">💾 <?= !empty($conn['is_active_connected']) ? 'ذخیره تنظیمات اتصال' : 'ذخیره توکن و برقراری اتصال' ?></button>
             </div>
         </form>
 
@@ -178,13 +185,16 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
                         <?= csrf_field() ?>
                         <button type="submit" class="btn btn-secondary btn-sm">🔍 تست اتصال</button>
                     </form>
-                    <?php if (MessengerCapabilities::supports($selected, 'bot_commands')): ?>
-                        <form method="post" action="<?= url('admin/messengers/' . $selected . '/commands') ?>">
-                            <?= csrf_field() ?>
-                            <button type="submit" class="btn btn-ghost btn-sm">📋 همگام‌سازی دستورات</button>
-                        </form>
+                    <?php if (!empty($conn['is_active_connected'])): ?>
+                        <?php if (MessengerCapabilities::supports($selected, 'menu_commands_api')): ?>
+                            <form method="post" action="<?= url('admin/messengers/' . $selected . '/commands') ?>">
+                                <?= csrf_field() ?>
+                                <button type="submit" class="btn btn-ghost btn-sm">📋 همگام‌سازی دستورات</button>
+                            </form>
+                        <?php endif; ?>
+                        <a href="<?= url('admin/bot-profile?platform=' . $selected) ?>" class="btn btn-ghost btn-sm">🎨 پروفایل ربات</a>
+                        <a href="<?= url('admin/channels') ?>" class="btn btn-ghost btn-sm">📢 کانال‌های اجباری</a>
                     <?php endif; ?>
-                    <a href="<?= url('admin/bot-profile?platform=' . $selected) ?>" class="btn btn-ghost btn-sm">🎨 پروفایل و ظاهر</a>
                 </div>
                 <form method="post" action="<?= url('admin/messengers/' . $selected . '/disconnect') ?>"
                       onsubmit="return confirm('توکن این پیام‌رسان حذف و اتصال آن قطع شود؟ داده‌های کاربران و کیف پول کاملاً محفوظ می‌ماند.');">
@@ -195,98 +205,149 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
         <?php endif; ?>
     </div>
 
-    <!-- ستون دوم: وب‌هوک، آدرس مینی‌اپ و وضعیت رابط کاربری -->
+    <!-- ستون دوم: تنظیمات عملیاتی و آمار فقط زمانی نمایش داده می‌شود که پیام‌رسان فعال و با موفقیت متصل باشد -->
     <div style="display:flex;flex-direction:column;gap:14px">
-        <?php if (MessengerCapabilities::supports($selected, 'incoming_webhook')): ?>
+        <?php if (empty($conn['is_active_connected'])): ?>
             <div class="card">
-                <div class="card-header justify-between">
-                    <h2 class="card-title">🔗 تنظیم Webhook <?= e($meta['name'] ?? '') ?></h2>
-                    <span class="badge <?= !empty($conn['webhook_active']) ? 'badge-success' : 'badge-muted' ?>">
-                        <?= !empty($conn['webhook_active']) ? 'فعال' : 'تنظیم‌نشده' ?>
-                    </span>
+                <div class="card-header">
+                    <h2 class="card-title">📘 راهنمای فعال‌سازی و اتصال <?= e(($meta['icon'] ?? '') . ' ' . ($meta['name'] ?? '')) ?></h2>
                 </div>
-                <div class="card-body">
-                    <form method="post" action="<?= url('admin/messengers/' . $selected . '/webhook/set') ?>">
-                        <?= csrf_field() ?>
-                        <div class="form-group">
-                            <label class="form-label">آدرس اختصاصی Webhook (HTTPS)</label>
-                            <div style="display:flex;gap:6px">
-                                <input type="url" name="webhook_url" class="form-control ltr" value="<?= e((string) ($conn['webhook_url'] ?: ($webhookUrls[$selected] ?? ''))) ?>">
-                                <button type="button" class="btn btn-secondary btn-sm" onclick="RB.copy(this.previousElementSibling.value)">📋 کپی</button>
-                            </div>
-                            <div class="form-hint">
-                                <?php if ($selected === 'telegram'): ?>
-                                    همراه با هدر امنیتی <code>X-Telegram-Bot-Api-Secret-Token</code> ثبت می‌شود.
-                                <?php elseif ($selected === 'bale'): ?>
-                                    در API رسمی بله (<code>tapi.bale.ai/bot.../setWebhook</code>) با مسیر رمزنگاری‌شده یکتا ثبت می‌شود.
-                                <?php elseif ($selected === 'rubika'): ?>
-                                    در API رسمی روبیکا (<code>botapi.rubika.ir/v3/.../updateBotEndpoints</code>) هر دو مسیر <code>ReceiveUpdate</code> و <code>ReceiveInlineMessage</code> به‌صورت خودکار ثبت می‌شوند.
-                                <?php endif; ?>
-                            </div>
+                <div class="card-body text-sm" style="line-height:2">
+                    <div class="alert alert-info mb-2">
+                        <span class="alert-icon">🔒</span>
+                        <div class="text-xs">
+                            این پیام‌رسان هنوز فعال و متصل نیست؛ به همین دلیل تمام تنظیمات اختصاصی، بخش کانال اجباری، گزینه‌های ارسال و آمار آن در کل پنل مدیریت مخفی نگه داشته شده‌اند و بلافاصله پس از اتصال موفق به‌صورت خودکار ظاهر می‌شوند.
                         </div>
-                        <div class="flex gap-1" style="flex-wrap:wrap">
-                            <button type="submit" class="btn btn-sm" <?= !$conn['has_token'] ? 'disabled' : '' ?>>⚡ ثبت خودکار Webhook</button>
-                        </div>
-                    </form>
-                    <?php if (!empty($conn['webhook_active'])): ?>
-                        <form method="post" action="<?= url('admin/messengers/' . $selected . '/webhook/delete') ?>" class="mt-2">
-                            <?= csrf_field() ?>
-                            <button type="submit" class="btn btn-ghost btn-sm">🔌 حذف Webhook</button>
-                        </form>
+                    </div>
+                    <?php if (!empty($meta['guide_steps']) && is_array($meta['guide_steps'])): ?>
+                        <ol style="padding-right:18px;margin:0">
+                            <?php foreach ($meta['guide_steps'] as $step): ?>
+                                <li class="text-xs mb-1"><?= e((string) $step) ?></li>
+                            <?php endforeach; ?>
+                        </ol>
                     <?php endif; ?>
                 </div>
             </div>
-        <?php endif; ?>
+        <?php else: ?>
+            <?php if (MessengerCapabilities::supports($selected, 'incoming_webhook')): ?>
+                <div class="card">
+                    <div class="card-header justify-between">
+                        <h2 class="card-title">🔗 تنظیم Webhook <?= e($meta['name'] ?? '') ?></h2>
+                        <span class="badge <?= (($conn['webhook_status'] ?? '') === 'active') ? 'badge-success' : 'badge-muted' ?>">
+                            <?= (($conn['webhook_status'] ?? '') === 'active') ? 'فعال' : 'تنظیم‌نشده' ?>
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <form method="post" action="<?= url('admin/messengers/' . $selected . '/webhook/set') ?>">
+                            <?= csrf_field() ?>
+                            <div class="form-group">
+                                <label class="form-label">آدرس اختصاصی Webhook (HTTPS)</label>
+                                <div style="display:flex;gap:6px">
+                                    <input type="url" name="webhook_url" class="form-control ltr" value="<?= e((string) ($conn['webhook_url'] ?: ($webhookUrls[$selected] ?? ''))) ?>">
+                                    <button type="button" class="btn btn-secondary btn-sm" onclick="RB.copy(this.previousElementSibling.value)">📋 کپی</button>
+                                </div>
+                                <div class="form-hint">
+                                    <?php if ($selected === 'telegram'): ?>
+                                        همراه با هدر امنیتی <code>X-Telegram-Bot-Api-Secret-Token</code> ثبت می‌شود.
+                                    <?php elseif ($selected === 'bale'): ?>
+                                        در API رسمی بله (<code>tapi.bale.ai/bot.../setWebhook</code>) با مسیر رمزنگاری‌شده یکتا ثبت می‌شود.
+                                    <?php elseif ($selected === 'rubika'): ?>
+                                        در API رسمی روبیکا (<code>botapi.rubika.ir/v3/.../updateBotEndpoints</code>) هر دو مسیر <code>ReceiveUpdate</code> و <code>ReceiveInlineMessage</code> به‌صورت خودکار ثبت می‌شوند.
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                            <div class="flex gap-1" style="flex-wrap:wrap">
+                                <button type="submit" class="btn btn-sm">⚡ ثبت خودکار Webhook</button>
+                            </div>
+                        </form>
+                        <?php if (($conn['webhook_status'] ?? '') === 'active'): ?>
+                            <form method="post" action="<?= url('admin/messengers/' . $selected . '/webhook/delete') ?>" class="mt-2">
+                                <?= csrf_field() ?>
+                                <button type="submit" class="btn btn-ghost btn-sm">🔌 حذف Webhook</button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
 
-        <?php if (MessengerCapabilities::supports($selected, 'miniapp')): ?>
+            <?php if (MessengerCapabilities::supports($selected, 'miniapp')): ?>
+                <div class="card">
+                    <div class="card-header justify-between">
+                        <h2 class="card-title">📱 آدرس Mini App در <?= e($meta['name'] ?? '') ?></h2>
+                        <span class="badge <?= $hasHttps ? 'badge-success' : 'badge-warning' ?>"><?= $hasHttps ? 'HTTPS آماده' : 'نیازمند HTTPS' ?></span>
+                    </div>
+                    <div class="card-body">
+                        <div class="form-group mb-0">
+                            <label class="form-label">آدرس ثبت در پنل پیام‌رسان</label>
+                            <div style="display:flex;gap:6px">
+                                <input type="text" readonly class="form-control ltr" value="<?= e((string) ($conn['suggested_miniapp_url'] ?? '')) ?>">
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="RB.copy(this.previousElementSibling.value)">📋 کپی</button>
+                            </div>
+                            <div class="form-hint">
+                                <?php if ($selected === 'eitaa'): ?>
+                                    این آدرس را در پنل <code>developer.eitaa.com</code> به‌عنوان URL برنامک ثبت کنید.
+                                <?php elseif ($selected === 'bale'): ?>
+                                    این آدرس را در بازوی <code>@botfather</code> بله ثبت کنید؛ بازو دکمه <code>web_app</code> را خودکار نمایش می‌دهد.
+                                <?php else: ?>
+                                    این آدرس را در <code>@BotFather</code> تلگرام تنظیم کنید یا از همگام‌سازی منو استفاده نمایید.
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <?php $selPerf = $perfByPlatform[$selected] ?? []; ?>
             <div class="card">
                 <div class="card-header justify-between">
-                    <h2 class="card-title">📱 آدرس Mini App در <?= e($meta['name'] ?? '') ?></h2>
-                    <span class="badge <?= $hasHttps ? 'badge-success' : 'badge-warning' ?>"><?= $hasHttps ? 'HTTPS آماده' : 'نیازمند HTTPS' ?></span>
+                    <h2 class="card-title">📊 عملکرد زنده <?= e(MessengerCapabilities::badge($selected)) ?></h2>
+                    <a href="<?= url('admin/reports/messengers') ?>" class="btn btn-ghost btn-sm">گزارش کامل ←</a>
                 </div>
-                <div class="card-body">
-                    <div class="form-group">
-                        <label class="form-label">آدرس ثبت در پنل پیام‌رسان</label>
-                        <div style="display:flex;gap:6px">
-                            <input type="text" readonly class="form-control ltr" value="<?= e((string) ($conn['suggested_miniapp_url'] ?? '')) ?>">
-                            <button type="button" class="btn btn-secondary btn-sm" onclick="RB.copy(this.previousElementSibling.value)">📋 کپی</button>
-                        </div>
-                        <div class="form-hint">
-                            <?php if ($selected === 'eitaa'): ?>
-                                این آدرس را در پنل <code>developer.eitaa.com</code> به‌عنوان URL برنامک ثبت کنید.
-                            <?php elseif ($selected === 'bale'): ?>
-                                این آدرس را در بازوی <code>@BotFather</code> بله (بخش مینی‌اپ) ثبت کنید؛ ربات نیز دکمه <code>web_app</code> را خودکار نمایش می‌دهد.
-                            <?php else: ?>
-                                این آدرس را در <code>@BotFather</code> تلگرام تنظیم کنید یا از همگام‌سازی منو استفاده نمایید.
-                            <?php endif; ?>
-                        </div>
+                <div class="card-body text-sm" style="line-height:2">
+                    <div>🎛 <strong>حالت رابط کاربری مؤثر:</strong> <span class="badge badge-brand no-dot"><?= e($uiLabels[$resolvedUi['effective']] ?? (string) $resolvedUi['effective']) ?></span></div>
+                    <?php if (!empty($resolvedUi['reason'])): ?>
+                        <div class="text-xs text-muted mb-1"><?= e((string) $resolvedUi['reason']) ?></div>
+                    <?php endif; ?>
+                    <div><?= e($meta['icon'] ?? '👥') ?> <strong><?= e(MessengerCapabilities::usersLabel($selected)) ?>:</strong> <?= fa_digits((int) ($selPerf['independent_users'] ?? $selPerf['registered_users'] ?? 0)) ?> نفر (امروز: +<?= fa_digits((int) ($selPerf['today_users'] ?? 0)) ?>)</div>
+                    <div>🕸 <strong>دعوت مستقیم / غیرمستقیم:</strong> <?= fa_digits((int) ($selPerf['direct_referrals'] ?? 0)) ?> مستقیم · <?= fa_digits((int) ($selPerf['indirect_referrals'] ?? 0)) ?> غیرمستقیم</div>
+                    <div>💰 <strong>پاداش پرداخت‌شده:</strong> <?= e(wtoman((int) ($selPerf['total_paid'] ?? 0))) ?></div>
+                    <div>📢 <strong>عضویت کانال‌ها:</strong> <?= fa_digits((int) ($selPerf['channel_members_total'] ?? 0)) ?> نفر در <?= fa_digits((int) ($selPerf['active_channels'] ?? 0)) ?> کانال فعال</div>
+                    <div>✉️ <strong>پیام‌های ارسالی / ناموفق:</strong> <?= fa_digits((int) ($selPerf['messages_sent'] ?? 0)) ?> ارسالی · <?= fa_digits((int) ($selPerf['messages_failed'] ?? 0)) ?> ناموفق</div>
+                    <div>⚠️ <strong>خطاهای ارتباطی ثبت‌شده:</strong> <?= fa_digits((int) ($selPerf['error_count'] ?? 0)) ?> مورد
+                        <?php if ((int) ($selPerf['error_count'] ?? 0) > 0): ?>
+                            <a href="<?= url('admin/reports/errors?platform=' . $selected) ?>" class="text-xs">(مشاهده جزئیات)</a>
+                        <?php endif; ?>
                     </div>
+                    <?php if (!empty($conn['last_update_at'])): ?>
+                        <div>⏱ <strong>آخرین رویداد:</strong> <?= e(fa_date($conn['last_update_at'])) ?></div>
+                    <?php endif; ?>
+                    <?php if ($conn['polling_enabled']): ?>
+                        <div class="mt-2 text-xs text-muted">
+                            آدرس Cron پولینگ پیام‌رسان‌ها (هر ۱ دقیقه):
+                            <div class="ltr mono" style="word-break:break-all;margin-top:4px"><?= e($cronUrl) ?></div>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
+            <?php if (!empty($recentErrors)): ?>
+                <div class="card">
+                    <div class="card-header justify-between">
+                        <h3 class="card-title">🩺 آخرین خطاهای <?= e(MessengerCapabilities::badge($selected)) ?></h3>
+                        <a href="<?= url('admin/reports/errors?platform=' . $selected) ?>" class="btn btn-ghost btn-sm">گزارش کامل ←</a>
+                    </div>
+                    <div class="card-body text-xs" style="line-height:1.8">
+                        <?php foreach (array_slice($recentErrors, 0, 5) as $errRow): ?>
+                            <div style="padding:6px 0;border-bottom:1px solid var(--border)">
+                                <span class="badge badge-danger no-dot"><?= e(\RB\Messengers\MessengerRegistry::errorCategoryLabel((string) ($errRow['category'] ?? 'api'))) ?></span>
+                                <?php if (!empty($errRow['method_name'])): ?><span class="mono ltr text-muted"><?= e((string) $errRow['method_name']) ?></span><?php endif; ?>
+                                <span class="text-muted">· <?= e(fa_date($errRow['created_at'] ?? null)) ?></span>
+                                <div class="mt-1"><?= e((string) ($errRow['message'] ?? '')) ?></div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
         <?php endif; ?>
-
-        <div class="card">
-            <div class="card-header"><h2 class="card-title">📊 خلاصه عملکرد و حالت نمایش <?= e($meta['name'] ?? '') ?></h2></div>
-            <div class="card-body text-sm" style="line-height:2">
-                <div>🎛 <strong>حالت رابط کاربری مؤثر:</strong> <span class="badge badge-brand no-dot"><?= e($uiLabels[$resolvedUi['effective']] ?? (string) $resolvedUi['effective']) ?></span></div>
-                <?php if (!empty($resolvedUi['reason'])): ?>
-                    <div class="text-xs text-muted mb-1"><?= e((string) $resolvedUi['reason']) ?></div>
-                <?php endif; ?>
-                <div>👥 <strong>کاربران ورودی از این پیام‌رسان:</strong> <?= fa_digits((int) ($perfByPlatform[$selected]['registered_users'] ?? 0)) ?> نفر</div>
-                <div>🔗 <strong>کل حساب‌های متصل:</strong> <?= fa_digits((int) ($perfByPlatform[$selected]['linked_accounts'] ?? 0)) ?> حساب</div>
-                <div>✅ <strong>دعوت‌های واجد شرایط:</strong> <?= fa_digits((int) ($perfByPlatform[$selected]['qualified_referrals'] ?? 0)) ?> نفر</div>
-                <div>💰 <strong>پورسانت پرداخت‌شده:</strong> <?= e(wtoman((int) ($perfByPlatform[$selected]['total_paid'] ?? 0))) ?></div>
-                <?php if (!empty($conn['last_update_at'])): ?>
-                    <div>⏱ <strong>آخرین رویداد:</strong> <?= e(fa_date($conn['last_update_at'])) ?></div>
-                <?php endif; ?>
-                <?php if ($conn['polling_enabled']): ?>
-                    <div class="mt-2 text-xs text-muted">
-                        آدرس Cron پولینگ پیام‌رسان‌ها (هر ۱ دقیقه):
-                        <div class="ltr mono" style="word-break:break-all;margin-top:4px"><?= e($cronUrl) ?></div>
-                    </div>
-                <?php endif; ?>
-            </div>
-        </div>
     </div>
 </div>
 
@@ -304,7 +365,7 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
                 <tr>
                     <th>قابلیت</th>
                     <th>✈️ تلگرام</th>
-                    <th>💬 بله</th>
+                    <th>🟢 بله</th>
                     <th>🟣 روبیکا</th>
                     <th>🟠 ایتا</th>
                 </tr>
@@ -339,11 +400,11 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
                     <td class="ltr text-xs">eitaa.com/bot/app?startapp=CODE</td>
                 </tr>
                 <tr>
-                    <td>بررسی عضویت در کانال اجباری</td>
-                    <td><span class="badge badge-success no-dot">خودکار (API)</span></td>
-                    <td><span class="badge badge-success no-dot">خودکار (API)</span></td>
-                    <td><span class="badge badge-info no-dot">لینک عضویت + تأیید کاربر</span></td>
-                    <td><span class="badge badge-info no-dot">لینک عضویت + تأیید کاربر</span></td>
+                    <td>بررسی عضویت در کانال اجباری (مستقیم و میان‌پیام‌رسانی)</td>
+                    <td><span class="badge badge-success no-dot">رسمی API (getChatMember) + شرط میان‌پیام‌رسانی</span></td>
+                    <td><span class="badge badge-success no-dot">رسمی API (getChatMember) + شرط میان‌پیام‌رسانی</span></td>
+                    <td><span class="badge badge-warning no-dot">فاقد API بررسی (صرفاً لینک عضویت؛ میان‌پیام‌رسانی غیرفعال)</span></td>
+                    <td><span class="badge badge-warning no-dot">فاقد API بررسی (صرفاً لینک عضویت؛ میان‌پیام‌رسانی غیرفعال)</span></td>
                 </tr>
                 <tr>
                     <td>دریافت شماره موبایل کاربر</td>

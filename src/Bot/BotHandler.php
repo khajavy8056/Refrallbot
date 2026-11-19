@@ -214,7 +214,7 @@ final class BotHandler
                 $res = $this->users->redeemLinkToken($arg, $this->platform, $upd->userPayload());
                 if ($res['ok'] && isset($res['user'])) {
                     $this->clearUserSession($user);
-                    $this->sendMainMenu($res['user'], $upd->chatId, $res['message']);
+                    $this->completePostLinkVerification($res['user'], $upd->chatId, (string) $res['message']);
                 } else {
                     $this->send($upd->chatId, '❌ ' . $res['message']);
                 }
@@ -343,10 +343,10 @@ final class BotHandler
             return;
         }
 
-        // اگر ورود با توکن یک‌بارمصرف اتصال حساب انجام شد
+        // اگر ورود با توکن یک‌بارمصرف اتصال حساب انجام شد (از جمله تأیید کانال میان‌پیام‌رسانی)
         if (!empty($result['linked'])) {
             $this->clearUserSession($user);
-            $this->sendMainMenu($user, $upd->chatId, (string) ($result['link_message'] ?? '✅ حساب شما با موفقیت متصل شد.'));
+            $this->completePostLinkVerification($user, $upd->chatId, (string) ($result['link_message'] ?? '✅ حساب شما با موفقیت متصل شد.'));
             return;
         }
 
@@ -571,23 +571,103 @@ final class BotHandler
 
         if ($gate['reason'] === 'channels') {
             $rows = [];
+            $crossNotes = [];
+            $membership = new MembershipService($this->db);
+
             foreach ($gate['channels'] as $channel) {
-                $url = $this->channelJoinUrl($channel);
+                $url = $this->channelJoinUrl($channel) ?? MembershipService::channelUrl($channel);
+                $isCross = !empty($channel['is_cross_platform']);
+                $hostBadge = (string) ($channel['host_badge'] ?? '');
+                $btnLabel = $isCross && $hostBadge !== ''
+                    ? ('📢 ' . $channel['title'] . ' (' . $hostBadge . ')')
+                    : ('📢 ' . $channel['title']);
                 if ($url !== null) {
-                    $rows[] = [['text' => '📢 ' . $channel['title'], 'url' => $url]];
+                    $rows[] = [['text' => $btnLabel, 'url' => $url]];
+                }
+                if ($isCross) {
+                    $customNote = trim((string) ($channel['cross_rule_note'] ?? ''));
+                    if ($customNote !== '') {
+                        $crossNotes[] = '💡 ' . e($customNote);
+                    }
                 }
             }
-            $isSelfConfirm = !empty($gate['self_confirm']);
-            $rows[] = [[
-                'text' => $isSelfConfirm ? '✅ عضو کانال شدم — ادامه' : '✅ بررسی عضویت',
-                'callback_data' => $isSelfConfirm ? 'gate:self_confirm' : 'gate:check',
-            ]];
+
+            // اگر کاربر برای تأیید واقعی عضویت در کانال میان‌پیام‌رسانی نیاز به اتصال یک‌کلیکی حساب پیام‌رسان مقصد دارد
+            $linkInstructions = [];
+            $needsLink = (array) ($gate['needs_link_platforms'] ?? []);
+            if ($needsLink !== [] && !empty($user['id'])) {
+                foreach ($needsLink as $targetPlat) {
+                    $prompt = $membership->buildCrossPlatformLinkPrompt((int) $user['id'], (string) $targetPlat);
+                    if ($prompt['deep_link'] !== '') {
+                        $rows[] = [[
+                            'text' => '🔗 اتصال یک‌کلیکی حساب ' . $prompt['badge'],
+                            'url' => $prompt['deep_link'],
+                        ]];
+                        $linkInstructions[] = '🔐 برای تأیید واقعی عضویت در کانال ' . e($prompt['badge'])
+                            . '، ابتدا دکمه «اتصال یک‌کلیکی حساب ' . e($prompt['badge']) . '» را بزنید'
+                            . ' (یا کد <code>' . e($prompt['code']) . '</code> را در ربات @' . e($prompt['bot_username']) . ' ارسال کنید)،'
+                            . ' در کانال عضو شوید و سپس «✅ بررسی عضویت» را لمس کنید.';
+                    } elseif ($prompt['code'] !== '') {
+                        $linkInstructions[] = '🔐 برای تأیید واقعی عضویت در کانال ' . e($prompt['badge'])
+                            . '، ابتدا دستور <code>/link ' . e($prompt['code']) . '</code> را در ربات ' . e($prompt['label'])
+                            . ' ارسال کنید، در کانال عضو شوید و سپس «✅ بررسی عضویت» را بزنید.';
+                    }
+                }
+            }
+
+            $hasApi = !empty($gate['has_api_channels']);
+            $hasSelf = !empty($gate['has_self_channels']);
+            $onlySelf = !empty($gate['self_confirm']) || ($hasSelf && !$hasApi);
+
+            if ($onlySelf) {
+                $rows[] = [['text' => '✅ عضو کانال شدم — ادامه', 'callback_data' => 'gate:self_confirm']];
+            } elseif ($hasSelf && $hasApi) {
+                $rows[] = [['text' => '☑️ عضو کانال ' . MessengerCapabilities::label($this->platform) . ' شدم', 'callback_data' => 'gate:self_confirm']];
+                $rows[] = [['text' => '✅ بررسی عضویت در همه کانال‌ها', 'callback_data' => 'gate:check']];
+            } else {
+                $rows[] = [['text' => '✅ بررسی عضویت', 'callback_data' => 'gate:check']];
+            }
+
             $message = (string) SettingsService::get('join_channels_message', 'برای استفاده از ربات ابتدا در کانال‌های زیر عضو شوید:');
+            if ($crossNotes !== []) {
+                $message .= "\n\n" . implode("\n", array_values(array_unique($crossNotes)));
+            }
+            if ($linkInstructions !== []) {
+                $message .= "\n\n" . implode("\n\n", $linkInstructions);
+            }
             if (!empty($gate['errors'])) {
                 $message .= "\n\n⚠️ " . implode("\n⚠️ ", $gate['errors']);
             }
             $this->driver->sendMessage($chatId, $message, ['inline_rows' => $rows]);
         }
+    }
+
+    /** بررسی خودکار کانال‌های میان‌پیام‌رسانی بلافاصله پس از اتصال موفق حساب کاربر و آزادسازی پاداش در صورت تکمیل شرایط */
+    private function completePostLinkVerification(array $user, int|string $chatId, string $baseMessage): void
+    {
+        $entryPlat = strtolower((string) ($user['entry_platform'] ?? $this->platform));
+        $membership = new MembershipService($this->db);
+
+        if ($membership->enforcementEnabled() && empty($user['channels_verified'])) {
+            $gate = $membership->gate($user, $entryPlat);
+            if ($gate['passed']) {
+                $fresh = $this->users->find((int) $user['id']) ?? $user;
+                $qualified = $this->users->maybeQualify($fresh, false, $entryPlat);
+                Notifier::flushDeferred();
+                $fresh = $this->users->find((int) $user['id']) ?? $fresh;
+                $extra = "\n\n✅ عضویت شما در تمام کانال‌های الزامی نیز به‌صورت خودکار تأیید شد"
+                    . ($qualified ? ' و پاداش دعوت فعال گردید! 🎁' : '.');
+                $this->sendMainMenu($fresh, $chatId, $baseMessage . $extra);
+                return;
+            }
+            if (($gate['reason'] ?? '') === 'channels' && !empty($gate['channels'])) {
+                $this->send($chatId, $baseMessage . "\n\n📢 برای تکمیل نهایی، لطفاً در کانال الزامی زیر عضو شوید و دکمه «✅ بررسی عضویت» را بزنید:");
+                $this->sendMembershipGate($user, $chatId, $gate);
+                return;
+            }
+        }
+
+        $this->sendMainMenu($user, $chatId, $baseMessage);
     }
 
     private function handleContact(array $user, IncomingUpdate $upd): void
@@ -692,14 +772,20 @@ final class BotHandler
                     return true;
                 }
                 $this->setUserStep($user, 'withdraw_card', ['amount' => $amount, 'min' => $min]);
-                $this->send($chatId, '💳 لطفاً <b>شماره کارت</b> خود را (۱۶ رقم، بدون فاصله) ارسال کنید:');
+                $this->send(
+                    $chatId,
+                    "💳 لطفاً <b>شماره کارت بانکی ۱۶ رقمی</b> خود را ارسال کنید:\n"
+                    . "<i>(ارقام فارسی یا انگلیسی، با فاصله یا خط تیره یا پیوسته پذیرفته می‌شود — مثلاً <code>6037-9975-XXXX-XXXX</code>؛ برای انصراف /cancel)</i>"
+                );
                 return true;
 
             case 'withdraw_card':
-                $card = preg_replace('~\D~', '', en_digits(trim($text))) ?? '';
-                $validation = WithdrawalService::validateCard($card);
+                $validation = WithdrawalService::validateCard($text);
                 if (!$validation['valid']) {
-                    $this->send($chatId, '❌ ' . $validation['error']);
+                    $this->send(
+                        $chatId,
+                        '❌ ' . $validation['error'] . "\n<i>(برای انصراف /cancel را ارسال کنید)</i>"
+                    );
                     return true;
                 }
                 $this->setUserStep($user, 'withdraw_holder', [
@@ -707,17 +793,25 @@ final class BotHandler
                     'card' => $validation['normalized'],
                     'min' => $payload['min'] ?? 0,
                 ]);
-                $this->send($chatId, "شماره کارت ثبت شد ✅\n\nلطفاً <b>نام صاحب کارت</b> را ارسال کنید:");
+                $formattedCard = (string) ($validation['formatted'] ?? WithdrawalService::formatCard($validation['normalized']));
+                $bankName = (string) ($validation['bank_name'] ?? '');
+                $bankSuffix = ($bankName !== '' && $bankName !== 'بانک نامشخص') ? ' (' . e($bankName) . ')' : '';
+                $this->send(
+                    $chatId,
+                    "✅ شماره کارت تأیید و ثبت شد:\n<code>" . e($formattedCard) . '</code>' . $bankSuffix
+                    . "\n\n👤 لطفاً <b>نام و نام خانوادگی صاحب کارت</b> را ارسال کنید:"
+                );
                 return true;
 
             case 'withdraw_holder':
-                if (mb_strlen(trim($text)) < 3) {
-                    $this->send($chatId, 'نام صاحب کارت باید حداقل ۳ حرف باشد.');
+                $holder = trim((string) (preg_replace('~\s+~u', ' ', $text) ?? $text));
+                if (mb_strlen($holder) < 3) {
+                    $this->send($chatId, '❌ نام و نام خانوادگی صاحب کارت باید حداقل ۳ حرف باشد.');
                     return true;
                 }
                 $service = new WithdrawalService($this->db);
                 try {
-                    $request = $service->create((int) $user['id'], (int) $payload['amount'], (string) $payload['card'], trim($text), Request::ip());
+                    $request = $service->create((int) $user['id'], (int) $payload['amount'], (string) $payload['card'], $holder, Request::ip());
                     $this->clearUserSession($user);
                     $info = $service->statusLabel((string) $request['status']);
                     $this->sendMainMenu($user, $chatId, "✅ درخواست برداشت شما ثبت شد.\n\n"
@@ -726,7 +820,8 @@ final class BotHandler
                         . 'وضعیت: ' . $info . "\n\n"
                         . 'مبلغ تا زمان پردازش در حساب شما رزرو شده است و پس از تأیید مدیریت پرداخت می‌شود.');
                 } catch (\Throwable $e) {
-                    $this->send($chatId, '❌ ' . $e->getMessage());
+                    $this->clearUserSession($user);
+                    $this->sendMainMenu($user, $chatId, '❌ ' . $e->getMessage());
                 }
                 return true;
 
@@ -761,7 +856,7 @@ final class BotHandler
                 $res = $this->users->redeemLinkToken($text, $this->platform, $upd->userPayload());
                 $this->clearUserSession($user);
                 if ($res['ok'] && isset($res['user'])) {
-                    $this->sendMainMenu($res['user'], $chatId, $res['message']);
+                    $this->completePostLinkVerification($res['user'], $chatId, (string) $res['message']);
                 } else {
                     $this->send($chatId, '❌ ' . $res['message']);
                 }
@@ -1299,11 +1394,19 @@ final class BotHandler
             return;
         }
 
-        // تأیید تعاملی عضویت کانال در پیام‌رسان‌های فاقد getChatMember (مانند روبیکا)
+        // تأیید تعاملی عضویت فقط برای کانال‌های بومی فاقد getChatMember (مانند روبیکا) — هرگز کانال‌های میان‌پیام‌رسانی API را دور نمی‌زند
         if ($data === 'gate:self_confirm') {
-            $this->users->markChannelsVerified((int) $user['id']);
+            $membership = new MembershipService($this->db);
+            $confirm = $membership->confirmSelfDeclaredChannels($user, $this->platform, $upd->externalUserId);
+            if (!$confirm['all_passed']) {
+                $this->driver->answerCallback($callbackId, '☑️ ثبت شد؛ اکنون عضویت در کانال دیگر را تکمیل و بررسی کنید.', true);
+                $this->sendMembershipGate($user, $chatId, $confirm['gate']);
+                return;
+            }
+            $fresh = $this->users->find((int) $user['id']) ?? $user;
+            $this->users->maybeQualify($fresh, false, $this->platform);
             Notifier::flushDeferred();
-            $updated = $this->users->find((int) $user['id']) ?? $user;
+            $updated = $this->users->find((int) $user['id']) ?? $fresh;
             $this->driver->answerCallback($callbackId, '✅ ثبت شد.');
             $this->sendMainMenu($updated, $chatId, '✅ عضویت شما ثبت شد. اکنون می‌توانید از تمام امکانات ربات استفاده کنید.');
             if (!empty($updated['referred_by']) && empty($updated['qualified_at'])) {
@@ -1312,10 +1415,19 @@ final class BotHandler
             return;
         }
 
-        // بررسی خودکار عضویت کانال (تلگرام و بله)
+        // بررسی خودکار عضویت کانال (بومی و میان‌پیام‌رسانی تأییدشده با API رسمی)
         if ($data === 'gate:check') {
             $membership = new MembershipService($this->db);
             $gate = $membership->gate($user, $this->platform, $upd->externalUserId);
+
+            // اگر کاربر در یک پیام‌رسان متصل‌شده (مثلاً تلگرام) روی بررسی عضویت زد، کانال‌های پیام‌رسان ورودی اصلی او را هم بررسی کن
+            $entryPlat = strtolower((string) ($user['entry_platform'] ?? $this->platform));
+            if ($gate['passed'] && $entryPlat !== $this->platform && $membership->enforcementEnabled()) {
+                $entryGate = $membership->gate($user, $entryPlat);
+                if (!$entryGate['passed']) {
+                    $gate = $entryGate;
+                }
+            }
 
             if ($gate['passed'] && empty($user['channels_verified']) && !$membership->enforcementEnabled()) {
                 $activeChannels = $membership->activeChannels($this->platform);
@@ -1344,16 +1456,23 @@ final class BotHandler
 
             if ($gate['passed']) {
                 $fresh = $this->users->find((int) $user['id']) ?? $user;
-                $this->users->maybeQualify($fresh, false, $this->platform);
+                $this->users->maybeQualify($fresh, false, $entryPlat);
                 Notifier::flushDeferred();
                 $updated = $this->users->find((int) $user['id']) ?? $fresh;
                 $this->driver->answerCallback($callbackId, '✅ عضویت تأیید شد.');
-                $this->sendMainMenu($updated, $chatId, '✅ عضویت شما در کانال‌ها تأیید شد. اکنون می‌توانید از تمامی امکانات ربات استفاده کنید.');
+                $this->sendMainMenu($updated, $chatId, '✅ عضویت شما در تمام کانال‌های الزامی تأیید شد. اکنون می‌توانید از تمامی امکانات ربات استفاده کنید.');
                 if (!empty($updated['referred_by']) && empty($updated['qualified_at'])) {
                     $this->sendPendingConditionActions($updated, $chatId);
                 }
             } elseif (($gate['reason'] ?? '') === 'contact') {
                 $this->driver->answerCallback($callbackId, '📱 ابتدا شماره تماس خود را ارسال کنید.', true);
+                $this->sendMembershipGate($user, $chatId, $gate);
+            } elseif (!empty($gate['needs_link_platforms'])) {
+                $needNames = implode(' و ', array_map(
+                    static fn(string $p): string => MessengerCapabilities::label($p),
+                    (array) $gate['needs_link_platforms']
+                ));
+                $this->driver->answerCallback($callbackId, '🔗 ابتدا حساب ' . $needNames . ' خود را متصل و در کانال عضو شوید.', true);
                 $this->sendMembershipGate($user, $chatId, $gate);
             } else {
                 $this->driver->answerCallback($callbackId, '❌ هنوز عضو همه کانال‌های اجباری نیستید.', true);

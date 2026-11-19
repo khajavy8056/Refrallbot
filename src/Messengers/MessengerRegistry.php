@@ -138,7 +138,12 @@ final class MessengerRegistry
                     $row['bot_photo_file_id'] = $tgLegacy['bot_photo_file_id'] ?? null;
                     $row['bot_photo_path'] = $tgLegacy['bot_photo_path'] ?? null;
                     $row['profile_synced_at'] = $tgLegacy['profile_synced_at'] ?? null;
-                    $row['connection_status'] = (string) ($tgLegacy['connection_status'] ?? ($hasTok ? 'configured' : 'unconfigured'));
+                    $wasConnected = (($tgLegacy['connection_status'] ?? '') === 'connected')
+                        || !empty($tgLegacy['webhook_active'])
+                        || ($hasTok && !empty($tgLegacy['bot_username']));
+                    $row['connection_status'] = $wasConnected
+                        ? 'connected'
+                        : (string) ($tgLegacy['connection_status'] ?? ($hasTok ? 'configured' : 'unconfigured'));
                     $row['last_error'] = (string) ($tgLegacy['last_error'] ?? '');
                     $row['last_test_at'] = $tgLegacy['last_test_at'] ?? null;
                     $row['last_update_at'] = $tgLegacy['last_update_at'] ?? null;
@@ -337,10 +342,173 @@ final class MessengerRegistry
         $row['suggested_webhook_url'] = $this->suggestedWebhookUrl($p, false);
         $row['suggested_miniapp_url'] = $this->suggestedMiniAppUrl($p);
         $row['ui_mode'] = $uiMode;
+        $row['is_active_connected'] = self::isConnectionActiveAndConnected($row);
         $row['status_badge'] = self::statusBadge($row);
         $row['has_photo'] = !empty($row['bot_photo_path']) || !empty($row['bot_photo_file_id']);
 
         return $row;
+    }
+
+    /**
+     * آیا پیام‌رسان هم «فعال» است و هم «اتصال موفق تأییدشده» دارد؟
+     * (معیار واحد نمایش تنظیمات، تب‌ها و آمار اختصاصی پیام‌رسان در سراسر پنل مدیریت)
+     */
+    public static function isConnectionActiveAndConnected(array $conn): bool
+    {
+        if (empty($conn['is_enabled'])) {
+            return false;
+        }
+        $hasToken = array_key_exists('has_token', $conn)
+            ? !empty($conn['has_token'])
+            : !empty($conn['bot_token_enc']);
+        if (!$hasToken) {
+            return false;
+        }
+        return (($conn['connection_status'] ?? '') === 'connected');
+    }
+
+    /** آیا پیام‌رسان مشخص هم‌اکنون فعال و با موفقیت متصل است؟ */
+    public function isActiveAndConnected(string $platform): bool
+    {
+        $p = strtolower(trim($platform));
+        if (!MessengerCapabilities::isSupported($p)) {
+            return false;
+        }
+        return self::isConnectionActiveAndConnected($this->safeConnection($p));
+    }
+
+    /** @return array<string,array<string,mixed>> فقط پیام‌رسان‌های فعال و با موفقیت متصل‌شده */
+    public function activeConnectedConnections(): array
+    {
+        $out = [];
+        foreach ($this->allConnections() as $p => $conn) {
+            if (!empty($conn['is_active_connected'])) {
+                $out[$p] = $conn;
+            }
+        }
+        return $out;
+    }
+
+    /** @return array<string,string> فقط پیام‌رسان‌های فعال و متصل‌شده [platform => name] */
+    public function activeConnectedPlatforms(): array
+    {
+        $out = [];
+        foreach ($this->activeConnectedConnections() as $p => $conn) {
+            $out[$p] = (string) ($conn['meta']['name'] ?? MessengerCapabilities::label($p));
+        }
+        return $out;
+    }
+
+    /** دسته‌بندی استاندارد گزارش خطاهای ارتباطی پیام‌رسان‌ها */
+    public const ERROR_CATEGORIES = [
+        'connection'    => 'تست و برقراری اتصال',
+        'webhook'       => 'ثبت/دریافت Webhook',
+        'send_message'  => 'ارسال پیام یا رسانه',
+        'channel_check' => 'بررسی عضویت کانال اجباری',
+        'polling'       => 'دریافت دوره‌ای (Polling)',
+        'profile'       => 'همگام‌سازی پروفایل ربات',
+        'api'           => 'فراخوانی API',
+    ];
+
+    public static function errorCategoryLabel(string $category): string
+    {
+        return self::ERROR_CATEGORIES[$category] ?? 'خطای ارتباطی';
+    }
+
+    /** ثبت ایزوله و امن خطای ارتباطی پیام‌رسان بدون افشای توکن و بدون توقف جریان اصلی */
+    public static function logError(
+        string $platform,
+        string $category,
+        string $message,
+        ?string $methodName = null,
+        ?int $errorCode = null,
+        array $context = [],
+        ?Database $db = null
+    ): void {
+        try {
+            $db ??= Database::instance();
+            if (!$db->tableExists('messenger_error_logs')) {
+                return;
+            }
+            $p = strtolower(trim($platform));
+            if ($p === '') {
+                return;
+            }
+            $cat = array_key_exists($category, self::ERROR_CATEGORIES) ? $category : 'api';
+            $safeMsg = mb_substr(ErrorHandler::redact(trim($message)), 0, 1000);
+            if ($safeMsg === '') {
+                return;
+            }
+            $safeCtx = $context === []
+                ? '{}'
+                : mb_substr(ErrorHandler::redact((string) json_encode($context, JSON_UNESCAPED_UNICODE)), 0, 1500);
+
+            $db->insert('messenger_error_logs', [
+                'platform' => mb_substr($p, 0, 32),
+                'category' => $cat,
+                'method_name' => $methodName !== null ? mb_substr($methodName, 0, 80) : null,
+                'error_code' => $errorCode,
+                'message' => $safeMsg,
+                'context' => $safeCtx,
+                'created_at' => now(),
+            ]);
+        } catch (\Throwable) {
+            // ثبت لاگ هرگز نباید باعث اختلال در هیچ پیام‌رسانی شود
+        }
+    }
+
+    /**
+     * دریافت فهرست خطاهای ارتباطی (فیلترشده روی پیام‌رسان‌های مجاز)
+     * @param string[]|null $allowedPlatforms اگر آرایه داده شود، فقط همان پیام‌رسان‌ها بازگردانده می‌شوند
+     * @return array<int,array<string,mixed>>
+     */
+    public function recentErrors(?array $allowedPlatforms = null, ?string $category = null, int $limit = 100, ?string $from = null, ?string $to = null): array
+    {
+        if (!$this->db->tableExists('messenger_error_logs')) {
+            return [];
+        }
+        if ($allowedPlatforms !== null && $allowedPlatforms === []) {
+            return [];
+        }
+        $where = [];
+        $bind = [];
+        if ($allowedPlatforms !== null) {
+            $ph = [];
+            foreach (array_values($allowedPlatforms) as $idx => $pl) {
+                $k = 'mp' . $idx;
+                $ph[] = ':' . $k;
+                $bind[$k] = strtolower(trim((string) $pl));
+            }
+            $where[] = 'platform IN (' . implode(',', $ph) . ')';
+        }
+        if ($category !== null && $category !== '' && array_key_exists($category, self::ERROR_CATEGORIES)) {
+            $where[] = 'category = :cat';
+            $bind['cat'] = $category;
+        }
+        if ($from !== null && $from !== '') {
+            $where[] = 'created_at >= :from';
+            $bind['from'] = $from;
+        }
+        if ($to !== null && $to !== '') {
+            $where[] = 'created_at <= :to';
+            $bind['to'] = $to;
+        }
+        $sql = 'SELECT * FROM messenger_error_logs'
+            . ($where !== [] ? ' WHERE ' . implode(' AND ', $where) : '')
+            . ' ORDER BY id DESC LIMIT ' . max(1, min(5000, $limit));
+        return $this->db->all($sql, $bind);
+    }
+
+    /** پاک‌سازی لاگ خطاهای ارتباطی (کل یا یک پیام‌رسان مشخص) */
+    public function clearErrors(?string $platform = null): int
+    {
+        if (!$this->db->tableExists('messenger_error_logs')) {
+            return 0;
+        }
+        if ($platform !== null && $platform !== '' && MessengerCapabilities::isSupported($platform)) {
+            return $this->db->delete('messenger_error_logs', 'platform = :p', ['p' => strtolower($platform)]);
+        }
+        return $this->db->delete('messenger_error_logs', '1 = 1');
     }
 
     /** @return array<string,array<string,mixed>> تمام پیام‌رسان‌ها با اطلاعات امن برای پنل */
@@ -739,6 +907,8 @@ final class MessengerRegistry
             'updated_at' => now(),
         ], 'platform = :p', ['p' => $p]);
 
+        self::logError($p, 'connection', $err, 'getMe', null, [], $this->db);
+
         if ($p === MessengerCapabilities::TELEGRAM) {
             $this->syncToLegacyTelegram($this->rawConnection($p));
         }
@@ -779,12 +949,17 @@ final class MessengerRegistry
             ? str_replace($secret, '***', $savedUrl)
             : $savedUrl;
 
+        $whErr = $ok ? '' : mb_substr((string) ($res['description'] ?? 'ثبت Webhook ناموفق بود.'), 0, 500);
         $this->db->update('messenger_connections', [
             'webhook_url' => $displayUrl,
             'webhook_status' => $ok ? 'active' : 'error',
-            'last_error' => $ok ? '' : mb_substr((string) ($res['description'] ?? ''), 0, 500),
+            'last_error' => $whErr,
             'updated_at' => now(),
         ], 'platform = :p', ['p' => $p]);
+
+        if (!$ok && $whErr !== '') {
+            self::logError($p, 'webhook', $whErr, 'setWebhook', null, [], $this->db);
+        }
 
         if ($p === MessengerCapabilities::TELEGRAM) {
             $this->syncToLegacyTelegram($this->rawConnection($p));

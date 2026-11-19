@@ -38,15 +38,19 @@ final class NetworkController extends AdminController
             $depth = 8;
         }
 
+        $msgSummary = \RB\Services\StatsService::segmentedMessengerSummary($db);
+
         $this->render('admin/network/index', [
             'title' => 'شبکه زیرمجموعه‌ها',
             'roots' => $roots,
             'topInviters' => $topInviters,
             'q' => $q,
             'depth' => $depth,
+            'activeMessengers' => $msgSummary['active'],
             'stats' => [
                 'total_relations' => (int) $db->value('SELECT COUNT(*) FROM referral_relations'),
                 'with_refs' => (int) $db->value('SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL'),
+                'indirect_refs' => (int) $db->value('SELECT COUNT(*) FROM referral_relations WHERE depth >= 2'),
                 'max_depth' => (int) $db->value('SELECT COALESCE(MAX(depth), 0) FROM referral_relations'),
                 'orphans' => (int) $db->value('SELECT COUNT(*) FROM users WHERE referred_by IS NULL AND total_ref_count > 0'),
             ],

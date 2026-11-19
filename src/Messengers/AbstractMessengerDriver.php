@@ -349,6 +349,9 @@ abstract class AbstractMessengerDriver implements MessengerDriverInterface
                     'UPDATE messenger_connections SET messages_failed = messages_failed + 1, last_error = :e, updated_at = :now WHERE platform = :p',
                     ['e' => $safeErr, 'now' => now(), 'p' => $this->platform()]
                 );
+                if ($safeErr !== '') {
+                    MessengerRegistry::logError($this->platform(), 'send_message', $safeErr, 'sendMessage', null, [], $this->db);
+                }
             }
         } catch (\Throwable) {
         }

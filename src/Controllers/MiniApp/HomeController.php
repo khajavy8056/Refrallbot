@@ -27,10 +27,7 @@ final class HomeController extends Controller
         $out = [];
         try {
             $registry = new MessengerRegistry(Database::instance());
-            foreach ($registry->allConnections() as $p => $conn) {
-                if (empty($conn['is_enabled'])) {
-                    continue;
-                }
+            foreach ($registry->activeConnectedConnections() as $p => $conn) {
                 $username = ltrim((string) ($conn['bot_username'] ?? ''), '@');
                 if ($username === '') {
                     continue;

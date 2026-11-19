@@ -1,20 +1,34 @@
 <?php
-$selectedPlatform = $selectedPlatform ?? 'telegram';
+$selectedPlatform = (string) ($selectedPlatform ?? '');
 $allMessengers = $allMessengers ?? [];
 $currentMessenger = $currentMessenger ?? null;
 ?>
-<!-- انتخابگر پیام‌رسان -->
-<div class="flex gap-1 wrap mb-3">
-    <?php foreach ($allMessengers as $mp => $mc): ?>
-        <a href="<?= url('admin/bot-profile?platform=' . $mp) ?>"
-           class="btn btn-sm <?= $mp === $selectedPlatform ? '' : 'btn-secondary' ?>">
-            <?= e(($mc['meta']['icon'] ?? '🤖') . ' ' . ($mc['meta']['name'] ?? $mp)) ?>
-            <?php if (!empty($mc['is_enabled']) && !empty($mc['has_token'])): ?>
-                <span style="font-size:.65rem;opacity:.85">●</span>
-            <?php endif; ?>
-        </a>
-    <?php endforeach; ?>
-</div>
+<?php if ($allMessengers === [] || $selectedPlatform === ''): ?>
+    <div class="card">
+        <div class="card-body empty-state">
+            <div class="empty-icon">🎨</div>
+            <div class="empty-title">هیچ پیام‌رسان فعال و متصل‌شده‌ای وجود ندارد</div>
+            <div class="empty-desc">
+                تنظیمات پروفایل، نام، بیوگرافی و تصویر ربات هر پیام‌رسان فقط پس از فعال‌سازی و اتصال موفق آن در بخش «پیام‌رسان‌ها» نمایش داده می‌شود.
+            </div>
+            <a href="<?= url('admin/messengers') ?>" class="btn btn-sm mt-2">📡 ورود به مدیریت پیام‌رسان‌ها</a>
+        </div>
+    </div>
+    <?php return; ?>
+<?php endif; ?>
+
+<?php if (count($allMessengers) > 1): ?>
+    <!-- انتخابگر پیام‌رسان‌های فعال و متصل -->
+    <div class="flex gap-1 wrap mb-3">
+        <?php foreach ($allMessengers as $mp => $mc): ?>
+            <a href="<?= url('admin/bot-profile?platform=' . $mp) ?>"
+               class="btn btn-sm <?= $mp === $selectedPlatform ? '' : 'btn-secondary' ?>">
+                <?= e(($mc['meta']['icon'] ?? '🤖') . ' ' . ($mc['meta']['name'] ?? $mp)) ?>
+                <span style="font-size:.65rem;color:var(--success,#16a34a)">●</span>
+            </a>
+        <?php endforeach; ?>
+    </div>
+<?php endif; ?>
 
 <?php if ($selectedPlatform !== 'telegram' && is_array($currentMessenger)): ?>
     <?php

@@ -14,7 +14,7 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
             <h1 class="mb-0" style="font-size:1.25rem"><?= e($name) ?></h1>
             <div class="text-sm text-muted">
                 <?= $user['username'] ? '@' . e($user['username']) . ' · ' : '' ?>
-                شناسه: <span class="mono"><?= fa_digits((string) $user['telegram_id']) ?></span>
+                شناسه: <span class="mono"><?= (int) ($user['telegram_id'] ?? 0) > 0 ? fa_digits((string) $user['telegram_id']) : ('#' . fa_digits((string) $user['id'])) ?></span>
                 · کد دعوت: <span class="mono"><?= e($user['referral_code']) ?></span>
             </div>
         </div>
@@ -54,13 +54,13 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
                         <div class="flex gap-1 wrap">
                             <?php foreach ($messengerAccounts as $ma): ?>
                                 <span class="badge badge-<?= !empty($ma['is_primary']) ? 'brand' : 'info' ?> no-dot">
-                                    <?= e(\RB\Messengers\MessengerCapabilities::label((string) $ma['platform'])) ?>
+                                    <?= e(\RB\Messengers\MessengerCapabilities::badge((string) $ma['platform'])) ?>
                                     <span class="ltr">(<?= e((string) $ma['external_user_id']) ?>)</span>
                                 </span>
                             <?php endforeach; ?>
                         </div>
                     <?php else: ?>
-                        <span class="badge badge-brand no-dot"><?= e(\RB\Messengers\MessengerCapabilities::label((string) ($user['entry_platform'] ?? 'telegram'))) ?></span>
+                        <span class="badge badge-brand no-dot"><?= e(\RB\Messengers\MessengerCapabilities::badge((string) ($user['entry_platform'] ?? 'telegram'))) ?></span>
                     <?php endif; ?>
                 </td></tr>
                 <tr><td class="text-muted">شماره تماس</td><td><?= $user['phone'] ? e($user['phone']) : '<span class="text-muted">ثبت نشده</span>' ?></td></tr>

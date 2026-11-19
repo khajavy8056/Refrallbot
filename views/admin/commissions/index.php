@@ -137,7 +137,7 @@ foreach (($stats['by_level'] ?? []) as $row) {
         <div class="card">
             <div class="card-header">
                 <h2 class="card-title">🛡 شرایط پرداخت و سقف‌های کنترل مالی</h2>
-                <span class="card-subtitle">اعمال یکسان روی تمام پیام‌رسان‌ها (تلگرام، بله، روبیکا و ایتا)</span>
+                <span class="card-subtitle">اعمال یکسان روی تمام پیام‌رسان‌های فعال و متصل</span>
             </div>
             <div class="card-body">
                 <?php

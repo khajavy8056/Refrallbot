@@ -19,15 +19,20 @@ final class UserController extends AdminController
 {
     public function index(): void
     {
-        $users = new UserService();
+        $db = Database::instance();
+        $users = new UserService($db);
         $filters = $this->filters(['q', 'status', 'platform', 'has_refs', 'has_income', 'with_phone', 'suspicious']);
         $from = $this->dateFilter('from');
         $to = $this->dateFilter('to');
         if ($from) { $filters['from'] = $from; }
         if ($to) { $filters['to'] = $to; }
 
+        $msgSummary = \RB\Services\StatsService::segmentedMessengerSummary($db);
+        // اگر فیلتر پیام‌رسان روی پلتفرم غیرفعال/متصل‌نشده باشد، پاک شود
+        if (!empty($filters['platform']) && !isset($msgSummary['active'][strtolower((string) $filters['platform'])])) {
+            unset($filters['platform']);
+        }
         $result = $users->paginate($filters, $this->page(), $this->perPage());
-        $db = Database::instance();
 
         $this->render('admin/users/index', [
             'title' => 'مدیریت کاربران',
@@ -35,6 +40,7 @@ final class UserController extends AdminController
             'filters' => $filters,
             'fromRaw' => $_GET['from'] ?? '',
             'toRaw' => $_GET['to'] ?? '',
+            'activeMessengers' => $msgSummary['active'],
             'summary' => [
                 'total' => (int) $db->value('SELECT COUNT(*) FROM users'),
                 'active' => (int) $db->value("SELECT COUNT(*) FROM users WHERE status = 'active'"),

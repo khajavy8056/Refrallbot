@@ -141,22 +141,30 @@ final class DashboardApiController extends Controller
         $currAcc = $userSvc->messengerAccountForPlatform($uid, $platform);
         $canSendMsg = $currAcc ? !empty($currAcc['can_send_message']) : true;
 
-        // وضعیت کانال‌های اجباری در پیام‌رسان جاری (بدون تماس شبکه سنگین در بارگذاری اولیه؛ فقط لیست کانال‌ها)
+        // وضعیت کانال‌های اجباری (بومی + میان‌پیام‌رسانی قابل راستی‌آزمایی) بدون تماس شبکه در بارگذاری اولیه
         $memSvc = new MembershipService($db);
         $reqChannels = [];
         if ($memSvc->enforcementEnabled() && empty($user['channels_verified'])) {
             foreach ($memSvc->activeChannels($platform) as $ch) {
+                $hostPlat = strtolower(trim((string) ($ch['platform'] ?? $platform)));
+                if ($hostPlat === 'all' || !MessengerCapabilities::isSupported($hostPlat)) {
+                    $hostPlat = $platform;
+                }
+                $isCross = ($hostPlat !== $platform);
+                $hostSupportsApi = MessengerCapabilities::supports($hostPlat, 'channel_check_api');
+                if ($isCross && !$hostSupportsApi) {
+                    continue;
+                }
+                $linkedOnHost = $isCross ? ($userSvc->messengerAccountForPlatform($uid, $hostPlat) !== null) : true;
                 $reqChannels[] = [
                     'id' => (int) $ch['id'],
                     'title' => (string) $ch['title'],
-                    'join_link' => (string) ($ch['invite_link'] ?: (str_starts_with((string) ($ch['chat_id'] ?? ''), '@')
-                        ? match ($platform) {
-                            MessengerCapabilities::BALE => 'https://ble.ir/' . ltrim((string) $ch['chat_id'], '@'),
-                            MessengerCapabilities::RUBIKA => 'https://rubika.ir/' . ltrim((string) $ch['chat_id'], '@'),
-                            MessengerCapabilities::EITAA => 'https://eitaa.com/' . ltrim((string) $ch['chat_id'], '@'),
-                            default => 'https://t.me/' . ltrim((string) $ch['chat_id'], '@'),
-                        } : '')),
-                    'self_confirm' => (($ch['check_mode'] ?? 'api') === 'self_confirm') || !MessengerCapabilities::supports($platform, 'channel_check_api'),
+                    'platform' => $hostPlat,
+                    'platform_badge' => MessengerCapabilities::badge($hostPlat),
+                    'is_cross_platform' => $isCross,
+                    'needs_account_link' => $isCross && !$linkedOnHost,
+                    'join_link' => (string) (MembershipService::channelUrl($ch) ?? ''),
+                    'self_confirm' => !$isCross && ((($ch['check_mode'] ?? 'api') === 'self_confirm') || !$hostSupportsApi),
                 ];
             }
         }
@@ -715,31 +723,43 @@ final class DashboardApiController extends Controller
         $memSvc = new MembershipService($db);
         $selfConfirm = !empty($_POST['self_confirm']);
 
-        if (!MessengerCapabilities::supports($platform, 'channel_check_api') && $selfConfirm) {
-            $userSvc->markChannelsVerified((int) $user['id']);
-            $fresh = $userSvc->find((int) $user['id']) ?? $user;
-            $qualified = $userSvc->maybeQualify($fresh, false, $platform);
-            Notifier::flushDeferred();
-            $this->ok($qualified ? 'عضویت ثبت شد و پاداش شما فعال گردید! 🎁' : 'عضویت شما ثبت شد.', ['qualified' => $qualified]);
-            return;
-        }
-
-        $gate = $memSvc->gate($user, $platform, $extId !== '' ? $extId : null);
-        if (!$gate['passed'] && ($gate['reason'] ?? '') === 'channels') {
-            if (!empty($gate['self_confirm']) && $selfConfirm) {
-                $userSvc->markChannelsVerified((int) $user['id']);
-            } else {
-                $names = implode('، ', array_map(static fn(array $c): string => (string) $c['title'], $gate['channels'] ?? []));
-                $this->fail('ابتدا در کانال‌های زیر عضو شوید و دوباره بزنید: ' . $names);
+        if ($selfConfirm) {
+            $confirm = $memSvc->confirmSelfDeclaredChannels($user, $platform, $extId !== '' ? $extId : null);
+            if ($confirm['all_passed']) {
+                $fresh = $userSvc->find((int) $user['id']) ?? $user;
+                $qualified = $userSvc->maybeQualify($fresh, false, $platform);
+                Notifier::flushDeferred();
+                $this->ok($qualified ? 'عضویت ثبت شد و پاداش شما فعال گردید! 🎁' : 'عضویت شما با موفقیت ثبت و تأیید شد.', ['qualified' => $qualified]);
                 return;
             }
+            $gate = $confirm['gate'];
+        } else {
+            $gate = $memSvc->gate($user, $platform, $extId !== '' ? $extId : null);
+        }
+
+        if (!$gate['passed'] && ($gate['reason'] ?? '') === 'channels') {
+            if (!empty($gate['needs_link_platforms'])) {
+                $firstHost = (string) $gate['needs_link_platforms'][0];
+                $prompt = $memSvc->buildCrossPlatformLinkPrompt((int) $user['id'], $firstHost);
+                $names = implode('، ', array_map(static fn(array $c): string => (string) $c['title'], $gate['channels'] ?? []));
+                $this->json([
+                    'ok' => false,
+                    'needs_link' => true,
+                    'link_prompt' => $prompt,
+                    'error' => 'برای تأیید واقعی عضویت در «' . $names . '»، ابتدا حساب ' . $prompt['badge'] . ' خود را با کد ' . $prompt['code'] . ' متصل کرده، در کانال عضو شوید و دوباره بررسی عضویت را بزنید.',
+                ], 422);
+                return;
+            }
+            $names = implode('، ', array_map(static fn(array $c): string => (string) $c['title'], $gate['channels'] ?? []));
+            $this->fail('ابتدا در کانال‌های زیر عضو شوید و دوباره بررسی عضویت را بزنید: ' . $names);
+            return;
         }
 
         $userSvc->markChannelsVerified((int) $user['id']);
         $fresh = $userSvc->find((int) $user['id']) ?? $user;
         $qualified = $userSvc->maybeQualify($fresh, false, $platform);
         Notifier::flushDeferred();
-        $this->ok($qualified ? 'عضویت تأیید شد و پاداش شما فعال گردید! 🎁' : 'عضویت در کانال‌ها با موفقیت تأیید شد.', ['qualified' => $qualified]);
+        $this->ok($qualified ? 'عضویت تأیید شد و پاداش شما فعال گردید! 🎁' : 'عضویت در تمام کانال‌های الزامی با موفقیت تأیید شد.', ['qualified' => $qualified]);
     }
 
     public function transactions(): void

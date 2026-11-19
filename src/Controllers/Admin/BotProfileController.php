@@ -32,7 +32,17 @@ final class BotProfileController extends AdminController
             $selectedPlatform = MessengerCapabilities::TELEGRAM;
         }
         $registry = new MessengerRegistry($db);
-        $allMessengers = $registry->allConnections();
+        // فقط پیام‌رسان‌های فعال و با موفقیت متصل‌شده نمایش داده می‌شوند
+        $activeMessengers = $registry->activeConnectedConnections();
+
+        $requested = strtolower(trim((string) ($_GET['platform'] ?? '')));
+        if ($activeMessengers === []) {
+            $selectedPlatform = '';
+        } elseif ($requested !== '' && isset($activeMessengers[$requested])) {
+            $selectedPlatform = $requested;
+        } else {
+            $selectedPlatform = (string) array_key_first($activeMessengers);
+        }
 
         TelegramService::forgetSettingsCache();
         $tg = new TelegramService(null, $db);
@@ -57,10 +67,10 @@ final class BotProfileController extends AdminController
         $hasPhoto = $this->resolveStoredPhotoPath($settings) !== null || !empty($settings['bot_photo_file_id']);
 
         $this->render('admin/bot_profile/index', [
-            'title' => 'پروفایل و ظاهر ربات‌ها',
+            'title' => 'پروفایل و ظاهر ربات',
             'selectedPlatform' => $selectedPlatform,
-            'allMessengers' => $allMessengers,
-            'currentMessenger' => $allMessengers[$selectedPlatform] ?? null,
+            'allMessengers' => $activeMessengers,
+            'currentMessenger' => $selectedPlatform !== '' ? ($activeMessengers[$selectedPlatform] ?? null) : null,
             'settings' => $settings,
             'configured' => $tg->isConfigured(),
             'maskedToken' => $tg->maskedToken(),

@@ -479,9 +479,10 @@ final class StatsService
     }
 
     /**
-     * گزارش عملکرد و درآمد مستقل به تفکیک هر پیام‌رسان (تلگرام، بله، روبیکا، ایتا)
+     * گزارش عملکرد و درآمد مستقل به تفکیک هر پیام‌رسان (شامل کاربران، ثبت‌نام، رفرال مستقیم/غیرمستقیم،
+     * پاداش‌ها، عضویت کانال‌ها، وضعیت ربات، پیام‌های ارسالی و خطاهای ارتباطی)
      */
-    public static function messengerPerformanceReport(?Database $db = null): array
+    public static function messengerPerformanceReport(?Database $db = null, bool $onlyActiveConnected = false): array
     {
         $db ??= Database::instance();
         $registry = new \RB\Messengers\MessengerRegistry($db);
@@ -491,19 +492,36 @@ final class StatsService
         $hasSource = $db->columnExists('users', 'referral_source_platform');
         $hasAcc = $db->tableExists('user_messenger_accounts');
         $hasEvPlat = $db->columnExists('referral_events', 'platform');
+        $hasRel = $db->tableExists('referral_relations');
+        $hasChPlat = $db->columnExists('telegram_channels', 'platform');
+        $hasChMem = $db->tableExists('user_channel_memberships');
+        $hasMsgPlat = $db->columnExists('telegram_messages', 'platform');
+        $hasBcPlat = $db->columnExists('broadcast_campaigns', 'target_platform');
+        $hasErrLog = $db->tableExists('messenger_error_logs');
+
+        $todayTs = today_start();
+        $weekTs = date('Y-m-d 00:00:00', strtotime('-6 days'));
+        $monthTs = date('Y-m-d 00:00:00', strtotime('-29 days'));
+        $last24h = date('Y-m-d H:i:s', time() - 86400);
 
         $usersByPlat = [];
         if ($hasEntry) {
             foreach ($db->all(
                 "SELECT COALESCE(entry_platform, 'telegram') AS p,
                         COUNT(*) AS total_users,
-                        SUM(CASE WHEN joined_at >= :today THEN 1 ELSE 0 END) AS today_users
+                        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_users,
+                        SUM(CASE WHEN joined_at >= :today THEN 1 ELSE 0 END) AS today_users,
+                        SUM(CASE WHEN joined_at >= :week THEN 1 ELSE 0 END) AS week_users,
+                        SUM(CASE WHEN joined_at >= :month THEN 1 ELSE 0 END) AS month_users
                  FROM users GROUP BY COALESCE(entry_platform, 'telegram')",
-                ['today' => today_start()]
+                ['today' => $todayTs, 'week' => $weekTs, 'month' => $monthTs]
             ) as $r) {
                 $usersByPlat[(string) $r['p']] = [
                     'total_users' => (int) $r['total_users'],
+                    'active_users' => (int) $r['active_users'],
                     'today_users' => (int) $r['today_users'],
+                    'week_users' => (int) $r['week_users'],
+                    'month_users' => (int) $r['month_users'],
                 ];
             }
         }
@@ -513,14 +531,33 @@ final class StatsService
             foreach ($db->all(
                 "SELECT COALESCE(referral_source_platform, entry_platform, 'telegram') AS p,
                         COUNT(*) AS direct_refs,
-                        SUM(CASE WHEN qualified_at IS NOT NULL THEN 1 ELSE 0 END) AS qualified_refs
+                        SUM(CASE WHEN qualified_at IS NOT NULL THEN 1 ELSE 0 END) AS qualified_refs,
+                        SUM(CASE WHEN qualified_at IS NULL THEN 1 ELSE 0 END) AS pending_refs
                  FROM users WHERE referred_by IS NOT NULL
                  GROUP BY COALESCE(referral_source_platform, entry_platform, 'telegram')"
             ) as $r) {
                 $refsByPlat[(string) $r['p']] = [
                     'direct_refs' => (int) $r['direct_refs'],
                     'qualified_refs' => (int) $r['qualified_refs'],
+                    'pending_refs' => (int) $r['pending_refs'],
                 ];
+            }
+        }
+
+        // دعوت غیرمستقیم (عمق ۲ به بعد در referral_relations = لایه‌های ۱ تا ۸ غیرمستقیم)
+        $indirectByPlat = [];
+        if ($hasRel && $hasEntry) {
+            $platExpr = $hasSource
+                ? "COALESCE(u.referral_source_platform, u.entry_platform, 'telegram')"
+                : "COALESCE(u.entry_platform, 'telegram')";
+            foreach ($db->all(
+                "SELECT {$platExpr} AS p, COUNT(*) AS indirect_refs
+                 FROM referral_relations rr
+                 JOIN users u ON u.id = rr.descendant_id
+                 WHERE rr.depth >= 2
+                 GROUP BY {$platExpr}"
+            ) as $r) {
+                $indirectByPlat[(string) $r['p']] = (int) $r['indirect_refs'];
             }
         }
 
@@ -554,39 +591,238 @@ final class StatsService
             }
         }
 
+        // آمار کانال‌های فعال و عضویت‌های تأییدشده به تفکیک پیام‌رسان میزبان
+        $channelsByPlat = [];
+        if ($db->tableExists('telegram_channels')) {
+            if ($hasChPlat) {
+                foreach ($db->all("SELECT COALESCE(platform, 'telegram') AS p, COUNT(*) AS c FROM telegram_channels WHERE is_active = 1 GROUP BY COALESCE(platform, 'telegram')") as $r) {
+                    $channelsByPlat[(string) $r['p']] = (int) $r['c'];
+                }
+            } else {
+                $channelsByPlat['telegram'] = (int) $db->value('SELECT COUNT(*) FROM telegram_channels WHERE is_active = 1');
+            }
+        }
+
+        $chMembersByPlat = [];
+        if ($hasChMem) {
+            foreach ($db->all(
+                "SELECT channel_platform AS p,
+                        COUNT(*) AS total_m,
+                        SUM(CASE WHEN verify_method = 'api_direct' THEN 1 ELSE 0 END) AS direct_m,
+                        SUM(CASE WHEN verify_method = 'api_cross_linked' THEN 1 ELSE 0 END) AS cross_m,
+                        SUM(CASE WHEN verify_method = 'self_declared' THEN 1 ELSE 0 END) AS self_m
+                 FROM user_channel_memberships
+                 WHERE status = 'verified'
+                 GROUP BY channel_platform"
+            ) as $r) {
+                $chMembersByPlat[(string) $r['p']] = [
+                    'total' => (int) $r['total_m'],
+                    'direct' => (int) $r['direct_m'],
+                    'cross' => (int) $r['cross_m'],
+                    'self' => (int) $r['self_m'],
+                ];
+            }
+        }
+
+        // آمار پیام‌های ثبت‌شده در telegram_messages و پیام‌های همگانی
+        $msgByPlat = [];
+        if ($hasMsgPlat && $db->tableExists('telegram_messages')) {
+            foreach ($db->all(
+                "SELECT COALESCE(platform, 'telegram') AS p,
+                        SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END) AS out_cnt,
+                        SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END) AS in_cnt
+                 FROM telegram_messages GROUP BY COALESCE(platform, 'telegram')"
+            ) as $r) {
+                $msgByPlat[(string) $r['p']] = [
+                    'out' => (int) $r['out_cnt'],
+                    'in' => (int) $r['in_cnt'],
+                ];
+            }
+        }
+
+        $bcByPlat = [];
+        if ($hasBcPlat && $db->tableExists('broadcast_campaigns')) {
+            foreach ($db->all(
+                "SELECT target_platform AS p, COALESCE(SUM(sent_count), 0) AS sent, COALESCE(SUM(failed_count), 0) AS failed
+                 FROM broadcast_campaigns WHERE target_platform <> 'all' GROUP BY target_platform"
+            ) as $r) {
+                $bcByPlat[(string) $r['p']] = [
+                    'sent' => (int) $r['sent'],
+                    'failed' => (int) $r['failed'],
+                ];
+            }
+        }
+
+        // آمار خطاهای ارتباطی ثبت‌شده
+        $errByPlat = [];
+        if ($hasErrLog) {
+            foreach ($db->all(
+                'SELECT platform AS p, COUNT(*) AS total_err,
+                        SUM(CASE WHEN created_at >= :d THEN 1 ELSE 0 END) AS err_24h
+                 FROM messenger_error_logs GROUP BY platform',
+                ['d' => $last24h]
+            ) as $r) {
+                $errByPlat[(string) $r['p']] = [
+                    'total' => (int) $r['total_err'],
+                    'last_24h' => (int) $r['err_24h'],
+                ];
+            }
+        }
+
         $out = [];
         foreach (\RB\Messengers\MessengerCapabilities::platforms() as $p) {
-            $meta = \RB\Messengers\MessengerCapabilities::get($p);
             $conn = $connections[$p] ?? [];
+            $isActiveConnected = !empty($conn['is_active_connected']);
+            if ($onlyActiveConnected && !$isActiveConnected) {
+                continue;
+            }
+            $meta = \RB\Messengers\MessengerCapabilities::get($p);
+            $uStat = $usersByPlat[$p] ?? ['total_users' => 0, 'active_users' => 0, 'today_users' => 0, 'week_users' => 0, 'month_users' => 0];
+            $rStat = $refsByPlat[$p] ?? ['direct_refs' => 0, 'qualified_refs' => 0, 'pending_refs' => 0];
+            $indirectRefs = $indirectByPlat[$p] ?? 0;
             $inc = $incomeByPlat[$p] ?? ['direct_paid' => 0, 'indirect_paid' => 0, 'welcome_paid' => 0, 'total_paid' => 0, 'total_pending' => 0];
+            $cm = $chMembersByPlat[$p] ?? ['total' => 0, 'direct' => 0, 'cross' => 0, 'self' => 0];
+            $ms = $msgByPlat[$p] ?? ['out' => 0, 'in' => 0];
+            $bc = $bcByPlat[$p] ?? ['sent' => 0, 'failed' => 0];
+            $er = $errByPlat[$p] ?? ['total' => 0, 'last_24h' => 0];
+
+            $connSent = (int) ($conn['messages_sent'] ?? 0);
+            $effectiveSent = max($connSent, $ms['out']);
+
+            // اگر کاربران قبلی channels_verified داشتند اما هنوز رکوردی در user_channel_memberships نیست
+            $channelVerifiedTotal = $cm['total'];
+            if ($channelVerifiedTotal === 0 && ($channelsByPlat[$p] ?? 0) > 0 && $hasEntry) {
+                $channelVerifiedTotal = (int) $db->value(
+                    "SELECT COUNT(*) FROM users WHERE COALESCE(entry_platform, 'telegram') = :p AND channels_verified = 1",
+                    ['p' => $p]
+                );
+            }
+
+            // حساب‌های یکتای متصل به این پیام‌رسان (شامل کاربران ثبت‌نامی مستقیم + کاربرانی که حسابشان را لینک کرده‌اند)
+            $linkedCount = $linkedByPlat[$p] ?? 0;
+            $independentUsers = max($uStat['total_users'], $linkedCount);
+
             $out[$p] = [
                 'platform' => $p,
                 'name' => (string) $meta['name'],
                 'icon' => (string) $meta['icon'],
+                'badge' => \RB\Messengers\MessengerCapabilities::badge($p),
+                'users_label' => \RB\Messengers\MessengerCapabilities::usersLabel($p),
                 'color' => (string) $meta['color'],
                 'is_enabled' => !empty($conn['is_enabled']),
                 'has_token' => !empty($conn['has_token']),
+                'is_active_connected' => $isActiveConnected,
                 'bot_username' => (string) ($conn['bot_username'] ?? ''),
                 'bot_name' => (string) ($conn['bot_name'] ?? ''),
+                'webhook_status' => (string) ($conn['webhook_status'] ?? 'not_set'),
+                'polling_enabled' => !empty($conn['polling_enabled']),
+                'last_update_at' => $conn['last_update_at'] ?? null,
+                'last_error' => (string) ($conn['last_error'] ?? ''),
                 'status_badge' => $conn['status_badge'] ?? ['label' => 'پیکربندی‌نشده', 'class' => 'badge-muted'],
                 'ui_mode' => $conn['ui_mode'] ?? [],
-                'registered_users' => $usersByPlat[$p]['total_users'] ?? 0,
-                'today_users' => $usersByPlat[$p]['today_users'] ?? 0,
-                'linked_accounts' => $linkedByPlat[$p] ?? ($usersByPlat[$p]['total_users'] ?? 0),
-                'direct_referrals' => $refsByPlat[$p]['direct_refs'] ?? 0,
-                'qualified_referrals' => $refsByPlat[$p]['qualified_refs'] ?? 0,
+                // آمار کاربران و ثبت‌نام
+                'registered_users' => $uStat['total_users'],
+                'independent_users' => $independentUsers,
+                'active_users' => $uStat['active_users'],
+                'today_users' => $uStat['today_users'],
+                'week_users' => $uStat['week_users'],
+                'month_users' => $uStat['month_users'],
+                'linked_accounts' => $linkedCount > 0 ? $linkedCount : $uStat['total_users'],
+                // آمار رفرال و دعوت مستقیم/غیرمستقیم
+                'direct_referrals' => $rStat['direct_refs'],
+                'indirect_referrals' => $indirectRefs,
+                'total_referrals' => $rStat['direct_refs'] + $indirectRefs,
+                'qualified_referrals' => $rStat['qualified_refs'],
+                'pending_referrals' => $rStat['pending_refs'],
+                // آمار پاداش‌ها
                 'direct_paid' => $inc['direct_paid'],
                 'indirect_paid' => $inc['indirect_paid'],
                 'welcome_paid' => $inc['welcome_paid'],
                 'total_paid' => $inc['total_paid'],
                 'total_pending' => $inc['total_pending'],
                 'total_income' => $inc['total_paid'] + $inc['total_pending'],
-                'updates_received' => (int) ($conn['updates_received'] ?? 0),
-                'messages_sent' => (int) ($conn['messages_sent'] ?? 0),
-                'messages_failed' => (int) ($conn['messages_failed'] ?? 0),
+                // آمار عضویت در کانال‌ها
+                'active_channels' => $channelsByPlat[$p] ?? 0,
+                'channel_members_total' => $channelVerifiedTotal,
+                'channel_members_direct' => $cm['direct'],
+                'channel_members_cross' => $cm['cross'],
+                'channel_members_self' => $cm['self'],
+                // آمار پیام‌های ارسالی و خطاهای ارتباطی
+                'updates_received' => max((int) ($conn['updates_received'] ?? 0), $ms['in']),
+                'messages_sent' => $effectiveSent,
+                'messages_failed' => (int) ($conn['messages_failed'] ?? 0) + $bc['failed'],
+                'broadcasts_sent' => $bc['sent'],
+                'error_count' => $er['total'],
+                'errors_24h' => $er['last_24h'],
             ];
         }
         return $out;
+    }
+
+    /**
+     * خلاصه تفکیکی هوشمند برای پنل مدیریت:
+     *   - active : فقط پیام‌رسان‌های فعال و با موفقیت متصل‌شده (بدون نمایش آمار صفر برای پیام‌رسان غیرفعال)
+     *   - totals : مجموع کل واقعی سیستم (همیشه مستقل از فعال/غیرفعال بودن هر پیام‌رسان حفظ می‌شود)
+     *
+     * @return array{active:array<string,array<string,mixed>>,totals:array<string,int>}
+     */
+    public static function segmentedMessengerSummary(?Database $db = null): array
+    {
+        $db ??= Database::instance();
+        $all = self::messengerPerformanceReport($db, false);
+        $active = [];
+        foreach ($all as $p => $row) {
+            if (!empty($row['is_active_connected'])) {
+                $active[$p] = $row;
+            }
+        }
+
+        $todayTs = today_start();
+        $weekTs = date('Y-m-d 00:00:00', strtotime('-6 days'));
+        $monthTs = date('Y-m-d 00:00:00', strtotime('-29 days'));
+
+        $directRefs = (int) $db->value('SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL');
+        $indirectRefs = $db->tableExists('referral_relations')
+            ? (int) $db->value('SELECT COUNT(*) FROM referral_relations WHERE depth >= 2')
+            : 0;
+        $chMemTotal = $db->tableExists('user_channel_memberships')
+            ? (int) $db->value("SELECT COUNT(*) FROM user_channel_memberships WHERE status = 'verified'")
+            : 0;
+        if ($chMemTotal === 0) {
+            $chMemTotal = (int) $db->value('SELECT COUNT(*) FROM users WHERE channels_verified = 1');
+        }
+
+        $totals = [
+            'connected_bots' => count($active),
+            'total_users' => (int) $db->value('SELECT COUNT(*) FROM users'),
+            'active_users' => (int) $db->value("SELECT COUNT(*) FROM users WHERE status = 'active'"),
+            'today_users' => (int) $db->value('SELECT COUNT(*) FROM users WHERE joined_at >= :t', ['t' => $todayTs]),
+            'week_users' => (int) $db->value('SELECT COUNT(*) FROM users WHERE joined_at >= :t', ['t' => $weekTs]),
+            'month_users' => (int) $db->value('SELECT COUNT(*) FROM users WHERE joined_at >= :t', ['t' => $monthTs]),
+            'direct_referrals' => $directRefs,
+            'indirect_referrals' => $indirectRefs,
+            'total_referrals' => $directRefs + $indirectRefs,
+            'qualified_referrals' => (int) $db->value('SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL AND qualified_at IS NOT NULL'),
+            'pending_referrals' => (int) $db->value('SELECT COUNT(*) FROM users WHERE referred_by IS NOT NULL AND qualified_at IS NULL'),
+            'direct_paid' => (int) $db->value("SELECT COALESCE(SUM(amount), 0) FROM referral_commissions WHERE type = 'direct' AND status IN ('approved','credited')"),
+            'indirect_paid' => (int) $db->value("SELECT COALESCE(SUM(amount), 0) FROM referral_commissions WHERE type = 'level' AND status IN ('approved','credited')"),
+            'welcome_paid' => (int) $db->value("SELECT COALESCE(SUM(amount), 0) FROM referral_commissions WHERE type = 'welcome' AND status IN ('approved','credited')"),
+            'total_paid' => (int) $db->value("SELECT COALESCE(SUM(amount), 0) FROM referral_commissions WHERE status IN ('approved','credited')"),
+            'total_pending' => (int) $db->value("SELECT COALESCE(SUM(amount), 0) FROM referral_commissions WHERE status = 'pending'"),
+            'active_channels' => $db->tableExists('telegram_channels') ? (int) $db->value('SELECT COUNT(*) FROM telegram_channels WHERE is_active = 1') : 0,
+            'channel_members_total' => $chMemTotal,
+            'messages_sent' => array_sum(array_column($all, 'messages_sent')),
+            'messages_failed' => array_sum(array_column($all, 'messages_failed')),
+            'updates_received' => array_sum(array_column($all, 'updates_received')),
+            'broadcasts_sent' => $db->tableExists('broadcast_campaigns') ? (int) $db->value('SELECT COALESCE(SUM(sent_count), 0) FROM broadcast_campaigns') : 0,
+            'error_count' => $db->tableExists('messenger_error_logs') ? (int) $db->value('SELECT COUNT(*) FROM messenger_error_logs') : 0,
+            'errors_24h' => array_sum(array_column($active, 'errors_24h')),
+        ];
+
+        return [
+            'active' => $active,
+            'totals' => $totals,
+        ];
     }
 
     public static function recentActivity(int $limit = 10): array

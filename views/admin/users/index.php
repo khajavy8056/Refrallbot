@@ -20,8 +20,18 @@ $pageUrl = static function (int $p) use ($queryBase) {
     </div>
 </div>
 
+<?php $activeMsg = (isset($activeMessengers) && is_array($activeMessengers)) ? $activeMessengers : []; ?>
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
-    <div class="stat"><div class="stat-head"><div class="stat-icon">👥</div><div class="stat-label">کل کاربران</div></div><div class="stat-value"><?= fa_digits(number_format($summary['total'])) ?></div></div>
+    <div class="stat"><div class="stat-head"><div class="stat-icon">👥</div><div class="stat-label">کل کاربران سیستم</div></div><div class="stat-value"><?= fa_digits(number_format($summary['total'])) ?></div></div>
+    <?php foreach ($activeMsg as $mp => $mi): ?>
+        <div class="stat" style="border-top:3px solid <?= e((string) ($mi['color'] ?? 'var(--brand-500)')) ?>">
+            <div class="stat-head">
+                <div class="stat-icon"><?= e((string) ($mi['icon'] ?? '🤖')) ?></div>
+                <div class="stat-label"><?= e((string) ($mi['users_label'] ?? ('کاربران ' . ($mi['name'] ?? $mp)))) ?></div>
+            </div>
+            <div class="stat-value"><?= fa_digits(number_format((int) ($mi['independent_users'] ?? $mi['registered_users'] ?? 0))) ?></div>
+        </div>
+    <?php endforeach; ?>
     <div class="stat success"><div class="stat-head"><div class="stat-icon">✅</div><div class="stat-label">فعال</div></div><div class="stat-value"><?= fa_digits(number_format($summary['active'])) ?></div></div>
     <div class="stat danger"><div class="stat-head"><div class="stat-icon">⛔️</div><div class="stat-label">مسدود</div></div><div class="stat-value"><?= fa_digits(number_format($summary['blocked'])) ?></div></div>
     <div class="stat info"><div class="stat-head"><div class="stat-icon">🕸</div><div class="stat-label">دارای زیرمجموعه</div></div><div class="stat-value"><?= fa_digits(number_format($summary['with_refs'])) ?></div></div>
@@ -32,18 +42,21 @@ $pageUrl = static function (int $p) use ($queryBase) {
         <div class="form-group" style="min-width:240px">
             <label class="form-label">جستجو</label>
             <input type="search" name="q" class="form-control" value="<?= e($filters['q'] ?? '') ?>"
-                   placeholder="نام، نام کاربری، شناسه تلگرام، کد دعوت…">
+                   placeholder="نام، نام کاربری، شناسه کاربری، کد دعوت…">
         </div>
-        <div class="form-group">
-            <label class="form-label">پیام‌رسان</label>
-            <select name="platform" class="form-select">
-                <option value="">همه</option>
-                <option value="telegram" <?= ($filters['platform'] ?? '') === 'telegram' ? 'selected' : '' ?>>✈️ تلگرام</option>
-                <option value="bale" <?= ($filters['platform'] ?? '') === 'bale' ? 'selected' : '' ?>>💬 بله</option>
-                <option value="rubika" <?= ($filters['platform'] ?? '') === 'rubika' ? 'selected' : '' ?>>🟣 روبیکا</option>
-                <option value="eitaa" <?= ($filters['platform'] ?? '') === 'eitaa' ? 'selected' : '' ?>>🟠 ایتا</option>
-            </select>
-        </div>
+        <?php if (count($activeMsg) > 1): ?>
+            <div class="form-group">
+                <label class="form-label">پیام‌رسان</label>
+                <select name="platform" class="form-select">
+                    <option value="">همه پیام‌رسان‌های متصل</option>
+                    <?php foreach ($activeMsg as $mp => $mi): ?>
+                        <option value="<?= e($mp) ?>" <?= ($filters['platform'] ?? '') === $mp ? 'selected' : '' ?>>
+                            <?= e(($mi['icon'] ?? '') . ' ' . ($mi['name'] ?? $mp)) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+        <?php endif; ?>
         <div class="form-group">
             <label class="form-label">وضعیت</label>
             <select name="status" class="form-select">
@@ -87,7 +100,7 @@ $pageUrl = static function (int $p) use ($queryBase) {
                 <thead>
                 <tr>
                     <th>کاربر</th>
-                    <th>شناسه تلگرام</th>
+                    <th>پیام‌رسان / شناسه</th>
                     <th>معرف</th>
                     <th>زیرمجموعه</th>
                     <th>درآمد</th>
@@ -98,7 +111,11 @@ $pageUrl = static function (int $p) use ($queryBase) {
                 </tr>
                 </thead>
                 <tbody>
-                <?php foreach ($result['rows'] as $u): ?>
+                <?php foreach ($result['rows'] as $u):
+                    $uPlat = strtolower((string) ($u['entry_platform'] ?? 'telegram'));
+                    $uBadge = \RB\Messengers\MessengerCapabilities::badge($uPlat);
+                    $dispId = (int) ($u['telegram_id'] ?? 0) > 0 ? fa_digits((string) $u['telegram_id']) : ('#' . fa_digits((string) $u['id']));
+                ?>
                     <tr>
                         <td data-label="کاربر">
                             <div class="user-cell">
@@ -109,7 +126,10 @@ $pageUrl = static function (int $p) use ($queryBase) {
                                 </div>
                             </div>
                         </td>
-                        <td data-label="شناسه" class="num" style="direction:ltr;text-align:right"><?= fa_digits((string) $u['telegram_id']) ?></td>
+                        <td data-label="پیام‌رسان / شناسه">
+                            <span class="badge badge-brand no-dot" style="font-size:.7rem"><?= e($uBadge) ?></span>
+                            <div class="num text-xs text-muted" style="direction:ltr;text-align:right;margin-top:2px"><?= e($dispId) ?></div>
+                        </td>
                         <td data-label="معرف" class="text-sm">
                             <?php if ($u['referrer_first_name']): ?>
                                 <?= e($u['referrer_first_name']) ?>
