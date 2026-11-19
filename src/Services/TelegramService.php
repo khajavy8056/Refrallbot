@@ -40,15 +40,24 @@ final class TelegramService
 
     public static function settings(?Database $db = null): array
     {
-        if (self::$settingsCache !== null) {
+        if (self::$settingsCache !== null && $db === null) {
             return self::$settingsCache;
         }
-        $db ??= Database::instance();
-        if (!$db->tableExists('telegram_settings')) {
+        $targetDb = $db ?? Database::instance();
+        if (!$targetDb->tableExists('telegram_settings')) {
             return [];
         }
-        $row = $db->first('SELECT * FROM telegram_settings ORDER BY id ASC LIMIT 1');
-        return self::$settingsCache = $row ?? [];
+        $row = $targetDb->first('SELECT * FROM telegram_settings ORDER BY id ASC LIMIT 1') ?? [];
+        if ($db === null) {
+            self::$settingsCache = $row;
+        }
+        return $row;
+    }
+
+    public static function botUsername(?Database $db = null): string
+    {
+        $s = self::settings($db);
+        return ltrim(trim((string) ($s['bot_username'] ?? '')), '@');
     }
 
     public static function forgetSettingsCache(): void
@@ -214,14 +223,14 @@ final class TelegramService
             $body = curl_exec($ch);
             $error = curl_error($ch);
             $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            unset($ch); // در PHP 8.5 تابع curl_close منسوخ شده؛ CurlHandle خودکار بسته می‌شود
             if ($body === false) {
                 return ['body' => '', 'error' => $error !== '' ? $error : 'اتصال برقرار نشد', 'status' => $status];
             }
             return ['body' => (string) $body, 'error' => null, 'status' => $status];
         }
 
-        // fallback با stream context
+        // fallback با stream context (بدون $http_response_header که در PHP 8.5 منسوخ شده)
         $context = stream_context_create([
             'http' => [
                 'method' => 'POST',
@@ -235,22 +244,28 @@ final class TelegramService
                 'verify_peer_name' => true,
             ],
         ]);
-        $http_response_header = [];
-        $body = @file_get_contents($url, false, $context);
-        $status = 0;
-        foreach ($http_response_header ?? [] as $line) {
-            if (preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', $line, $m)) {
-                $status = (int) $m[1]; // آخرین هدر = پاسخ نهایی (پس از ریدایرکت)
-            }
-        }
-        if ($body === false) {
+        $fp = @fopen($url, 'rb', false, $context);
+        if ($fp === false) {
             $lastError = error_get_last()['message'] ?? '';
             return [
                 'body' => '',
                 'error' => 'اتصال به تلگرام برقرار نشد (افزونه cURL توصیه می‌شود).'
                     . ($lastError !== '' ? ' ' . self::redact($lastError) : ''),
-                'status' => $status,
+                'status' => 0,
             ];
+        }
+        $meta = stream_get_meta_data($fp);
+        $body = stream_get_contents($fp);
+        fclose($fp);
+        $status = 0;
+        $wrapperHeaders = is_array($meta['wrapper_data'] ?? null) ? $meta['wrapper_data'] : [];
+        foreach ($wrapperHeaders as $line) {
+            if (is_string($line) && preg_match('#^HTTP/\d(?:\.\d)?\s+(\d{3})#', $line, $m)) {
+                $status = (int) $m[1]; // آخرین هدر = پاسخ نهایی (پس از ریدایرکت)
+            }
+        }
+        if ($body === false) {
+            return ['body' => '', 'error' => 'خواندن پاسخ تلگرام ناموفق بود.', 'status' => $status];
         }
         return ['body' => $body, 'error' => null, 'status' => $status > 0 ? $status : 200];
     }
@@ -348,11 +363,161 @@ final class TelegramService
         return $this->call('setChatMenuButton', $params);
     }
 
+    // ------------------------------------------------------------------ مدیریت پروفایل و ظاهر ربات (نام، Bio، توضیحات، تصویر پروفایل)
+
+    /** دریافت نام نمایشی فعلی ربات */
+    public function getMyName(string $languageCode = ''): array
+    {
+        $params = $languageCode !== '' ? ['language_code' => $languageCode] : [];
+        return $this->call('getMyName', $params);
+    }
+
+    /** تنظیم نام نمایشی ربات (۰ تا ۶۴ کاراکتر) */
+    public function setMyName(string $name, string $languageCode = ''): array
+    {
+        $params = ['name' => mb_substr(trim($name), 0, 64)];
+        if ($languageCode !== '') {
+            $params['language_code'] = $languageCode;
+        }
+        return $this->call('setMyName', $params);
+    }
+
+    /** دریافت بیوگرافی کوتاه (Bio / About) پروفایل ربات */
+    public function getMyShortDescription(string $languageCode = ''): array
+    {
+        $params = $languageCode !== '' ? ['language_code' => $languageCode] : [];
+        return $this->call('getMyShortDescription', $params);
+    }
+
+    /** تنظیم بیوگرافی کوتاه (Bio / About) پروفایل ربات (۰ تا ۱۲۰ کاراکتر) */
+    public function setMyShortDescription(string $shortDescription, string $languageCode = ''): array
+    {
+        $params = ['short_description' => mb_substr(trim($shortDescription), 0, 120)];
+        if ($languageCode !== '') {
+            $params['language_code'] = $languageCode;
+        }
+        return $this->call('setMyShortDescription', $params);
+    }
+
+    /** دریافت توضیحات معرفی ربات (نمایش در صفحه شروع چت خالی) */
+    public function getMyDescription(string $languageCode = ''): array
+    {
+        $params = $languageCode !== '' ? ['language_code' => $languageCode] : [];
+        return $this->call('getMyDescription', $params);
+    }
+
+    /** تنظیم توضیحات معرفی ربات (۰ تا ۵۱۲ کاراکتر) */
+    public function setMyDescription(string $description, string $languageCode = ''): array
+    {
+        $params = ['description' => mb_substr(trim($description), 0, 512)];
+        if ($languageCode !== '') {
+            $params['language_code'] = $languageCode;
+        }
+        return $this->call('setMyDescription', $params);
+    }
+
+    /**
+     * تنظیم یا تغییر تصویر پروفایل ربات (Telegram Bot API setMyProfilePhoto — InputProfilePhotoStatic)
+     */
+    public function setMyProfilePhoto(string $filePath): array
+    {
+        if (!is_file($filePath)) {
+            return self::failure('فایل تصویر یافت نشد.');
+        }
+        $photoJson = json_encode([
+            'type' => 'static',
+            'photo' => 'attach://profile_photo',
+        ], JSON_UNESCAPED_SLASHES);
+        return $this->sendFile('setMyProfilePhoto', ['photo' => (string) $photoJson], 'profile_photo', $filePath);
+    }
+
+    /** حذف تصویر پروفایل فعلی ربات (Telegram Bot API removeMyProfilePhoto) */
+    public function removeMyProfilePhoto(): array
+    {
+        return $this->call('removeMyProfilePhoto');
+    }
+
+    /** دریافت تصاویر پروفایل حساب/ربات */
+    public function getUserProfilePhotos(int $userId, int $limit = 1): array
+    {
+        return $this->call('getUserProfilePhotos', [
+            'user_id' => $userId,
+            'limit' => max(1, min(100, $limit)),
+        ]);
+    }
+
+    /** دریافت اطلاعات فایل از سرور تلگرام */
+    public function getFile(string $fileId): array
+    {
+        return $this->call('getFile', ['file_id' => $fileId]);
+    }
+
+    /**
+     * دانلود امن باینری فایل از تلگرام در سمت سرور (هرگز آدرس حاوی توکن به مرورگر ارسال نمی‌شود)
+     */
+    public function downloadFile(string $telegramFilePath, int $maxBytes = 5_242_880): ?string
+    {
+        $cleanPath = ltrim(trim($telegramFilePath), '/');
+        if ($cleanPath === '' || str_contains($cleanPath, '..')) {
+            return null;
+        }
+        if (self::$fakeTransport !== null) {
+            /** @var callable $fake */
+            $fake = self::$fakeTransport;
+            $res = $fake('__downloadFile', ['file_path' => $cleanPath]);
+            return is_array($res) && !empty($res['ok']) && isset($res['bytes']) && is_string($res['bytes'])
+                ? $res['bytes']
+                : null;
+        }
+        if ($this->token === '') {
+            return null;
+        }
+        $url = self::API_BASE . '/file/bot' . $this->token . '/' . $cleanPath;
+
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 20,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_FOLLOWLOCATION => false,
+            ]);
+            $body = curl_exec($ch);
+            $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            unset($ch);
+            if (!is_string($body) || $status !== 200 || $body === '' || strlen($body) > $maxBytes) {
+                return null;
+            }
+            return $body;
+        }
+
+        $ctx = stream_context_create([
+            'http' => ['method' => 'GET', 'timeout' => 20, 'ignore_errors' => true],
+            'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
+        ]);
+        $body = @file_get_contents($url, false, $ctx, 0, $maxBytes + 1);
+        if (!is_string($body) || $body === '' || strlen($body) > $maxBytes) {
+            return null;
+        }
+        return $body;
+    }
+
     /** ارسال فایل با multipart */
     public function sendFile(string $method, array $fields, string $fileField, string $filePath): array
     {
         if (!is_file($filePath)) {
             return ['ok' => false, 'description' => 'فایل یافت نشد.'];
+        }
+        if (self::$fakeTransport !== null) {
+            /** @var callable $fake */
+            $fake = self::$fakeTransport;
+            $res = $fake($method, $fields + ['_file_field' => $fileField, '_file_path' => $filePath]);
+            if (!is_array($res)) {
+                return self::failure('پاسخ تست نامعتبر');
+            }
+            return self::normalize($res, (int) ($res['http_status'] ?? 200));
         }
         if (!function_exists('curl_init')) {
             return ['ok' => false, 'description' => 'ارسال فایل نیازمند افزونه cURL است.'];
@@ -361,7 +526,14 @@ final class TelegramService
             return self::failure('توکن ربات تنظیم نشده است.');
         }
         $url = self::API_BASE . '/bot' . $this->token . '/' . $method;
-        $fields[$fileField] = new \CURLFile($filePath);
+        $mime = '';
+        if (function_exists('mime_content_type')) {
+            $detected = @mime_content_type($filePath);
+            if (is_string($detected)) {
+                $mime = $detected;
+            }
+        }
+        $fields[$fileField] = new \CURLFile($filePath, $mime, basename($filePath));
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
@@ -376,7 +548,7 @@ final class TelegramService
         $body = curl_exec($ch);
         $curlError = curl_error($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        unset($ch);
 
         if ($body === false) {
             ErrorHandler::write('TELEGRAM', 'file upload transport error on ' . $method . ': ' . self::redact((string) $curlError));
@@ -449,8 +621,8 @@ final class TelegramService
         $keyboard = [];
         foreach ($rows as $row) {
             $line = [];
-            foreach ($row as $text) {
-                $line[] = ['text' => $text];
+            foreach ($row as $item) {
+                $line[] = is_array($item) ? $item : ['text' => (string) $item];
             }
             if ($line) {
                 $keyboard[] = $line;
@@ -624,8 +796,10 @@ final class TelegramService
     {
         $stored = (string) (SettingsService::get('webhook_base_url', '') ?: '');
         $base = $stored !== '' ? rtrim($stored, '/') : \RB\Support\Request::origin();
-        $path = (string) \RB\Support\Config::get('app.base_path', '');
-        $path = rtrim($path, '/');
+        $path = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+        if ($path !== '' && str_ends_with($base, $path)) {
+            return $base . '/webhook/telegram';
+        }
         return $base . $path . '/webhook/telegram';
     }
 

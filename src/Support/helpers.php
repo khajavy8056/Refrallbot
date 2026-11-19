@@ -52,7 +52,16 @@ if (!function_exists('url')) {
 if (!function_exists('asset')) {
     function asset(string $path): string
     {
-        return url('assets/' . ltrim($path, '/'));
+        $clean = ltrim($path, '/');
+        $base = url('assets/' . $clean);
+        if (str_ends_with($clean, '.js') || str_ends_with($clean, '.css')) {
+            $file = RB_ROOT . '/public/assets/' . $clean;
+            $mtime = is_file($file) ? @filemtime($file) : false;
+            if ($mtime !== false && $mtime > 0) {
+                return $base . '?v=' . $mtime;
+            }
+        }
+        return $base;
     }
 }
 
@@ -81,12 +90,22 @@ if (!function_exists('fa_digits')) {
 }
 
 if (!function_exists('en_digits')) {
-    /** تبدیل ارقام فارسی/عربی به لاتین */
+    /** تبدیل ارقام فارسی، عربی و تمام‌عرض به لاتین */
     function en_digits(string $text): string
     {
         return str_replace(
-            ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹', '٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩', '،', '٬'],
-            ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ',', ''],
+            [
+                '۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹',
+                '٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩',
+                '０', '１', '２', '３', '４', '５', '６', '７', '８', '９',
+                '،', '٬',
+            ],
+            [
+                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+                '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+                ',', '',
+            ],
             $text
         );
     }
@@ -179,6 +198,6 @@ if (!function_exists('request_is_post')) {
 if (!function_exists('input')) {
     function input(string $key, mixed $default = null): mixed
     {
-        return $_POST[$key] ?? $_GET[$key] ?? $default;
+        return \RB\Support\Request::field($key, $default);
     }
 }

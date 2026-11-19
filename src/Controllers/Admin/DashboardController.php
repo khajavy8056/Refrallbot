@@ -14,6 +14,14 @@ final class DashboardController extends AdminController
 {
     public function index(): void
     {
+        try {
+            if (\RB\Services\AdminAuth::requireSuperAdmin()) {
+                (new \RB\Services\UpdateService())->autoCheckIfDue();
+            }
+        } catch (\Throwable $e) {
+            \RB\Support\ErrorHandler::logException($e);
+        }
+
         $overview = StatsService::overview();
         $days = (int) ($_GET['days'] ?? 30);
         if (!in_array($days, [7, 14, 30, 90], true)) {
@@ -22,18 +30,19 @@ final class DashboardController extends AdminController
 
         $growth = StatsService::userGrowth($days);
         $series = StatsService::referralSeries($days);
+        $memberAnalytics = StatsService::memberGrowthBreakdown($days);
 
-        $labels = array_map(
-            static fn($row) => fa_digits(substr($row['date'], 8, 2)) . '/' . fa_digits(substr($row['date'], 5, 2)),
-            $growth
-        );
+        $messengerSummary = StatsService::segmentedMessengerSummary();
 
         $this->render('admin/dashboard', [
             'title' => 'داشبورد',
             'overview' => $overview,
             'days' => $days,
-            'labels' => $labels,
+            'labels' => $memberAnalytics['labels'],
             'growth' => array_column($growth, 'value'),
+            'memberAnalytics' => $memberAnalytics,
+            'memberComposition' => StatsService::memberComposition(),
+            'networkLevels' => StatsService::networkByLevel(),
             'referrals' => array_column($series, 'referrals'),
             'payouts' => array_column($series, 'payouts'),
             'withdrawalSeries' => array_column($series, 'withdrawals'),
@@ -43,6 +52,9 @@ final class DashboardController extends AdminController
             'activity' => StatsService::recentActivity(8),
             'settings' => CommissionSettings::current(),
             'telegram' => TelegramService::settings(),
+            'messengers' => $messengerSummary['active'],
+            'messengerTotals' => $messengerSummary['totals'],
+            'botUiMode' => \RB\Services\SettingsService::botUiMode(),
         ]);
     }
 

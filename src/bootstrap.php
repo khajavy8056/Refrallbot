@@ -9,7 +9,16 @@ define('RB_ROOT', dirname(__DIR__));
 define('RB_APP', RB_ROOT . '/src');
 define('RB_STORAGE', RB_ROOT . '/storage');
 define('RB_VIEWS', RB_ROOT . '/views');
-define('RB_VERSION', '1.0.0');
+define('RB_VERSION', (static function (): string {
+    $file = RB_ROOT . '/VERSION';
+    if (is_file($file)) {
+        $raw = trim((string) @file_get_contents($file));
+        if ($raw !== '' && preg_match('~^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$~', $raw)) {
+            return $raw;
+        }
+    }
+    return '1.1.0';
+})());
 
 if (PHP_VERSION_ID < 80100) {
     http_response_code(500);

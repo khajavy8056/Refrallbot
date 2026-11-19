@@ -8,7 +8,13 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/src/bootstrap.php';
 
 // ---- هدرهای امنیتی
-header('X-Frame-Options: SAMEORIGIN');
+$path = \RB\Support\Request::path();
+if (str_starts_with($path, '/app')) {
+    // Mini App در نسخهٔ وب تلگرام، بله و ایتا داخل iframe اجرا می‌شود (بدون X-Frame-Options)
+    header("Content-Security-Policy: frame-ancestors 'self' https://web.telegram.org https://*.telegram.org https://web.bale.ai https://*.bale.ai https://*.ble.ir https://web.eitaa.com https://*.eitaa.com https://*.eitaayar.ir");
+} else {
+    header('X-Frame-Options: SAMEORIGIN');
+}
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 header('X-XSS-Protection: 1; mode=block');
@@ -16,8 +22,6 @@ header("Permissions-Policy: geolocation=(), microphone=(), camera=()");
 if (\RB\Support\Request::isHttps()) {
     header('Strict-Transport-Security: max-age=15552000; includeSubDomains');
 }
-
-$path = \RB\Support\Request::path();
 
 // ---- نصب تک‌فایلی: /install.php همان /install است
 // (روی هاست‌هایی که docroot روی ریشهٔ پروژه است، install.php خودش این فایل را

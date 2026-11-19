@@ -19,15 +19,20 @@ final class UserController extends AdminController
 {
     public function index(): void
     {
-        $users = new UserService();
-        $filters = $this->filters(['q', 'status', 'has_refs', 'has_income', 'with_phone', 'suspicious']);
+        $db = Database::instance();
+        $users = new UserService($db);
+        $filters = $this->filters(['q', 'status', 'platform', 'has_refs', 'has_income', 'with_phone', 'suspicious']);
         $from = $this->dateFilter('from');
         $to = $this->dateFilter('to');
         if ($from) { $filters['from'] = $from; }
         if ($to) { $filters['to'] = $to; }
 
+        $msgSummary = \RB\Services\StatsService::segmentedMessengerSummary($db);
+        // اگر فیلتر پیام‌رسان روی پلتفرم غیرفعال/متصل‌نشده باشد، پاک شود
+        if (!empty($filters['platform']) && !isset($msgSummary['active'][strtolower((string) $filters['platform'])])) {
+            unset($filters['platform']);
+        }
         $result = $users->paginate($filters, $this->page(), $this->perPage());
-        $db = Database::instance();
 
         $this->render('admin/users/index', [
             'title' => 'مدیریت کاربران',
@@ -35,6 +40,7 @@ final class UserController extends AdminController
             'filters' => $filters,
             'fromRaw' => $_GET['from'] ?? '',
             'toRaw' => $_GET['to'] ?? '',
+            'activeMessengers' => $msgSummary['active'],
             'summary' => [
                 'total' => (int) $db->value('SELECT COUNT(*) FROM users'),
                 'active' => (int) $db->value("SELECT COUNT(*) FROM users WHERE status = 'active'"),
@@ -88,6 +94,8 @@ final class UserController extends AdminController
             'security' => $security,
             'reconcile' => $reconcile,
             'stats' => $users->stats($id),
+            'messengerAccounts' => $users->messengerAccounts($id),
+            'layerEarnings' => $users->layerEarningsSummary($id),
             'settings' => CommissionSettings::current(),
         ]);
     }
@@ -101,6 +109,29 @@ final class UserController extends AdminController
             (new UserService())->setStatus($id, $status, current_admin_id(), $reason);
             $this->flash('success', 'وضعیت کاربر به‌روزرسانی شد.');
         } catch (\Throwable $e) {
+            $this->flash('error', $e->getMessage());
+        }
+        \RB\Support\Request::redirect(url('admin/users/' . $id) . '#status');
+    }
+
+    public function approve(array $params): void
+    {
+        $id = (int) $params['id'];
+        try {
+            $qualified = (new UserService())->approveVerification($id, current_admin_id());
+            $msg = $qualified
+                ? 'عضویت کاربر تأیید شد و پاداش دعوت طبق تنظیمات فعال محاسبه و واریز گردید.'
+                : 'وضعیت احراز عضویت کاربر به «تأییدشده» تغییر یافت.';
+            if ($this->wantsJson()) {
+                $this->ok($msg, ['verified' => true, 'qualified' => $qualified]);
+                return;
+            }
+            $this->flash('success', $msg);
+        } catch (\Throwable $e) {
+            if ($this->wantsJson()) {
+                $this->fail($e->getMessage());
+                return;
+            }
             $this->flash('error', $e->getMessage());
         }
         \RB\Support\Request::redirect(url('admin/users/' . $id) . '#status');
@@ -126,9 +157,10 @@ final class UserController extends AdminController
         $users = new UserService();
         $newId = null;
         if ($newReferrerInput !== '') {
+            $digits = en_digits($newReferrerInput);
             $found = str_starts_with($newReferrerInput, '@')
                 ? null
-                : ($users->findByTelegramId((int) en_digits($newReferrerInput)) ?? $users->findByCode($newReferrerInput));
+                : ((ctype_digit($digits) ? $users->findByTelegramId((int) $digits) : null) ?? $users->findByCode($newReferrerInput));
             if ($found === null) {
                 $found = Database::instance()->first('SELECT * FROM users WHERE username = :u', ['u' => ltrim($newReferrerInput, '@')]);
             }

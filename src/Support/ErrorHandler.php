@@ -27,6 +27,12 @@ final class ErrorHandler
             if (!(error_reporting() & $no)) {
                 return false;
             }
+            // هشدارهای Deprecation (مثلاً در PHP 8.5+) فقط در لاگ ثبت شوند و هرگز
+            // اجرای نصب، وبهوک یا پاسخ‌های JSON پنل را متوقف نکنند.
+            if ($no === E_DEPRECATED || $no === E_USER_DEPRECATED) {
+                self::write('DEPRECATED', sprintf('%s in %s:%d', $message, $file, $line));
+                return true;
+            }
             throw new \ErrorException($message, 0, $no, $file, $line);
         });
 

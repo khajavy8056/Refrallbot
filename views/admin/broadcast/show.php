@@ -40,7 +40,7 @@ $percent = min(100, (int) round($done / $total * 100));
     <div class="card-header"><h2 class="card-title">پیشرفت ارسال</h2>
         <span class="card-subtitle"><?= fa_digits($percent) ?>٪</span></div>
     <div class="card-body">
-        <div style="height:12px;background:#e2e8f0;border-radius:99px;overflow:hidden">
+        <div style="height:12px;background:var(--surface-3);border-radius:99px;overflow:hidden">
             <div style="height:100%;width:<?= $percent ?>%;background:linear-gradient(90deg,#6366f1,#10b981);transition:width .4s"></div>
         </div>
         <div class="flex justify-between text-xs text-muted mt-2">
@@ -58,7 +58,7 @@ $percent = min(100, (int) round($done / $total * 100));
     <div class="card">
         <div class="card-header"><h2 class="card-title">متن پیام</h2></div>
         <div class="card-body">
-            <div style="white-space:pre-wrap;line-height:1.9;font-size:.86rem;background:#f8fafc;border-radius:12px;padding:14px"><?= e((string) $campaign['message_text']) ?></div>
+            <div style="white-space:pre-wrap;line-height:1.9;font-size:.86rem;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:14px"><?= e((string) $campaign['message_text']) ?></div>
         </div>
     </div>
     <div class="card">

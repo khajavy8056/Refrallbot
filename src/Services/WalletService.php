@@ -357,7 +357,7 @@ final class WalletService
                 ['u' => $userId]
             );
             $totalIn = (int) $this->db->value(
-                "SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions WHERE user_id = :u AND status = 'completed' AND direction = 'credit' AND type IN ('commission_direct','commission_level','campaign_reward','adjustment','withdrawal_release')",
+                "SELECT COALESCE(SUM(amount), 0) FROM wallet_transactions WHERE user_id = :u AND status = 'completed' AND direction = 'credit' AND type IN ('commission_direct','commission_welcome','commission_level','campaign_reward','adjustment','withdrawal_release')",
                 ['u' => $userId]
             );
             $totalOut = (int) $this->db->value(
@@ -415,7 +415,7 @@ final class WalletService
 
     public function summary(int $userId): array
     {
-        $u = $this->db->first('SELECT wallet_balance, pending_balance, total_earned, total_withdrawn, direct_earned, layer_earned, campaign_earned, withdrawal_count FROM users WHERE id = :id', ['id' => $userId]) ?? [];
+        $u = $this->db->first('SELECT * FROM users WHERE id = :id', ['id' => $userId]) ?? [];
         $pendingRequests = (int) $this->db->value(
             "SELECT COUNT(*) FROM withdrawal_requests WHERE user_id = :u AND status IN ('new','reviewing','approved','paying')",
             ['u' => $userId]
@@ -426,6 +426,7 @@ final class WalletService
             'total_earned' => (int) ($u['total_earned'] ?? 0),
             'total_withdrawn' => (int) ($u['total_withdrawn'] ?? 0),
             'direct_earned' => (int) ($u['direct_earned'] ?? 0),
+            'welcome_earned' => (int) ($u['welcome_earned'] ?? 0),
             'layer_earned' => (int) ($u['layer_earned'] ?? 0),
             'campaign_earned' => (int) ($u['campaign_earned'] ?? 0),
             'withdrawal_count' => (int) ($u['withdrawal_count'] ?? 0),

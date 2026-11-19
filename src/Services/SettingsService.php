@@ -108,24 +108,251 @@ final class SettingsService
         self::$cache = null;
     }
 
-    /**
-     * آیا پنل وب (Mini App) باید فعال باشد؟
-     *
-     * تلگرام برای Mini App فقط https معتبر می‌پذیرد. بنابراین:
-     *   miniapp_mode=off  → همیشه خاموش
-     *   miniapp_mode=on   → فقط اگر آدرس https باشد
-     *   miniapp_mode=auto → (پیش‌فرض) فقط اگر آدرس https باشد
-     *
-     * روی هاست بدون SSL همه‌چیز از دکمه‌های خود ربات کار می‌کند.
-     */
-    public static function miniappActive(): bool
+    /** حالت‌های قابل انتخاب رابط کاربری در پیام‌رسان‌ها (تطبیق هوشمند با قابلیت هر پلتفرم) */
+    public const BOT_UI_MODES = [
+        'miniapp' => 'فقط Mini App (بازگشت هوشمند به دکمه در پیام‌رسان‌های فاقد مینی‌اپ)',
+        'buttons' => 'فقط دکمه‌های معمولی (بازگشت هوشمند به برنامک در ایتا)',
+        'hybrid'  => 'هر دو حالت (Mini App + دکمه‌های کامل ربات)',
+    ];
+
+    /** نرمال‌سازی مقدار ورودی حالت نمایش (پشتیبانی از نام‌های مستعار) */
+    public static function normalizeUiMode(string $mode): string
     {
+        return match (strtolower(trim($mode))) {
+            'miniapp', 'miniapp_only' => 'miniapp',
+            'buttons', 'buttons_only' => 'buttons',
+            'hybrid', 'both'          => 'hybrid',
+            default                   => 'hybrid',
+        };
+    }
+
+    /**
+     * آیا پنل وب (Mini App) برای پیام‌رسان مشخص باید فعال باشد؟
+     * بدون پارامتر دقیقاً رفتار قبلی (تلگرام) را برمی‌گرداند.
+     */
+    public static function miniappActive(?string $platform = null): bool
+    {
+        if ($platform !== null && $platform !== '') {
+            $res = self::resolveUiModeFor($platform);
+            return !empty($res['show_miniapp']);
+        }
         $mode = (string) (self::get('miniapp_mode', 'auto') ?? 'auto');
         if ($mode === 'off') {
             return false;
         }
-        $url = (string) (self::get('miniapp_url', '') ?: '');
-        return $url !== '' && str_starts_with($url, 'https://');
+        $uiMode = (string) (self::get('bot_ui_mode', '') ?? '');
+        if ($uiMode === 'buttons' || $uiMode === 'buttons_only') {
+            return false;
+        }
+        $url = self::resolvedMiniappUrl();
+        return $url !== '' && str_starts_with(strtolower($url), 'https://');
+    }
+
+    /** آدرس تمیزشدهٔ Mini App (خالی اگر تنظیم نشده باشد) */
+    public static function resolvedMiniappUrl(): string
+    {
+        return trim((string) (self::get('miniapp_url', '') ?: ''));
+    }
+
+    /** نام مستعار آدرس پایه Mini App */
+    public static function miniappBaseUrl(): string
+    {
+        return self::resolvedMiniappUrl();
+    }
+
+    /** آیا آدرس HTTPS معتبر برای Mini App ثبت شده است؟ */
+    public static function hasHttpsMiniappUrl(): bool
+    {
+        $url = self::resolvedMiniappUrl();
+        return $url !== '' && str_starts_with(strtolower($url), 'https://');
+    }
+
+    /**
+     * تعیین هوشمند حالت نمایش مؤثر برای هر پیام‌رسان (تلگرام، بله، روبیکا، ایتا)
+     * با رعایت دقیق قابلیت‌های رسمی هر پیام‌رسان و جلوگیری از دکمه خراب یا صفحه خالی.
+     */
+    public static function resolveUiModeFor(string $platform): array
+    {
+        return \RB\Messengers\MessengerCapabilities::resolveUiMode(
+            $platform,
+            self::configuredBotUiMode(),
+            self::hasHttpsMiniappUrl()
+        );
+    }
+
+    /** ماتریس کامل وضعیت نمایش برای همه پیام‌رسان‌ها */
+    public static function allPlatformUiModes(): array
+    {
+        return \RB\Messengers\MessengerCapabilities::resolveAllUiModes(
+            self::configuredBotUiMode(),
+            self::hasHttpsMiniappUrl()
+        );
+    }
+
+    /** ماتریس وضعیت نمایش فقط برای پیام‌رسان‌های فعال و با موفقیت متصل‌شده (نمایش در پنل مدیریت) */
+    public static function activePlatformUiModes(?\RB\Support\Database $db = null): array
+    {
+        $all = self::allPlatformUiModes();
+        $active = (new \RB\Messengers\MessengerRegistry($db))->activeConnectedPlatforms();
+        $out = [];
+        foreach ($active as $plat => $_name) {
+            if (isset($all[$plat])) {
+                $out[$plat] = $all[$plat];
+            }
+        }
+        return $out;
+    }
+
+    /** حالت ذخیره‌شده توسط مدیر: buttons | miniapp | hybrid */
+    public static function configuredBotUiMode(): string
+    {
+        $miniMode = (string) (self::get('miniapp_mode', 'auto') ?? 'auto');
+        if ($miniMode === 'off') {
+            return 'buttons';
+        }
+        $uiMode = (string) (self::get('bot_ui_mode', '') ?? '');
+        if ($uiMode !== '') {
+            return self::normalizeUiMode($uiMode);
+        }
+        return 'hybrid';
+    }
+
+    /**
+     * حالت مؤثر رابط ربات هنگام ارسال پیام به کاربر:
+     *   - buttons : تمام امکانات فقط از طریق دکمه‌های خود ربات (بدون Mini App)
+     *   - miniapp : تمرکز روی مینی‌اپ تلگرام (فقط وقتی HTTPS معتبر فعال است؛ در غیر این صورت بازگشت ایمن به دکمه‌ها)
+     *   - hybrid  : هم دکمه‌های کامل ربات و هم دسترسی مستقیم به مینی‌اپ
+     */
+    public static function botUiMode(): string
+    {
+        $configured = self::configuredBotUiMode();
+        if ($configured === 'buttons') {
+            return 'buttons';
+        }
+        if ($configured === 'miniapp') {
+            return self::miniappActive() ? 'miniapp' : 'buttons';
+        }
+        return self::miniappActive() ? 'hybrid' : 'buttons';
+    }
+
+    /** برچسب فارسی حالت فعلی رابط ربات */
+    public static function botUiModeLabel(?string $mode = null): string
+    {
+        $m = $mode ?? self::botUiMode();
+        return self::BOT_UI_MODES[$m] ?? self::BOT_UI_MODES['hybrid'];
+    }
+
+    /**
+     * ذخیرهٔ حالت رابط ربات (دکمه‌ای / مینی‌اپ / ترکیبی) و همگام‌سازی فوری دکمه منوی تلگرام
+     *
+     * @return array{mode:string,effective:string,miniapp_active:bool,miniapp_url:string,menu_synced:bool,note:string}
+     */
+    public static function applyBotUiMode(string $requestedMode, ?string $miniappUrlInput = null, ?TelegramService $tg = null): array
+    {
+        $mode = self::normalizeUiMode($requestedMode);
+
+        if ($miniappUrlInput !== null) {
+            $clean = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', $miniappUrlInput) ?? trim($miniappUrlInput));
+            if ($clean !== '') {
+                if (!preg_match('~^https?://~i', $clean)) {
+                    $clean = 'https://' . $clean;
+                }
+                self::set('miniapp_url', mb_substr(rtrim($clean, '/'), 0, 255), 'telegram');
+            }
+        }
+
+        // اگر مدیر حالت مینی‌اپ یا ترکیبی را انتخاب کرده و آدرس خالی است، از دامنه HTTPS ذخیره شده بسازیم
+        $currentUrl = self::resolvedMiniappUrl();
+        if ($mode !== 'buttons' && ($currentUrl === '' || !str_starts_with($currentUrl, 'https://'))) {
+            $base = rtrim((string) (self::get('webhook_base_url', '') ?: \RB\Support\Request::origin()), '/');
+            $appPath = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+            if ($appPath !== '' && str_ends_with($base, $appPath)) {
+                $base = substr($base, 0, -strlen($appPath));
+            }
+            if (str_starts_with(strtolower($base), 'https://')) {
+                $autoUrl = rtrim($base, '/') . url('app');
+                self::set('miniapp_url', mb_substr($autoUrl, 0, 255), 'telegram');
+            }
+        }
+
+        $miniMode = match ($mode) {
+            'buttons' => 'off',
+            'miniapp' => 'on',
+            default   => 'auto',
+        };
+        self::set('bot_ui_mode', $mode, 'telegram');
+        self::set('miniapp_mode', $miniMode, 'telegram');
+        self::flush();
+
+        $sync = self::syncTelegramMenuButton($tg);
+
+        return [
+            'mode' => $mode,
+            'effective' => self::botUiMode(),
+            'miniapp_active' => self::miniappActive(),
+            'miniapp_url' => self::resolvedMiniappUrl(),
+            'menu_synced' => (bool) ($sync['synced'] ?? false),
+            'note' => (string) ($sync['note'] ?? ''),
+        ];
+    }
+
+    /**
+     * همگام‌سازی خودکار دکمه منوی پایین چت تلگرام با حالت فعلی ربات:
+     *   - مینی‌اپ / ترکیبی (با HTTPS) → web_app
+     *   - دکمه‌ای (خاموش) → commands (حذف دکمه Mini App و بازگشت به فهرست دستورات)
+     *
+     * @return array{ok:bool,synced:bool,skipped:bool,note:string,description?:string}
+     */
+    public static function syncTelegramMenuButton(?TelegramService $tg = null): array
+    {
+        try {
+            $tg ??= new TelegramService();
+            if (!$tg->isConfigured()) {
+                return ['ok' => true, 'synced' => false, 'skipped' => true, 'note' => 'توکن ربات هنوز ثبت نشده است.'];
+            }
+
+            $configured = self::configuredBotUiMode();
+            $miniappUrl = self::resolvedMiniappUrl();
+
+            if ($configured === 'buttons') {
+                $res = $tg->setChatMenuButton([
+                    'menu_button' => ['type' => 'commands'],
+                ]);
+                $ok = (bool) ($res['ok'] ?? false);
+                return [
+                    'ok' => $ok,
+                    'synced' => $ok,
+                    'skipped' => false,
+                    'note' => $ok ? 'دکمه منوی ربات به حالت «دکمه‌ای / دستورات» تغییر یافت.' : '',
+                    'description' => (string) ($res['description'] ?? ''),
+                ];
+            }
+
+            if ($miniappUrl === '') {
+                return ['ok' => true, 'synced' => false, 'skipped' => true, 'note' => 'آدرس پنل کاربری (Mini App) ثبت نشده است.'];
+            }
+            if (!str_starts_with($miniappUrl, 'https://')) {
+                return ['ok' => true, 'synced' => false, 'skipped' => true, 'note' => 'دکمه Mini App فقط با آدرس HTTPS کار می‌کند؛ ربات موقتاً در حالت دکمه‌ای فعال ماند.'];
+            }
+
+            $res = $tg->setChatMenuButton([
+                'menu_button' => [
+                    'type' => 'web_app',
+                    'text' => 'پنل کاربری',
+                    'web_app' => ['url' => $miniappUrl],
+                ],
+            ]);
+            $ok = (bool) ($res['ok'] ?? false);
+            return [
+                'ok' => $ok,
+                'synced' => $ok,
+                'skipped' => false,
+                'note' => $ok ? 'دکمه مینی‌اپ در تلگرام فعال و همگام‌سازی شد.' : '',
+                'description' => (string) ($res['description'] ?? ''),
+            ];
+        } catch (\Throwable $e) {
+            return ['ok' => false, 'synced' => false, 'skipped' => true, 'note' => '', 'description' => $e->getMessage()];
+        }
     }
 
 }

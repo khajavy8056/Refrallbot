@@ -59,12 +59,14 @@ final class TelegramController extends AdminController
 
     public function saveToken(): void
     {
-        $token = trim((string) ($_POST['bot_token'] ?? ''));
+        // حذف فاصله‌ها و کاراکترهای نامرئی جهت‌دهی (LRM/RLM/BOM) هنگام کپی از BotFather
+        $rawToken = Request::string('bot_token', '');
+        $token = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', $rawToken) ?? trim($rawToken));
         if ($token === '') {
             $this->fail('توکن ربات را وارد کنید.');
             return;
         }
-        if (!preg_match('~^\d{6,12}:[A-Za-z0-9_-]{30,50}$~', $token)) {
+        if (!preg_match('~^\d{6,15}:[A-Za-z0-9_-]{25,80}$~', $token)) {
             $this->fail('قالب توکن معتبر نیست. توکن باید شبیه 123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxx باشد.');
             return;
         }
@@ -80,15 +82,23 @@ final class TelegramController extends AdminController
             $bot = $result['bot'];
 
             // ذخیره آدرس Webhook و Mini App پیشنهادی
-            $base = rtrim((string) ($_POST['base_url'] ?? ''), '/');
+            $rawBase = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', Request::string('base_url', '')) ?? '');
+            $base = rtrim($rawBase, '/');
             if ($base !== '') {
                 if (!preg_match('~^https?://~i', $base)) {
                     $base = 'https://' . $base;
                 }
+                // اگر کاربر به اشتباه /webhook/telegram یا زیرپوشهٔ app.base_path را هم چسبانده بود، دو بار تکرار نشود
+                $base = (string) (preg_replace('~/webhook/telegram$~i', '', $base) ?? $base);
+                $appBasePath = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+                if ($appBasePath !== '' && str_ends_with($base, $appBasePath)) {
+                    $base = substr($base, 0, -strlen($appBasePath));
+                }
+                $base = rtrim($base, '/');
                 SettingsService::set('webhook_base_url', $base, 'telegram');
                 SettingsService::set('panel_url', $base, 'telegram');
                 // تلگرام Mini App را فقط روی https می‌پذیرد
-                if (str_starts_with($base, 'https://')) {
+                if (str_starts_with(strtolower($base), 'https://')) {
                     SettingsService::set('miniapp_url', $base . url('app'), 'telegram');
                 }
             }
@@ -197,7 +207,8 @@ final class TelegramController extends AdminController
             $this->fail('ابتدا توکن ربات را ذخیره کنید.');
             return;
         }
-        $url = trim((string) ($_POST['webhook_url'] ?? ''));
+        $rawUrl = Request::string('webhook_url', '');
+        $url = (string) (preg_replace('~[\s\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]+~u', '', $rawUrl) ?? trim($rawUrl));
         if ($url === '') {
             $url = $tg->suggestedWebhookUrl();
         }
@@ -335,6 +346,57 @@ final class TelegramController extends AdminController
         $this->ok('Webhook در تلگرام حذف شد. اکنون می‌توانید Polling را فعال کنید.', ['reload' => true]);
     }
 
+    /**
+     * تغییر فوری حالت نمایش ربات: مینی‌اپ ↔ دکمه‌ای ↔ ترکیبی
+     */
+    public function saveMode(): void
+    {
+        $requested = Request::string('bot_ui_mode', 'hybrid');
+        if (!array_key_exists($requested, SettingsService::BOT_UI_MODES)) {
+            $this->fail('حالت انتخاب‌شده معتبر نیست.');
+            return;
+        }
+        $miniappUrl = array_key_exists('miniapp_url', $_POST) ? (string) $_POST['miniapp_url'] : null;
+
+        $result = SettingsService::applyBotUiMode($requested, $miniappUrl);
+
+        // اگر مدیر حالت مینی‌اپ اختصاصی خواسته اما هنوز HTTPS معتبر وجود ندارد، با پیام شفاف راهنمایی کنیم
+        if ($requested === 'miniapp' && !$result['miniapp_active']) {
+            AuditService::log('telegram.mode_changed', 'telegram', null, $result, current_admin_id());
+            $this->ok(
+                'حالت مینی‌اپ ذخیره شد، اما آدرس HTTPS معتبر ثبت نشده است؛ تا زمان ثبت آدرس HTTPS ربات به‌صورت خودکار با دکمه‌ها کار می‌کند.',
+                ['mode' => $result, 'reload' => true]
+            );
+            return;
+        }
+
+        // به‌روزرسانی فهرست دستورات تلگرام متناسب با حالت جدید
+        try {
+            $tg = new TelegramService();
+            if ($tg->isConfigured()) {
+                $commands = [
+                    ['command' => 'start', 'description' => 'شروع و منوی اصلی'],
+                    ['command' => 'menu', 'description' => 'نمایش منو'],
+                    ['command' => 'help', 'description' => 'راهنمای استفاده'],
+                ];
+                if ($result['miniapp_active']) {
+                    $commands[] = ['command' => 'app', 'description' => 'باز کردن پنل کاربری (مینی‌اپ)'];
+                }
+                $tg->setMyCommands($commands);
+            }
+        } catch (\Throwable) {
+        }
+
+        AuditService::log('telegram.mode_changed', 'telegram', null, $result, current_admin_id());
+
+        $label = SettingsService::botUiModeLabel($result['effective']);
+        $msg = 'حالت ربات با موفقیت به «' . $label . '» تغییر یافت.';
+        if ($result['note'] !== '') {
+            $msg .= ' ' . $result['note'];
+        }
+        $this->ok($msg, ['mode' => $result, 'reload' => true]);
+    }
+
     public function syncMenu(): void
     {
         $tg = new TelegramService();
@@ -349,30 +411,15 @@ final class TelegramController extends AdminController
             ['command' => 'menu', 'description' => 'نمایش منو'],
             ['command' => 'help', 'description' => 'راهنمای استفاده'],
         ];
+        if (SettingsService::miniappActive()) {
+            $commands[] = ['command' => 'app', 'description' => 'باز کردن پنل کاربری (مینی‌اپ)'];
+        }
         $commandsResult = $tg->setMyCommands($commands);
 
-        // دکمه منوی Mini App — فقط اگر فعال باشد و آدرسش HTTPS معتبر باشد.
-        // تلگرام web_app را روی http نمی‌پذیرد و setChatMenuButton خطا می‌دهد.
-        $miniappUrl = (string) SettingsService::get('miniapp_url', '');
-        $miniappMode = (string) (SettingsService::get('miniapp_mode', 'auto') ?? 'auto');
+        // همگام‌سازی دکمه منوی پایین تلگرام بر اساس حالت انتخابی (مینی‌اپ ↔ دکمه‌ای ↔ ترکیبی)
         $miniappEnabled = SettingsService::miniappActive();
-        $menuButtonResult = ['ok' => true, 'skipped' => true];
-        $menuButtonNote = '';
-        if ($miniappMode === 'off') {
-            $menuButtonNote = 'پنل وب (Mini App) خاموش است؛ دکمه منو تغییر نکرد.';
-        } elseif ($miniappUrl === '') {
-            $menuButtonNote = 'آدرس پنل کاربری ثبت نشده است.';
-        } elseif (!str_starts_with($miniappUrl, 'https://')) {
-            $menuButtonNote = 'دکمه Mini App فقط با آدرس https کار می‌کند؛ فعلاً ست نشد.';
-        } else {
-            $menuButtonResult = $tg->setChatMenuButton([
-                'menu_button' => [
-                    'type' => 'web_app',
-                    'text' => 'پنل کاربری',
-                    'web_app' => ['url' => $miniappUrl],
-                ],
-            ]);
-        }
+        $menuButtonResult = SettingsService::syncTelegramMenuButton($tg);
+        $menuButtonNote = (string) ($menuButtonResult['note'] ?? '');
 
         $commandsOk = (bool) ($commandsResult['ok'] ?? false);
         $menuButtonOk = !empty($menuButtonResult['skipped']) || (bool) ($menuButtonResult['ok'] ?? false);
@@ -452,8 +499,9 @@ final class TelegramController extends AdminController
     public function saveMenus(): void
     {
         $db = db();
-        $items = $_POST['menus'] ?? [];
-        if (!is_array($items)) {
+        $rawMenus = Request::field('menus', []);
+        $items = is_array($rawMenus) ? $rawMenus : [];
+        if ($items === []) {
             $this->fail('داده نامعتبر است.');
             return;
         }

@@ -381,10 +381,19 @@ final class InstallerController
             $root = $config('');
             $pdo = $root->pdo();
             $version = (string) $root->value('SELECT VERSION()');
-            $exists = (bool) $root->value(
-                'SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = :n',
-                ['n' => $in['name']]
-            );
+            // از SHOW DATABASES LIKE به‌جای information_schema.SCHEMATA استفاده
+            // می‌کنیم تا در MySQL 8 خطای 3988/1267 روی ستون utf8mb3 رخ ندهد.
+            $likeDb = str_replace(['\\', '_', '%'], ['\\\\', '\\_', '\\%'], (string) $in['name']);
+            $dbStmt = $pdo->query('SHOW DATABASES LIKE ' . $root->quote($likeDb));
+            $exists = false;
+            if ($dbStmt !== false) {
+                while (($r = $dbStmt->fetch(\PDO::FETCH_NUM)) !== false) {
+                    if (isset($r[0]) && strcasecmp((string) $r[0], (string) $in['name']) === 0) {
+                        $exists = true;
+                        break;
+                    }
+                }
+            }
         } catch (\Throwable $e) {
             $serverError = $e;
         }
@@ -606,11 +615,13 @@ final class InstallerController
                     'updated_at' => now(),
                 ]);
             }
-            // نسخه اولیه تنظیمات پورسانت
+            // نسخه اولیه تنظیمات پورسانت (پاداش دوطرفه دعوت دوستان — قابل تغییر کامل از پنل مدیریت)
             if (!\RB\Support\Database::instance()->value('SELECT id FROM commission_setting_versions LIMIT 1')) {
                 CommissionSettings::saveVersion([
-                    'direct_reward' => 5000,
+                    'direct_reward' => 10000,
                     'direct_enabled' => 1,
+                    'invitee_reward' => 5000,
+                    'invitee_enabled' => 1,
                     'multi_level_enabled' => 1,
                     'max_levels' => 3,
                     'levels' => [
@@ -631,7 +642,7 @@ final class InstallerController
             json_out([
                 'ok' => true,
                 'message' => 'جداول با موفقیت ساخته شدند.',
-                'tables' => count($db->column("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()")),
+                'tables' => count($db->listTables()),
                 'applied' => $result['applied'],
             ]);
         } catch (\Throwable $e) {
@@ -761,13 +772,18 @@ final class InstallerController
             $appRoute = $basePath . '/app';
             SettingsService::set('miniapp_url', ($mode !== 'off' && $isHttps) ? $baseUrl . $appRoute : '', 'telegram');
 
-            // پاداش پیش‌فرض معرفی (قابل تغییر بعدی از پنل → پورسانت)
+            // پاداش پیش‌فرض دعوت‌کننده و دعوت‌شده (کاملاً قابل تغییر از پنل → تنظیمات پورسانت)
             $reward = Money::parseToman(Request::field('direct_reward'));
-            if ($reward !== null && $reward >= 0) {
+            $inviteeReward = Money::parseToman(Request::field('invitee_reward'));
+            if (($reward !== null && $reward >= 0) || ($inviteeReward !== null && $inviteeReward >= 0)) {
                 $current = CommissionSettings::current(db(), true);
+                $finalDirect = $reward !== null ? $reward : $current->directReward;
+                $finalInvitee = $inviteeReward !== null ? $inviteeReward : $current->inviteeReward;
                 CommissionSettings::saveVersion([
-                    'direct_reward' => $reward,
-                    'direct_enabled' => 1,
+                    'direct_reward' => $finalDirect,
+                    'direct_enabled' => $finalDirect > 0 ? 1 : 0,
+                    'invitee_reward' => $finalInvitee,
+                    'invitee_enabled' => $finalInvitee > 0 ? 1 : 0,
                     'multi_level_enabled' => $current->multiLevelEnabled ? 1 : 0,
                     'max_levels' => $current->maxLevels,
                     'levels' => $current->levels,

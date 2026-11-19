@@ -35,12 +35,13 @@ final class Session
             }
             return;
         }
+        $isMiniApp = str_starts_with(Request::path(), '/app');
         session_set_cookie_params([
             'lifetime' => 0,
             'path' => '/',
             'secure' => $secure,
             'httponly' => true,
-            'samesite' => 'Lax',
+            'samesite' => ($secure && $isMiniApp) ? 'None' : 'Lax',
         ]);
         session_name('rbsid');
         @session_start();

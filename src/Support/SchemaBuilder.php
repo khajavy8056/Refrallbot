@@ -10,6 +10,8 @@ namespace RB\Support;
 final class SchemaBuilder
 {
     private array $tables = [];
+    /** @var array<int,array{table:string,column:string,sql:string}> */
+    private array $addedColumns = [];
     private string $driver;
 
     public function __construct(string $driver)
@@ -17,11 +19,36 @@ final class SchemaBuilder
         $this->driver = $driver === 'sqlite' ? 'sqlite' : 'mysql';
     }
 
+    public function driver(): string
+    {
+        return $this->driver;
+    }
+
     public function table(string $name, callable $definition): void
     {
         $t = new TableDefinition($name, $this->driver);
         $definition($t);
         $this->tables[] = $t;
+    }
+
+    /**
+     * افزودن ایمن ستون جدید به جدول موجود (سازگار با MySQL 8 / MariaDB و SQLite 3)
+     */
+    public function addColumn(string $table, string $column, string $mysqlDefinition, string $sqliteDefinition): void
+    {
+        $def = $this->driver === 'sqlite' ? $sqliteDefinition : $mysqlDefinition;
+        $q = $this->driver === 'sqlite' ? '"' : '`';
+        $this->addedColumns[] = [
+            'table' => $table,
+            'column' => $column,
+            'sql' => "ALTER TABLE {$q}{$table}{$q} ADD COLUMN {$q}{$column}{$q} {$def}",
+        ];
+    }
+
+    /** @return array<int,array{table:string,column:string,sql:string}> */
+    public function addedColumns(): array
+    {
+        return $this->addedColumns;
     }
 
     /** @return string[] */
@@ -34,13 +61,20 @@ final class SchemaBuilder
                 $out[] = $index;
             }
         }
+        foreach ($this->addedColumns as $col) {
+            $out[] = $col['sql'];
+        }
         return $out;
     }
 
     /** @return string[] */
     public function tableNames(): array
     {
-        return array_map(static fn(TableDefinition $t) => $t->name(), $this->tables);
+        $names = array_map(static fn(TableDefinition $t) => $t->name(), $this->tables);
+        foreach ($this->addedColumns as $col) {
+            $names[] = $col['table'];
+        }
+        return array_values(array_unique($names));
     }
 }
 

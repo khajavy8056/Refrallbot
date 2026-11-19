@@ -13,7 +13,10 @@ $webhookActive = !empty($settings['webhook_active']);
         <h1 class="mb-0">اتصال به ربات تلگرام</h1>
         <p class="text-muted text-sm mb-0">ثبت توکن، تست اتصال، تنظیم Webhook و همگام‌سازی منوها</p>
     </div>
-    <a href="?refresh=1" class="btn btn-secondary btn-sm">🔄 به‌روزرسانی وضعیت از تلگرام</a>
+    <div class="flex gap-2 wrap">
+        <a href="<?= url('admin/bot-profile') ?>" class="btn btn-outline btn-sm">🎨 پروفایل و بیوگرافی ربات</a>
+        <a href="?refresh=1" class="btn btn-secondary btn-sm">🔄 به‌روزرسانی وضعیت از تلگرام</a>
+    </div>
 </div>
 
 <?php if (!empty($settings['last_error'])): ?>
@@ -80,7 +83,7 @@ $webhookActive = !empty($settings['webhook_active']);
                     <label class="form-label">آدرس پایه سامانه (اختیاری)</label>
                     <input type="text" name="base_url" class="form-control ltr" dir="ltr"
                            placeholder="<?= e(\RB\Support\Request::origin()) ?>"
-                           value="<?= e((string) ($settings['webhook_base_url'] ?? '')) ?>">
+                           value="<?= e((string) (setting('webhook_base_url', '') ?: '')) ?>">
                     <div class="form-hint">برای ساخت خودکار آدرس Webhook و لینک Mini App استفاده می‌شود. باید با HTTPS در دسترس عموم باشد.</div>
                 </div>
             </div>
@@ -156,6 +159,83 @@ $webhookActive = !empty($settings['webhook_active']);
     </div>
 </div>
 
+<?php
+$currentUiMode = \RB\Services\SettingsService::configuredBotUiMode();
+$effectiveUiMode = \RB\Services\SettingsService::botUiMode();
+$miniappUrlCurrent = \RB\Services\SettingsService::resolvedMiniappUrl();
+$defaultMiniUrl = $miniappUrlCurrent;
+if ($defaultMiniUrl === '') {
+    $autoOrigin = rtrim((string) (setting('webhook_base_url', '') ?: \RB\Support\Request::origin()), '/');
+    $autoAppPath = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+    if ($autoAppPath !== '' && str_ends_with($autoOrigin, $autoAppPath)) {
+        $autoOrigin = substr($autoOrigin, 0, -strlen($autoAppPath));
+    }
+    if (str_starts_with(strtolower($autoOrigin), 'https://')) {
+        $defaultMiniUrl = rtrim($autoOrigin, '/') . url('app');
+    }
+}
+?>
+<div class="card mb-3" id="bot-mode">
+    <div class="card-header justify-between">
+        <div>
+            <h2 class="card-title">🎛 حالت رابط کاربری ربات (تغییر فوری مینی‌اپ ↔ دکمه‌ای)</h2>
+            <span class="card-subtitle">هر زمان بخواهید می‌توانید با یک کلیک بین حالت مینی‌اپ، حالت دکمه‌ای یا حالت ترکیبی جابه‌جا شوید</span>
+        </div>
+        <span class="badge badge-<?= $effectiveUiMode === 'miniapp' ? 'brand' : ($effectiveUiMode === 'hybrid' ? 'success' : 'info') ?>">
+            فعال: <?= e(\RB\Services\SettingsService::botUiModeLabel($effectiveUiMode)) ?>
+        </span>
+    </div>
+    <form method="post" action="<?= url('admin/telegram/mode') ?>" data-ajax>
+        <?= csrf_field() ?>
+        <div class="card-body">
+            <div class="mode-switcher-grid">
+                <label class="mode-card <?= $currentUiMode === 'miniapp' ? 'selected' : '' ?>">
+                    <input type="radio" name="bot_ui_mode" value="miniapp" <?= $currentUiMode === 'miniapp' ? 'checked' : '' ?>>
+                    <div class="mode-card-head">
+                        <span class="mode-card-icon">📱</span>
+                        <span class="mode-card-title">حالت مینی‌اپ</span>
+                        <?php if ($currentUiMode === 'miniapp'): ?><span class="badge badge-brand no-dot">انتخاب‌شده</span><?php endif; ?>
+                    </div>
+                    <p class="mode-card-desc">تمرکز کامل روی وب‌اپ گرافیکی داخل تلگرام (داشبورد، نمودار دعوت‌ها، کیف پول و برداشت) به همراه دسترسی سریع لینک دعوت و پشتیبانی.</p>
+                </label>
+
+                <label class="mode-card <?= $currentUiMode === 'buttons' ? 'selected' : '' ?>">
+                    <input type="radio" name="bot_ui_mode" value="buttons" <?= $currentUiMode === 'buttons' ? 'checked' : '' ?>>
+                    <div class="mode-card-head">
+                        <span class="mode-card-icon">⌨️</span>
+                        <span class="mode-card-title">حالت دکمه‌ای ربات</span>
+                        <?php if ($currentUiMode === 'buttons'): ?><span class="badge badge-info no-dot">انتخاب‌شده</span><?php endif; ?>
+                    </div>
+                    <p class="mode-card-desc">مینی‌اپ به‌طور کامل خاموش می‌شود و کاربران تمام کارها (حساب، دعوت، درآمد، برداشت و جشنواره‌ها) را با دکمه‌های خود ربات انجام می‌دهند.</p>
+                </label>
+
+                <label class="mode-card <?= $currentUiMode === 'hybrid' ? 'selected' : '' ?>">
+                    <input type="radio" name="bot_ui_mode" value="hybrid" <?= $currentUiMode === 'hybrid' ? 'checked' : '' ?>>
+                    <div class="mode-card-head">
+                        <span class="mode-card-icon">✨</span>
+                        <span class="mode-card-title">حالت ترکیبی (هر دو)</span>
+                        <?php if ($currentUiMode === 'hybrid'): ?><span class="badge badge-success no-dot">انتخاب‌شده</span><?php endif; ?>
+                    </div>
+                    <p class="mode-card-desc">هم دکمه ورود به مینی‌اپ گرافیکی و هم تمامی دکمه‌های کلاسیک ربات به کاربر نمایش داده می‌شود تا هر طور راحت‌تر است استفاده کند.</p>
+                </label>
+            </div>
+
+            <div class="form-group mt-3 mb-0">
+                <label class="form-label">آدرس مینی‌اپ (HTTPS)</label>
+                <input type="text" name="miniapp_url" class="form-control ltr" dir="ltr" maxlength="255"
+                       value="<?= e($defaultMiniUrl) ?>" placeholder="https://example.com/app">
+                <div class="form-hint">
+                    در حالت مینی‌اپ و ترکیبی استفاده می‌شود (الزاماً با <code class="ltr">https://</code>). هنگام انتخاب «حالت دکمه‌ای»، دکمه مینی‌اپ از پایین چت تلگرام هم به‌طور خودکار برداشته می‌شود.
+                </div>
+            </div>
+        </div>
+        <div class="card-footer flex items-center justify-between wrap gap-2">
+            <span class="text-xs text-muted">تغییر حالت بلافاصله روی پیام‌های جدید و دکمه منوی تلگرام اعمال می‌شود.</span>
+            <button class="btn" type="submit">⚡ اعمال و همگام‌سازی حالت ربات</button>
+        </div>
+    </form>
+</div>
+
 <div class="grid-2 mb-3">
     <div class="card">
         <div class="card-header"><h2 class="card-title">منوها و دستورات ربات</h2>
@@ -210,7 +290,14 @@ $webhookActive = !empty($settings['webhook_active']);
                 آدرس شامل توکن است؛ آن را در اختیار کسی قرار ندهید.
             </div>
         </div>
-        <?php $cronUrl = url('cron/run') . '?token=' . ($cronToken ?? '') . '&task=all'; ?>
+        <?php
+        $cronBase = rtrim((string) (setting('webhook_base_url', '') ?: \RB\Support\Request::origin()), '/');
+        $cronAppPath = rtrim((string) \RB\Support\Config::get('app.base_path', ''), '/');
+        if ($cronAppPath !== '' && str_ends_with($cronBase, $cronAppPath)) {
+            $cronBase = substr($cronBase, 0, -strlen($cronAppPath));
+        }
+        $cronUrl = rtrim($cronBase, '/') . url('cron/run') . '?token=' . ($cronToken ?? '') . '&task=all';
+        ?>
         <label class="form-label">آدرس اجرای کامل وظایف</label>
         <div class="copy-field">
             <span class="ltr text-xs"><?= e($cronUrl) ?></span>

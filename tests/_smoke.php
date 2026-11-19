@@ -28,6 +28,7 @@ $views = [
   'admin/support/index' => ['title'=>'پشتیبانی','messages'=>[],'statusFilter'=>'open','openCount'=>0],
   'admin/admins/index' => ['title'=>'مدیران','admins'=>[]],
   'admin/backup/index' => ['title'=>'پشتیبان','files'=>[],'driver'=>'sqlite','tables'=>30,'stats'=>['users'=>0,'transactions'=>0,'withdrawals'=>0]],
+  'admin/update/index' => ['title'=>'به‌روزرسانی سامانه','currentVersion'=>RB_VERSION,'latest'=>null,'hasUpdate'=>false,'repo'=>RB\Services\UpdateService::DEFAULT_REPO,'channel'=>'stable','autoCheck'=>false,'maskedToken'=>null,'lastCheckAt'=>'','lastError'=>'','lastAppliedAt'=>'','lastAppliedFrom'=>'','lastAppliedTo'=>'','checks'=>(new RB\Services\UpdateService())->environmentChecks(),'backups'=>[],'history'=>[],'maxUploadMb'=>50],
   'miniapp/landing' => ['title'=>'پنل','appName'=>'تست','miniappUrl'=>''],
   'miniapp/disabled' => ['title'=>'پنل','appName'=>'تست','botUsername'=>'refrallbot_test_bot'],
   // صفحه نصب — عمداً کامل رندر می‌شود تا کل ویزارد (۶ مرحله) بررسی شود

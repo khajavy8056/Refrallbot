@@ -17,8 +17,10 @@ final class Money
     /** تبدیل درصد به عدد صحیح با مقیاس ۱۰۰۰۰ */
     public static function toMicro(string|int|float $percent): int
     {
-        $value = trim((string) $percent);
-        $value = str_replace(['٪', '%', ' ', '٫'], '', en_digits($value));
+        $value = trim(en_digits((string) $percent));
+        // ممیز فارسی (٫) به نقطه اعشار تبدیل می‌شود و جداکنندهٔ هزارگان (٬ / ، / ,) حذف می‌گردد
+        $value = str_replace('٫', '.', $value);
+        $value = str_replace(['٪', '%', ' ', '٬', '،', ','], '', $value);
         if ($value === '' || !is_numeric($value)) {
             return 0;
         }
@@ -74,7 +76,7 @@ final class Money
             return null;
         }
         $value = en_digits(trim((string) $input));
-        $value = str_replace([',', ' ', '،', '_', 'تومان', 'تومن', 'ریال', 'IRT', 'irr'], '', $value);
+        $value = str_replace([',', '٬', ' ', '،', '_', 'تومان', 'تومن', 'ریال', 'IRT', 'irr'], '', $value);
         if ($value === '' || !preg_match('~^\d+$~', $value)) {
             return null;
         }

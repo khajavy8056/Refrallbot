@@ -165,7 +165,7 @@ final class CampaignController extends AdminController
                 $this->fail('مبلغ جایزه نامعتبر است.');
                 return;
             }
-            $service->grant($campaign, (int) $found['id'], $amount, 'manual_' . time(), (int) ($_POST['progress'] ?? 0), current_admin_id());
+            $service->grant($campaign, (int) $found['id'], $amount, 'manual_' . time(), (int) en_digits((string) ($_POST['progress'] ?? '0')), current_admin_id());
             AuditService::log('campaign.reward_granted', 'campaign', $id, ['user_id' => (int) $found['id'], 'amount' => $amount], current_admin_id());
             $this->ok('جایزه به کاربر پرداخت و در دفتر مالی ثبت شد.', ['reload' => true]);
         } catch (\Throwable $e) {
@@ -220,7 +220,7 @@ final class CampaignController extends AdminController
             'required_invites' => max(0, (int) en_digits((string) ($_POST['required_invites'] ?? 0))),
             'fixed_reward' => Money::parseToman($_POST['fixed_reward'] ?? null) ?? 0,
             'percent_bonus' => Money::fromMicro(Money::toMicro((string) ($_POST['percent_bonus'] ?? '0'))),
-            'max_winners' => max(0, (int) ($_POST['max_winners'] ?? 0)),
+            'max_winners' => max(0, (int) en_digits((string) ($_POST['max_winners'] ?? '0'))),
             'min_activity' => Money::parseToman($_POST['min_activity'] ?? null) ?? 0,
             'audience' => in_array($_POST['audience'] ?? '', ['all', 'active', 'with_refs'], true) ? (string) $_POST['audience'] : 'all',
         ];

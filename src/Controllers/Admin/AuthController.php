@@ -50,7 +50,9 @@ final class AuthController extends Controller
 
         $intended = $_SESSION['_intended'] ?? null;
         unset($_SESSION['_intended']);
-        $target = $intended && str_starts_with((string) $intended, '/admin') ? $intended : url('admin');
+        $target = ($intended && is_string($intended) && str_starts_with($intended, '/admin') && !str_starts_with($intended, '//'))
+            ? url(ltrim($intended, '/'))
+            : url('admin');
         Request::redirect($target);
     }
 

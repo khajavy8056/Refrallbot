@@ -3,15 +3,15 @@ declare(strict_types=1);
 
 namespace RB\Services;
 
+use RB\Messengers\MessengerCapabilities;
+use RB\Messengers\MessengerRegistry;
 use RB\Support\Config;
 use RB\Support\Database;
 use RB\Support\ErrorHandler;
 
 /**
- * ارسال پیام همگانی به‌صورت مرحله‌ای (Batch) برای رعایت محدودیت نرخ تلگرام
- *
- * چرا مرحله‌ای؟ هاست اشتراکی معمولاً محدودیت زمان اجرا دارد و تلگرام نیز
- * حدود ۳۰ پیام در ثانیه مجاز می‌داند. هر اجرای Cron فقط یک دسته را ارسال می‌کند.
+ * سرویس ارسال پیام همگانی مرحله‌ای (Batch) در تمام پیام‌رسان‌های فعال
+ * (پشتیبانی از ارسال به همه پیام‌رسان‌ها یا فیلتر یک پیام‌رسان مشخص با ایزوله‌سازی کامل خطا)
  */
 final class BroadcastService
 {
@@ -33,17 +33,29 @@ final class BroadcastService
     /** ساخت کمپین و ثبت فهرست مخاطبان */
     public function createCampaign(array $data, ?int $adminId = null): array
     {
-        if (!TelegramService::configured()) {
-            throw new \RuntimeException('ابتدا توکن ربات را تنظیم کنید.');
+        $registry = new MessengerRegistry($this->db);
+        $targetPlatform = strtolower(trim((string) ($data['target_platform'] ?? 'all')));
+        if ($targetPlatform !== 'all' && !MessengerCapabilities::isSupported($targetPlatform)) {
+            $targetPlatform = 'all';
         }
+
+        $activePlatforms = $registry->activePlatforms();
+        if ($activePlatforms === [] && !TelegramService::configured()) {
+            throw new \RuntimeException('ابتدا حداقل یک پیام‌رسان را در بخش «مدیریت پیام‌رسان‌ها» متصل و فعال کنید.');
+        }
+        if ($targetPlatform !== 'all' && !isset($activePlatforms[$targetPlatform])) {
+            throw new \RuntimeException('پیام‌رسان «' . MessengerCapabilities::label($targetPlatform) . '» فعال یا متصل نیست.');
+        }
+
         $segment = (string) ($data['segment'] ?? 'all');
         if (!array_key_exists($segment, self::SEGMENTS)) {
             throw new \RuntimeException('گروه مخاطبان نامعتبر است.');
         }
-        $params = $data['segment_params'] ?? [];
+        $params = (array) ($data['segment_params'] ?? []);
+        $params['target_platform'] = $targetPlatform;
         $targets = $this->resolveTargets($segment, $params);
         if ($targets === []) {
-            throw new \RuntimeException('هیچ مخاطبی برای این گروه یافت نشد.');
+            throw new \RuntimeException('هیچ مخاطب فعالی برای این گروه و پیام‌رسان یافت نشد.');
         }
 
         $scheduledAt = null;
@@ -54,8 +66,8 @@ final class BroadcastService
             }
         }
 
-        return $this->db->transaction(function () use ($data, $segment, $params, $targets, $adminId, $scheduledAt) {
-            $campaignId = $this->db->insert('broadcast_campaigns', [
+        return $this->db->transaction(function () use ($data, $segment, $params, $targets, $adminId, $scheduledAt, $targetPlatform) {
+            $campRow = [
                 'title' => (string) ($data['title'] ?? 'پیام همگانی'),
                 'message_text' => (string) $data['message_text'],
                 'media_type' => $data['media_type'] ?? null,
@@ -69,13 +81,18 @@ final class BroadcastService
                 'created_by' => $adminId,
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            if ($this->db->columnExists('broadcast_campaigns', 'target_platform')) {
+                $campRow['target_platform'] = $targetPlatform;
+            }
+            $campaignId = $this->db->insert('broadcast_campaigns', $campRow);
 
             foreach ($targets as $target) {
+                $tid = (int) ($target['telegram_id'] ?? 0);
                 $this->db->insert('broadcast_targets', [
                     'campaign_id' => $campaignId,
-                    'user_id' => $target['id'],
-                    'telegram_id' => $target['telegram_id'],
+                    'user_id' => (int) $target['id'],
+                    'telegram_id' => $tid,
                     'status' => 'pending',
                 ]);
             }
@@ -87,59 +104,63 @@ final class BroadcastService
     /** @return array<int,array{id:int,telegram_id:int}> */
     public function resolveTargets(string $segment, array $params = []): array
     {
-        $sql = 'SELECT id, telegram_id FROM users WHERE telegram_id IS NOT NULL';
+        $targetPlatform = strtolower(trim((string) ($params['target_platform'] ?? 'all')));
+        $hasMessengerTable = $this->db->tableExists('user_messenger_accounts');
+
+        $where = ["u.status <> 'blocked'"];
         $bind = [];
+
+        if ($targetPlatform !== 'all' && MessengerCapabilities::isSupported($targetPlatform)) {
+            if ($hasMessengerTable) {
+                $where[] = 'EXISTS (SELECT 1 FROM user_messenger_accounts ma WHERE ma.user_id = u.id AND ma.platform = :tplat AND ma.is_blocked = 0 AND ma.can_send_message = 1)';
+                $bind['tplat'] = $targetPlatform;
+            } elseif ($targetPlatform === MessengerCapabilities::TELEGRAM) {
+                $where[] = 'u.telegram_id > 0';
+            } else {
+                return [];
+            }
+        }
+
         switch ($segment) {
             case 'active':
-                $sql .= " AND status = 'active'";
+                $where[] = "u.status = 'active'";
                 break;
             case 'suspicious':
-                $sql .= " AND status = 'suspicious'";
+                $where = ["u.status = 'suspicious'"];
+                if (isset($bind['tplat'])) {
+                    $where[] = 'EXISTS (SELECT 1 FROM user_messenger_accounts ma WHERE ma.user_id = u.id AND ma.platform = :tplat AND ma.is_blocked = 0)';
+                }
                 break;
             case 'with_phone':
-                $sql .= " AND phone IS NOT NULL AND phone <> ''";
+                $where[] = "u.phone IS NOT NULL AND u.phone <> ''";
                 break;
             case 'with_refs':
-                $sql .= ' AND direct_ref_count > 0';
+                $where[] = 'u.direct_ref_count > 0';
                 break;
             case 'no_refs':
-                $sql .= ' AND direct_ref_count = 0';
+                $where[] = 'u.direct_ref_count = 0';
                 break;
             case 'with_balance':
-                $sql .= ' AND wallet_balance > 0';
+                $where[] = 'u.wallet_balance > 0';
                 break;
             case 'level':
-                $level = max(1, min(8, (int) ($params['level'] ?? 1)));
+                $level = max(0, min(8, (int) ($params['level'] ?? 0)));
                 $sql = 'SELECT DISTINCT u.id, u.telegram_id FROM users u
                         JOIN referral_relations rr ON rr.descendant_id = u.id
-                        WHERE rr.depth = :lvl';
-                $bind['lvl'] = $level;
-                break;
-            case 'user_ids':
-                $ids = array_map('intval', (array) ($params['ids'] ?? []));
-                if ($ids === []) {
+                        WHERE rr.depth = :lvl AND ' . implode(' AND ', $where);
+                $bind['lvl'] = $level + 1;
+                try {
+                    return $this->db->all($sql, $bind);
+                } catch (\Throwable $e) {
+                    ErrorHandler::logException($e);
                     return [];
                 }
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                $sql .= " AND id IN ({$placeholders})";
-                foreach ($ids as $i => $id) {
-                    $bind[$i + 1] = $id;
-                }
-                break;
-            case 'campaign':
-                $campaignId = (int) ($params['campaign_id'] ?? 0);
-                if ($campaignId <= 0) {
-                    return [];
-                }
-                $sql = 'SELECT DISTINCT u.id, u.telegram_id FROM users u
-                        JOIN campaign_participants cp ON cp.user_id = u.id
-                        WHERE cp.campaign_id = :cid';
-                $bind['cid'] = $campaignId;
-                break;
             case 'all':
             default:
                 break;
         }
+
+        $sql = 'SELECT u.id, u.telegram_id FROM users u WHERE ' . implode(' AND ', $where);
         try {
             return $this->db->all($sql, $bind);
         } catch (\Throwable $e) {
@@ -172,8 +193,8 @@ final class BroadcastService
     }
 
     /**
-     * پردازش یک دسته از کمپین‌های در حال ارسال
-     * @return array{campaigns:int,sent:int,failed:int,blocked:int}
+     * پردازش یک دسته از کمپین‌های همگانی در تمام پیام‌رسان‌ها
+     * @return array{campaigns:int,sent:int,failed:int,blocked:int,error?:string}
      */
     public function processQueue(int $batchSize = 25, int $maxPerRun = 500): array
     {
@@ -184,6 +205,11 @@ final class BroadcastService
         $blocked = 0;
         $campaignsTouched = 0;
 
+        $registry = new MessengerRegistry($this->db);
+        if ($registry->activePlatforms() === [] && !TelegramService::configured()) {
+            return ['campaigns' => 0, 'sent' => 0, 'failed' => 0, 'blocked' => 0, 'error' => 'هیچ پیام‌رسانی متصل نیست'];
+        }
+
         $campaigns = $this->db->all(
             "SELECT * FROM broadcast_campaigns
              WHERE status IN ('sending','queued')
@@ -191,11 +217,6 @@ final class BroadcastService
              ORDER BY id ASC LIMIT 5",
             ['now' => now()]
         );
-
-        $tg = new TelegramService();
-        if (!$tg->isConfigured()) {
-            return ['campaigns' => 0, 'sent' => 0, 'failed' => 0, 'blocked' => 0, 'error' => 'ربات متصل نیست'];
-        }
 
         foreach ($campaigns as $campaign) {
             if ($sent + $failed >= $maxPerRun) {
@@ -212,6 +233,7 @@ final class BroadcastService
                 $this->db->update('broadcast_campaigns', ['started_at' => now()], 'id = :id', ['id' => (int) $campaign['id']]);
             }
 
+            $targetPlatform = strtolower((string) ($campaign['target_platform'] ?? 'all'));
             $targets = $this->db->all(
                 "SELECT * FROM broadcast_targets WHERE campaign_id = :c AND status = 'pending' ORDER BY id LIMIT " . $batchSize,
                 ['c' => (int) $campaign['id']]
@@ -221,7 +243,7 @@ final class BroadcastService
                 if ($sent + $failed >= $maxPerRun) {
                     break;
                 }
-                $result = $this->sendOne($tg, $campaign, (int) $target['telegram_id']);
+                $result = $this->sendToTarget($registry, $campaign, $target, $targetPlatform);
                 if ($result === 'sent') {
                     $this->db->update('broadcast_targets', [
                         'status' => 'sent', 'sent_at' => now(), 'error' => null,
@@ -229,7 +251,7 @@ final class BroadcastService
                     $sent++;
                 } elseif ($result === 'blocked') {
                     $this->db->update('broadcast_targets', [
-                        'status' => 'blocked', 'sent_at' => now(), 'error' => 'کاربر ربات را بلاک کرده است',
+                        'status' => 'blocked', 'sent_at' => now(), 'error' => 'کاربر ربات را مسدود کرده است',
                     ], 'id = :id', ['id' => (int) $target['id']]);
                     $blocked++;
                 } else {
@@ -238,7 +260,6 @@ final class BroadcastService
                     ], 'id = :id', ['id' => (int) $target['id']]);
                     $failed++;
                 }
-                // رعایت فاصله بین ارسال‌ها
                 $delay = (int) Config::get('services.broadcast_delay_ms', 60);
                 if ($delay > 0) {
                     usleep($delay * 1000);
@@ -275,63 +296,72 @@ final class BroadcastService
         ];
     }
 
-    /** @return string 'sent' | 'blocked' | string(خطا) */
-    private function sendOne(TelegramService $tg, array $campaign, int $telegramId): string
+    /** ارسال ایزوله یک پیام کمپین به حساب پیام‌رسان مخاطب */
+    private function sendToTarget(MessengerRegistry $registry, array $campaign, array $target, string $targetPlatform): string
     {
+        $userId = (int) ($target['user_id'] ?? 0);
+        $telegramId = (int) ($target['telegram_id'] ?? 0);
+        $text = (string) ($campaign['message_text'] ?? '');
+        $buttons = !empty($campaign['buttons']) ? json_decode((string) $campaign['buttons'], true) : null;
         $options = ['parse_mode' => 'HTML', 'disable_web_page_preview' => true];
-        $buttons = $campaign['buttons'] ? json_decode((string) $campaign['buttons'], true) : null;
         if (is_array($buttons) && $buttons !== []) {
-            $options['reply_markup'] = ['inline_keyboard' => $buttons];
+            $options['inline_rows'] = $buttons;
         }
 
-        $text = (string) $campaign['message_text'];
-
-        if (!empty($campaign['media_file_id'])) {
-            $method = match ($campaign['media_type']) {
-                'photo' => 'sendPhoto',
-                'video' => 'sendVideo',
-                'document' => 'sendDocument',
-                default => 'sendMessage',
-            };
-            $field = match ($campaign['media_type']) {
-                'photo' => 'photo',
-                'video' => 'video',
-                'document' => 'document',
-                default => null,
-            };
-            if ($field !== null) {
-                $params = ['chat_id' => $telegramId, $field => $campaign['media_file_id']];
-                if (trim($text) !== '') {
-                    $params['caption'] = $text;
-                    $params['parse_mode'] = 'HTML';
-                }
-                if (isset($options['reply_markup'])) {
-                    $params['reply_markup'] = $options['reply_markup'];
-                }
-                $result = $tg->call($method, $params);
-                return $this->classify($result);
+        // انتخاب بهترین پیام‌رسان فعال کاربر (بدون ارسال تکراری به یک نفر)
+        $accounts = [];
+        if ($userId > 0 && $this->db->tableExists('user_messenger_accounts')) {
+            if ($targetPlatform !== 'all' && MessengerCapabilities::isSupported($targetPlatform)) {
+                $accounts = $this->db->all(
+                    'SELECT * FROM user_messenger_accounts WHERE user_id = :u AND platform = :p AND is_blocked = 0 AND can_send_message = 1 LIMIT 1',
+                    ['u' => $userId, 'p' => $targetPlatform]
+                );
+            } else {
+                $accounts = $this->db->all(
+                    'SELECT * FROM user_messenger_accounts WHERE user_id = :u AND is_blocked = 0 AND can_send_message = 1 ORDER BY is_primary DESC, last_seen_at DESC',
+                    ['u' => $userId]
+                );
             }
         }
 
-        return $this->classify($tg->sendMessage($telegramId, $text, $options));
-    }
+        if ($accounts === [] && $telegramId > 0 && ($targetPlatform === 'all' || $targetPlatform === MessengerCapabilities::TELEGRAM)) {
+            $accounts = [[
+                'platform' => MessengerCapabilities::TELEGRAM,
+                'external_user_id' => (string) $telegramId,
+                'external_chat_id' => (string) $telegramId,
+            ]];
+        }
 
-    private function classify(array $result): string
-    {
-        if ($result['ok'] ?? false) {
-            return 'sent';
+        $lastErr = 'هیچ پیام‌رسان فعالی برای این کاربر در دسترس نیست.';
+        foreach ($accounts as $acc) {
+            $p = (string) $acc['platform'];
+            $chatId = (string) ($acc['external_chat_id'] ?: $acc['external_user_id']);
+            try {
+                $driver = $registry->driver($p);
+                if (!$driver->isEnabled() && !($p === MessengerCapabilities::TELEGRAM && $driver->isConfigured())) {
+                    continue;
+                }
+                if (!empty($campaign['media_file_id']) && ($campaign['media_type'] ?? '') === 'photo' && $p === MessengerCapabilities::TELEGRAM) {
+                    $res = $driver->sendPhoto($chatId, (string) $campaign['media_file_id'], $text, $options);
+                } else {
+                    $res = $driver->sendMessage($chatId, $text, $options);
+                }
+                if (!empty($res['ok'])) {
+                    return 'sent';
+                }
+                $desc = (string) ($res['description'] ?? 'خطای ارسال');
+                if (stripos($desc, 'blocked') !== false || stripos($desc, 'مسدود') !== false || stripos($desc, 'deactivated') !== false) {
+                    (new UserService($this->db))->markMessengerBlocked($p, (string) $acc['external_user_id'], true);
+                    $lastErr = 'blocked';
+                    continue;
+                }
+                $lastErr = MessengerCapabilities::label($p) . ': ' . $desc;
+            } catch (\Throwable $e) {
+                $lastErr = MessengerCapabilities::label($p) . ': ' . ErrorHandler::redact($e->getMessage());
+            }
         }
-        $code = (int) ($result['error_code'] ?? 0);
-        $description = (string) ($result['description'] ?? 'خطای نامشخص');
-        if ($code === 403 || stripos($description, 'blocked') !== false || stripos($description, 'deactivated') !== false) {
-            return 'blocked';
-        }
-        if ($code === 429) {
-            $retry = (int) ($result['parameters']['retry_after'] ?? 2);
-            sleep(min(5, max(1, $retry)));
-            return '429: محدودیت نرخ ارسال — تلاش بعدی در اجرای بعدی';
-        }
-        return $description;
+
+        return $lastErr;
     }
 
     public function sendTestToAdmin(int $adminId, string $text): bool
@@ -345,7 +375,6 @@ final class BroadcastService
         return (bool) ($result['ok'] ?? false);
     }
 
-    /** تلاش مجدد ارسال‌های ناموفق */
     public function retryFailed(int $campaignId): int
     {
         return $this->db->run(

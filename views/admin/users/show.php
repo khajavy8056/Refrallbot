@@ -14,7 +14,7 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
             <h1 class="mb-0" style="font-size:1.25rem"><?= e($name) ?></h1>
             <div class="text-sm text-muted">
                 <?= $user['username'] ? '@' . e($user['username']) . ' · ' : '' ?>
-                شناسه: <span class="mono"><?= fa_digits((string) $user['telegram_id']) ?></span>
+                شناسه: <span class="mono"><?= (int) ($user['telegram_id'] ?? 0) > 0 ? fa_digits((string) $user['telegram_id']) : ('#' . fa_digits((string) $user['id'])) ?></span>
                 · کد دعوت: <span class="mono"><?= e($user['referral_code']) ?></span>
             </div>
         </div>
@@ -28,7 +28,7 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
 
 <div class="stats-grid" style="grid-template-columns:repeat(auto-fill,minmax(185px,1fr))">
     <div class="stat"><div class="stat-head"><div class="stat-icon">👛</div><div class="stat-label">موجودی کیف پول</div></div><div class="stat-value"><?= fa_digits(number_format($walletSummary['balance'])) ?><small> تومان</small></div><div class="stat-foot">در انتظار: <?= wtoman($walletSummary['pending']) ?></div></div>
-    <div class="stat success"><div class="stat-head"><div class="stat-icon">💰</div><div class="stat-label">درآمد کل</div></div><div class="stat-value"><?= fa_digits(number_format($walletSummary['total_earned'])) ?><small> تومان</small></div><div class="stat-foot">مستقیم <?= wtoman($walletSummary['direct_earned']) ?></div></div>
+    <div class="stat success"><div class="stat-head"><div class="stat-icon">💰</div><div class="stat-label">درآمد کل</div></div><div class="stat-value"><?= fa_digits(number_format($walletSummary['total_earned'])) ?><small> تومان</small></div><div class="stat-foot">معرفی <?= wtoman($walletSummary['direct_earned']) ?><?= !empty($walletSummary['welcome_earned']) ? ' · خوش‌آمد ' . wtoman($walletSummary['welcome_earned']) : '' ?></div></div>
     <div class="stat info"><div class="stat-head"><div class="stat-icon">🕸</div><div class="stat-label">زیرمجموعه</div></div><div class="stat-value"><?= fa_digits($user['direct_ref_count']) ?><small> مستقیم</small></div><div class="stat-foot">کل شبکه: <?= fa_digits($user['total_ref_count']) ?></div></div>
     <div class="stat warning"><div class="stat-head"><div class="stat-icon">💸</div><div class="stat-label">برداشت‌ها</div></div><div class="stat-value"><?= fa_digits(number_format($walletSummary['total_withdrawn'])) ?><small> تومان</small></div><div class="stat-foot"><?= fa_digits($walletSummary['withdrawal_count']) ?> درخواست</div></div>
 </div>
@@ -49,7 +49,21 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
         <div class="table-wrap">
             <table class="table">
                 <tbody>
-                <tr><td class="text-muted" style="width:45%">شماره تماس</td><td><?= $user['phone'] ? e($user['phone']) : '<span class="text-muted">ثبت نشده</span>' ?></td></tr>
+                <tr><td class="text-muted" style="width:45%">پیام‌رسان‌های متصل</td><td>
+                    <?php if (!empty($messengerAccounts)): ?>
+                        <div class="flex gap-1 wrap">
+                            <?php foreach ($messengerAccounts as $ma): ?>
+                                <span class="badge badge-<?= !empty($ma['is_primary']) ? 'brand' : 'info' ?> no-dot">
+                                    <?= e(\RB\Messengers\MessengerCapabilities::badge((string) $ma['platform'])) ?>
+                                    <span class="ltr">(<?= e((string) $ma['external_user_id']) ?>)</span>
+                                </span>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php else: ?>
+                        <span class="badge badge-brand no-dot"><?= e(\RB\Messengers\MessengerCapabilities::badge((string) ($user['entry_platform'] ?? 'telegram'))) ?></span>
+                    <?php endif; ?>
+                </td></tr>
+                <tr><td class="text-muted">شماره تماس</td><td><?= $user['phone'] ? e($user['phone']) : '<span class="text-muted">ثبت نشده</span>' ?></td></tr>
                 <tr><td class="text-muted">تاریخ عضویت</td><td><?= fa_date($user['joined_at']) ?></td></tr>
                 <tr><td class="text-muted">آخرین فعالیت</td><td><?= fa_date($user['last_activity_at']) ?></td></tr>
                 <tr><td class="text-muted">تاریخ واجد شرایط شدن</td><td><?= fa_date($user['qualified_at']) ?></td></tr>
@@ -76,6 +90,16 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
     <div class="card" id="status">
         <div class="card-header"><h2 class="card-title">عملیات مدیریتی</h2></div>
         <div class="card-body">
+            <?php if (($user['verify_status'] ?? 'pending') !== 'verified'): ?>
+                <form method="post" action="<?= url('admin/users/' . (int) $user['id'] . '/approve') ?>" class="mb-3">
+                    <?= csrf_field() ?>
+                    <button class="btn btn-success btn-sm" type="submit" data-confirm="عضویت این کاربر تأیید شود؟ در صورت تکمیل سایر شرایط، پاداش دعوت به معرف و کاربر واریز خواهد شد.">
+                        ✅ تأیید عضویت و بررسی پاداش دعوت
+                    </button>
+                </form>
+                <hr class="divider">
+            <?php endif; ?>
+
             <form method="post" action="<?= url('admin/users/' . (int) $user['id'] . '/status') ?>" class="mb-3">
                 <?= csrf_field() ?>
                 <div class="form-label">تغییر وضعیت حساب</div>
@@ -244,7 +268,7 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
                     <?php foreach ($commissions as $c): ?>
                         <tr>
                             <td data-label="منبع" class="text-sm"><?= e(trim(($c['first_name'] ?? '') . ' ' . ($c['last_name'] ?? '')) ?: 'کاربر') ?></td>
-                            <td data-label="سطح"><?= (int) $c['level'] === 0 ? 'مستقیم' : fa_digits((int) $c['level']) ?></td>
+                            <td data-label="سطح"><?= ($c['type'] ?? '') === 'welcome' ? '🎁 خوش‌آمدگویی' : ((int) $c['level'] === 0 ? '🎯 معرفی مستقیم' : 'لایه ' . fa_digits((int) $c['level'])) ?></td>
                             <td data-label="مبلغ" class="font-bold"><?= wtoman((int) $c['amount']) ?></td>
                             <td data-label="وضعیت">
                                 <span class="badge badge-<?= $c['status'] === 'approved' ? 'success' : 'danger' ?>">

@@ -41,15 +41,26 @@ final class Router
 
     public function dispatch(): void
     {
-        $method = Request::method();
-        // متدهای PUT/DELETE از طریق POST + _method پشتیبانی می‌شوند
-        if ($method === 'POST' && !empty($_POST['_method'])) {
-            $method = strtoupper((string) $_POST['_method']);
-        }
         $path = Request::path();
         $path = rtrim($path, '/');
         if ($path === '') {
             $path = '/';
+        }
+
+        // اگر درخواست با Content-Type: application/json آمده، $_POST هم پر شود
+        // تا همهٔ کنترلرهای پنل مدیریت و Mini App یکپارچه کار کنند.
+        if (!str_starts_with($path, '/webhook/')) {
+            Request::hydratePostFromJson();
+        }
+
+        $method = Request::method();
+        // متدهای PUT/DELETE از طریق POST + _method پشتیبانی می‌شوند
+        $methodOverride = $_POST['_method'] ?? null;
+        if ($method === 'POST' && is_string($methodOverride) && $methodOverride !== '') {
+            $upper = strtoupper(trim($methodOverride));
+            if (in_array($upper, ['PUT', 'PATCH', 'DELETE'], true)) {
+                $method = $upper;
+            }
         }
 
         $trace = \RB\Support\Env::bool('APP_DEBUG', false);

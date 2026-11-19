@@ -19,6 +19,7 @@ final class SettingsController extends AdminController
             'title' => 'تنظیمات سیستم',
             'settings' => SettingsService::all(),
             'miniappActive' => SettingsService::miniappActive(),
+            'platformUiModes' => SettingsService::activePlatformUiModes(),
             'commission' => CommissionSettings::current(db(), true),
             'metrics' => RankingService::METRICS,
         ]);
@@ -41,11 +42,16 @@ final class SettingsController extends AdminController
     {
         $min = Money::parseToman($_POST['min_withdraw_amount'] ?? null);
         if ($min === null || $min < 1000) {
-            $this->flash('error', 'حداقل مبلغ برداشت باید عددی بزرگ‌تر از ۱٬۰۰۰ تومان باشد.');
+            $errMsg = 'حداقل مبلغ برداشت باید عددی بزرگ‌تر از ۱٬۰۰۰ تومان باشد.';
+            if ($this->wantsJson()) {
+                $this->fail($errMsg);
+                return;
+            }
+            $this->flash('error', $errMsg);
             Request::redirect(url('admin/settings') . '#withdrawal');
             return;
         }
-        $maxOpen = (int) ($_POST['max_open_withdrawals'] ?? 1);
+        $maxOpen = (int) en_digits((string) ($_POST['max_open_withdrawals'] ?? '1'));
         $daily = Money::parseToman($_POST['max_daily_withdrawal'] ?? null) ?? 0;
 
         SettingsService::set('min_withdraw_amount', (string) $min, 'withdrawal');
@@ -66,10 +72,14 @@ final class SettingsController extends AdminController
     public function saveStartMessage(): void
     {
         $fields = [
-            'start_message_new' => 'start_message_new',
-            'start_message_returning' => 'start_message_returning',
-            'start_rules_text' => 'start_rules_text',
-            'guide_text' => 'guide_text',
+            'invite_message_text',
+            'invite_share_text',
+            'start_message_referred',
+            'referral_joined_message',
+            'start_message_new',
+            'start_message_returning',
+            'start_rules_text',
+            'guide_text',
         ];
         foreach ($fields as $key) {
             if (isset($_POST[$key])) {
@@ -77,8 +87,14 @@ final class SettingsController extends AdminController
             }
         }
         SettingsService::set('show_rules_in_start', !empty($_POST['show_rules_in_start']) ? '1' : '0', 'messages');
+        if (isset($_POST['referred_welcome_append_checklist_present'])) {
+            SettingsService::set('referred_welcome_append_checklist', !empty($_POST['referred_welcome_append_checklist']) ? '1' : '0', 'messages');
+        }
+        if (isset($_POST['notify_referral_joined_present'])) {
+            SettingsService::set('notify_referral_joined', !empty($_POST['notify_referral_joined']) ? '1' : '0', 'messages');
+        }
         AuditService::log('settings.updated', 'system', null, ['group' => 'messages'], current_admin_id());
-        $this->respond(fn() => [], 'پیام‌های ربات ذخیره شد.', 'admin/settings#messages');
+        $this->respond(fn() => [], 'پیام‌های ربات و دعوت دوستان با موفقیت ذخیره شد.', 'admin/settings#messages');
     }
 
     public function saveGates(): void
@@ -86,19 +102,26 @@ final class SettingsController extends AdminController
         SettingsService::set('force_channel_membership', !empty($_POST['force_channel_membership']) ? '1' : '0', 'telegram');
         SettingsService::set('contact_required', !empty($_POST['contact_required']) ? '1' : '0', 'telegram');
 
-        // پنل کاربری (Mini App): به‌صورت پیش‌فرض خاموش، چون به HTTPS معتبر نیاز دارد.
-        // حالت‌ها: auto (خودکار بر اساس https)، on (اجباری)، off
-        $mode = (string) ($_POST['miniapp_mode'] ?? 'auto');
-        if (!in_array($mode, ['auto', 'on', 'off'], true)) {
-            $mode = 'auto';
-        }
-        SettingsService::set('miniapp_mode', $mode, 'telegram');
-        $miniappUrl = trim((string) ($_POST['miniapp_url'] ?? ''));
-        if ($miniappUrl !== '') {
-            if (!preg_match('~^https?://~i', $miniappUrl)) {
-                $miniappUrl = 'https://' . $miniappUrl;
+        // حالت نمایش ربات (buttons / miniapp / hybrid) یا miniapp_mode قدیمی (off / on / auto)
+        $miniappUrlInput = isset($_POST['miniapp_url']) ? trim((string) $_POST['miniapp_url']) : null;
+        if (isset($_POST['bot_ui_mode']) && array_key_exists((string) $_POST['bot_ui_mode'], SettingsService::BOT_UI_MODES)) {
+            SettingsService::applyBotUiMode((string) $_POST['bot_ui_mode'], $miniappUrlInput);
+        } else {
+            $mode = (string) ($_POST['miniapp_mode'] ?? 'auto');
+            if (!in_array($mode, ['auto', 'on', 'off'], true)) {
+                $mode = 'auto';
             }
-            SettingsService::set('miniapp_url', mb_substr(rtrim($miniappUrl, '/'), 0, 255), 'telegram');
+            $mappedUi = $mode === 'off' ? 'buttons' : 'hybrid';
+            SettingsService::set('miniapp_mode', $mode, 'telegram');
+            SettingsService::set('bot_ui_mode', $mappedUi, 'telegram');
+            if ($miniappUrlInput !== null && $miniappUrlInput !== '') {
+                if (!preg_match('~^https?://~i', $miniappUrlInput)) {
+                    $miniappUrlInput = 'https://' . $miniappUrlInput;
+                }
+                SettingsService::set('miniapp_url', mb_substr(rtrim($miniappUrlInput, '/'), 0, 255), 'telegram');
+            }
+            SettingsService::flush();
+            SettingsService::syncTelegramMenuButton();
         }
         if (isset($_POST['contact_request_message'])) {
             SettingsService::set('contact_request_message', mb_substr((string) $_POST['contact_request_message'], 0, 600), 'telegram');
