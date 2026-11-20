@@ -5,7 +5,7 @@ require_once __DIR__ . '/lib.php';
 T::suite('ارتقای شناسه و پردازش روبیکا روی MySQL واقعی');
 // GitHub-hosted Ubuntu runners include a stopped MySQL service. Enable it only
 // on those disposable runners; normal local runs remain explicit opt-in.
-if (getenv('RB_MYSQL_INTEGRATION') !== '1' && getenv('GITHUB_ACTIONS') === 'true' && str_starts_with((string)getenv('ImageOS'), 'ubuntu')) {
+if (getenv('RB_MYSQL_INTEGRATION') !== '1' && getenv('GITHUB_ACTIONS') === 'true') {
     exec('sudo systemctl start mysql.service 2>&1', $startup, $exitCode);
     if ($exitCode !== 0) throw new RuntimeException('Could not start CI MySQL: ' . implode(' ', $startup));
     $admin = new PDO('mysql:host=127.0.0.1;port=3306', 'root', 'root', [PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
