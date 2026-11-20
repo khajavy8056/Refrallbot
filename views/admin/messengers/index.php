@@ -252,6 +252,7 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
                                     <?php elseif ($selected === 'bale'): ?>
                                         در API رسمی بله (<code>tapi.bale.ai/bot.../setWebhook</code>) با مسیر رمزنگاری‌شده یکتا ثبت می‌شود.
                                     <?php elseif ($selected === 'rubika'): ?>
+                                        بخش <code>***</code> کلید محرمانه است و هنگام ثبت به‌صورت خودکار جایگزین می‌شود؛ آن را به اشتراک نگذارید.
                                         در API رسمی روبیکا (<code>botapi.rubika.ir/v3/.../updateBotEndpoints</code>) هر دو مسیر <code>ReceiveUpdate</code> و <code>ReceiveInlineMessage</code> به‌صورت خودکار ثبت می‌شوند.
                                     <?php endif; ?>
                                 </div>

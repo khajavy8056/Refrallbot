@@ -24,10 +24,10 @@ final class MessengerController extends AdminController
         $registry = new MessengerRegistry($db);
         $connections = $registry->allConnections();
 
-        // لینک وب‌هوک واقعی (شامل مسیر امن اختصاصی برای مدیر)
+        // نمایش آدرس بدون افشای کلید محرمانه؛ هنگام ثبت، سرور کلید را اضافه می‌کند.
         $webhookUrls = [];
         foreach (MessengerCapabilities::platforms() as $p) {
-            $webhookUrls[$p] = $registry->suggestedWebhookUrl($p, true);
+            $webhookUrls[$p] = str_replace('{secret}', '***', $registry->suggestedWebhookUrl($p, false));
         }
 
         $selected = strtolower(trim((string) ($_GET['tab'] ?? MessengerCapabilities::TELEGRAM)));

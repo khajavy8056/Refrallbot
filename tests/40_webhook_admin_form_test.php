@@ -1,0 +1,50 @@
+<?php
+declare(strict_types=1);
+require_once __DIR__.'/bootstrap.php';
+require_once __DIR__.'/lib.php';
+use RB\Controllers\Admin\MessengerController;
+use RB\Http\Router;
+use RB\Messengers\AbstractMessengerDriver;
+use RB\Messengers\MessengerRegistry;
+use RB\Support\Database;
+use RB\Support\Request;
+
+T::suite('ثبت مجدد وب‌هوک از فرم مدیریت');
+$db=Database::instance();
+$role=$db->insert('admin_roles',['name'=>'Admin','slug'=>'superadmin','permissions'=>'["*"]','created_at'=>now(),'updated_at'=>now()]);
+$id=$db->insert('admins',['name'=>'Admin','username'=>'wh-form','password_hash'=>password_hash('test-password',PASSWORD_DEFAULT),'role_id'=>$role,'is_active'=>1,'created_at'=>now(),'updated_at'=>now()]);
+$_SESSION['admin_id']=$id; $_SESSION['admin_last_seen']=time(); $_SESSION['_csrf_token']=bin2hex(random_bytes(32));
+$_SERVER['HTTP_HOST']='bot.example.com'; $_SERVER['HTTPS']='on'; $_SERVER['REQUEST_METHOD']='GET'; $_SERVER['REQUEST_URI']='/admin/messengers';
+$_GET=['tab'=>'rubika'];
+$calls=[];
+AbstractMessengerDriver::setFakeTransport('rubika', static function(string $method,array $params) use (&$calls):array {
+    $calls[]=[$method,$params];
+    if ($method==='getMe') return ['status'=>'OK','data'=>['bot'=>['bot_id'=>'b0bot','username'=>'test_bot']]];
+    if ($method==='getChat') return ['status'=>'OK','data'=>['chat'=>['user_id'=>'u0Test','first_name'=>'Test']]];
+    return ['status'=>'OK','data'=>['message_id'=>'out']];
+});
+$registry=new MessengerRegistry($db);
+$registry->saveCredentials('rubika',['bot_token'=>'RubikaFakeTokenOnly_0123456789','is_enabled'=>1]);
+$registry->registerWebhook('rubika');
+$secret=(string)$registry->rawConnection('rubika')['webhook_secret'];
+// This is the persisted value left by an earlier, broken repeated registration.
+$db->update('messenger_connections',['webhook_url'=>'https://bot.example.com/webhook/rubika/***/***'],"platform = 'rubika'");
+ob_start(); (new MessengerController())->index(); $html=(string)ob_get_clean();
+preg_match('~name="webhook_url"[^>]*value="([^"]*)"~',$html,$m);
+$shown=html_entity_decode($m[1]??'',ENT_QUOTES,'UTF-8');
+T::eq('https://bot.example.com/webhook/rubika/***/***',$shown,'مقدار خراب قدیمی در فرم بازتولید شد');
+T::eq(false,str_contains($html,$secret),'صفحه تنظیمات راز مسیر را آشکار نمی‌کند');
+$_SERVER['REQUEST_METHOD']='POST'; $_SERVER['HTTP_ACCEPT']='application/json'; $_POST=['webhook_url'=>$shown];
+ob_start(); (new MessengerController())->setWebhook(['platform'=>'rubika']); $response=json_decode((string)ob_get_clean(),true);
+T::eq(true,$response['ok']??false,'ثبت مجدد از کنترلر واقعی پنل موفق است');
+$endpoints=array_values(array_filter($calls,fn($c)=>$c[0]==='updateBotEndpoints'));
+$target=(string)(end($endpoints)[1]['url']??'');
+T::eq('https://bot.example.com/webhook/rubika/'.$secret,$target,'آدرس ارسالی به روبیکا دقیقاً مسیر دارای راز صحیح است');
+$_SERVER['REQUEST_URI']=(string)parse_url($target,PHP_URL_PATH); $_POST=[];
+Request::setRawBody(json_encode(['update'=>['type'=>'NewMessage','chat_id'=>'b0Test','new_message'=>['message_id'=>'form1','sender_type'=>'User','sender_id'=>'u0Test','text'=>'/start']]]));
+ob_start(); $router=new Router(); (require RB_ROOT.'/src/routes.php')($router); $router->dispatch(); $r=json_decode((string)ob_get_clean(),true);
+T::eq(1,$r['processed']??null,'پیام ارسال‌شده به آدرس ثبت‌شده از روتر تا هندلر پردازش شد');
+$sent=array_values(array_filter($calls,fn($c)=>$c[0]==='sendMessage'));
+T::eq('b0Test',end($sent)[1]['chat_id']??null,'پاسخ به چت کاربر ارسال شد');
+AbstractMessengerDriver::clearFakeTransports();
+exit(T::summary());

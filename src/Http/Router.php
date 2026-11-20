@@ -65,7 +65,10 @@ final class Router
 
         $trace = \RB\Support\Env::bool('APP_DEBUG', false);
         if ($trace) {
-            error_log('[router] dispatch ' . $method . ' ' . $path . ' routes=' . count($this->routes));
+            // Webhook path components are bearer secrets, even in debug logs.
+            $tracePath = preg_replace('~^(/webhook/(?:bale|rubika)/)[^/]+~i', '$1[REDACTED]', $path);
+            $tracePath = preg_replace('~^(/webhook/m/[^/]+/)[^/]+~i', '$1[REDACTED]', (string)$tracePath);
+            error_log('[router] dispatch ' . $method . ' ' . $tracePath . ' routes=' . count($this->routes));
         }
 
         foreach ($this->routes as $route) {

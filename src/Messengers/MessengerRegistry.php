@@ -327,6 +327,10 @@ final class MessengerRegistry
         $plainTok = (string) (Crypto::decrypt($row['bot_token_enc'] ?? null) ?? '');
         $plainSec = (string) (Crypto::decrypt($row['secondary_token_enc'] ?? null) ?? '');
 
+        $pathSecret = (string) ($row['webhook_secret'] ?? '');
+        if ($pathSecret !== '' && isset($row['webhook_url'])) {
+            $row['webhook_url'] = str_replace($pathSecret, '***', (string) $row['webhook_url']);
+        }
         unset($row['bot_token_enc'], $row['secondary_token_enc'], $row['webhook_secret']);
 
         $hasHttps = str_starts_with(strtolower(SettingsService::miniappBaseUrl()), 'https://');
@@ -939,6 +943,17 @@ final class MessengerRegistry
         $url = trim((string) $customUrl);
         if ($url === '') {
             $url = $this->suggestedWebhookUrl($p, true);
+        }
+
+        if (in_array($p, [MessengerCapabilities::RUBIKA, MessengerCapabilities::BALE], true)) {
+            // The admin form shows a redacted URL. On re-submission, remove
+            // all trailing placeholders before the driver appends the real
+            // secret. Older broken registrations may contain several masks.
+            $url = rtrim($url, '/');
+            $url = (string) preg_replace('~(?:/(?:\*{3}|%2a%2a%2a|\{secret\}|%7bsecret%7d))+$~i', '', $url);
+            if (str_contains($url, '***') || stripos($url, '%2a%2a%2a') !== false || stripos($url, '{secret}') !== false || stripos($url, '%7bsecret%7d') !== false) {
+                return ['ok' => false, 'message' => 'آدرس وب‌هوک شامل بخش مخفی نامعتبر است. آدرس پیشنهادی را بازنشانی کنید و دوباره ثبت کنید.'];
+            }
         }
 
         $res = $driver->registerWebhook($url, $secret);

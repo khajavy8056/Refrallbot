@@ -102,6 +102,7 @@ final class MessengerWebhookController extends Controller
                 $safe = ErrorHandler::redact($e->getMessage());
                 $registry->finishUpdate($platform, (int) $dedupe['id'], false);
                 ErrorHandler::write('error', strtoupper($platform) . ' webhook error: ' . $safe);
+                MessengerRegistry::logError($platform, 'webhook', 'پردازش رویداد دریافتی ناموفق بود؛ جزئیات را در گزارش خطاهای سرور بررسی کنید.', 'handleUpdate', null, [], $db);
             }
         }
 
