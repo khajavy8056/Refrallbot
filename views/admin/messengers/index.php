@@ -45,6 +45,7 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
     <?php foreach ($connections as $p => $item): ?>
         <?php
         $badge = $item['status_badge'] ?? ['label' => 'نامشخص', 'class' => 'badge-muted'];
+        if ($p === 'rubika' && ($badge['code'] ?? '') === 'connected') $badge['label'] = 'API متصل؛ دریافت جداگانه بررسی شود';
         $perf = $perfByPlatform[$p] ?? [];
         $isCurrent = ($p === $selected);
         $isActConn = !empty($item['is_active_connected']);
@@ -183,7 +184,7 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
                 <div class="flex gap-1" style="flex-wrap:wrap">
                     <form method="post" action="<?= url('admin/messengers/' . $selected . '/test') ?>">
                         <?= csrf_field() ?>
-                        <button type="submit" class="btn btn-secondary btn-sm">🔍 تست اتصال</button>
+                        <button type="submit" class="btn btn-secondary btn-sm">🔍 <?= $selected === 'rubika' ? 'تست اتصال API' : 'تست اتصال' ?></button>
                     </form>
                     <?php if (!empty($conn['is_active_connected'])): ?>
                         <?php if (MessengerCapabilities::supports($selected, 'menu_commands_api')): ?>
@@ -351,6 +352,8 @@ $cronUrl = rtrim(\RB\Support\Request::origin(), '/') . url('cron/run') . '?token
         <?php endif; ?>
     </div>
 </div>
+
+<?php if ($selected === 'rubika') require __DIR__ . '/rubika_diagnostics.php'; ?>
 
 <!-- جدول شفاف مقایسه قابلیت‌های رسمی ۴ پیام‌رسان -->
 <div class="card">

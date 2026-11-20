@@ -113,6 +113,7 @@ abstract class AbstractMessengerDriver implements MessengerDriverInterface
         $raw = false;
         $httpCode = 0;
         $err = '';
+        $transportKind = '';
 
         if (function_exists('curl_init')) {
             $ch = curl_init($url);
@@ -130,6 +131,15 @@ abstract class AbstractMessengerDriver implements MessengerDriverInterface
             $raw = curl_exec($ch);
             $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $err = (string) curl_error($ch);
+            $errno = (int) curl_errno($ch);
+            $transportKind = match (true) {
+                $errno === 28 => 'timeout',
+                in_array($errno, [5, 6], true) => 'dns',
+                in_array($errno, [35, 51, 60, 77, 80, 82, 83, 90, 91], true) => 'tls',
+                $errno === 7 => 'connect',
+                $errno !== 0 => 'network',
+                default => '',
+            };
             unset($ch);
         } else {
             $ctx = stream_context_create([
@@ -142,9 +152,18 @@ abstract class AbstractMessengerDriver implements MessengerDriverInterface
                 ],
                 'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
             ]);
-            $raw = @file_get_contents($url, false, $ctx);
+            $stream = @fopen($url, 'rb', false, $ctx);
+            if ($stream !== false) {
+                $raw = stream_get_contents($stream);
+                $streamMeta = stream_get_meta_data($stream);
+                fclose($stream);
+                foreach (($streamMeta['wrapper_data'] ?? []) as $headerLine) {
+                    if (preg_match('~^HTTP/\S+\s+(\d{3})~i', (string)$headerLine, $m)) $httpCode = (int)$m[1];
+                }
+            }
             if ($raw === false) {
                 $err = 'خطای اتصال شبکه‌ای';
+                $transportKind = 'network';
             }
         }
 
@@ -153,6 +172,7 @@ abstract class AbstractMessengerDriver implements MessengerDriverInterface
             return [
                 '_transport_ok' => false,
                 '_http_code' => $httpCode,
+                '_transport_kind' => $transportKind ?: 'network',
                 '_error' => MessengerCapabilities::humanizeError($platform, $safeErr, $httpCode),
             ];
         }
@@ -162,6 +182,7 @@ abstract class AbstractMessengerDriver implements MessengerDriverInterface
             return [
                 '_transport_ok' => false,
                 '_http_code' => $httpCode,
+                '_transport_kind' => 'non_json',
                 '_error' => MessengerCapabilities::humanizeError($platform, 'پاسخ غیر JSON از سرور دریافت شد', $httpCode),
             ];
         }

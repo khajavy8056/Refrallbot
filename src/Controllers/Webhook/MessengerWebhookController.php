@@ -11,6 +11,7 @@ use RB\Services\CommissionSettings;
 use RB\Services\InviteContentService;
 use RB\Services\SettingsService;
 use RB\Services\UserService;
+use RB\Services\RubikaDiagnostics;
 use RB\Support\Database;
 use RB\Support\ErrorHandler;
 use RB\Support\Request;
@@ -61,52 +62,69 @@ final class MessengerWebhookController extends Controller
             return;
         }
 
-        // ۲) اگر پیام‌رسان در پنل غیرفعال است، بدون خطا پاسخ 200 بده تا صف پلتفرم قفل نشود
-        $driver = $registry->driver($platform);
-        if (!$driver->isEnabled()) {
-            $this->json(['ok' => true, 'ignored' => 'disabled'], 200);
-            return;
-        }
-
-        // ۳) خواندن امن بدنه JSON با محدودیت حجم ۱ مگابایت
-        $raw = $rawBody ?? Request::raw();
-        if ($raw === '' || strlen($raw) > 1_048_576) {
-            $this->json(['ok' => false, 'error' => $raw === '' ? 'empty_body' : 'payload_too_large'], $raw === '' ? 400 : 413);
-            return;
-        }
-        $payload = json_decode($raw, true);
-        if (!is_array($payload)) {
-            $this->json(['ok' => false, 'error' => 'invalid_json'], 400);
-            return;
-        }
-
-        $updates = $driver->parseWebhookPayload($payload, $endpoint);
-        if ($updates === []) {
-            $this->json(['ok' => true, 'processed' => 0], 200);
-            return;
-        }
-
-        $handler = new BotHandler($db, $driver);
-        $processed = 0;
-
-        foreach ($updates as $upd) {
-            $dedupe = $registry->beginUpdate($platform, $upd->updateKey);
-            if (!$dedupe['proceed']) {
-                continue;
+        $trace = $platform === MessengerCapabilities::RUBIKA;
+        if ($trace) RubikaDiagnostics::begin($db, 'webhook');
+        $outcome = 'ignored';
+        try {
+            // A valid secret only proves the request reached PHP; it does not
+            // prove that it came from Rubika (the path is a bearer secret).
+            $driver = $registry->driver($platform);
+            if (!$driver->isEnabled()) {
+                $outcome = 'disabled';
+                $this->json(['ok' => true, 'ignored' => 'disabled'], 200);
+                return;
             }
-            try {
-                $handler->handleNormalized($upd);
-                $registry->finishUpdate($platform, (int) $dedupe['id'], true);
-                $processed++;
-            } catch (\Throwable $e) {
-                $safe = ErrorHandler::redact($e->getMessage());
-                $registry->finishUpdate($platform, (int) $dedupe['id'], false);
-                ErrorHandler::write('error', strtoupper($platform) . ' webhook error: ' . $safe);
-                MessengerRegistry::logError($platform, 'webhook', 'پردازش رویداد دریافتی ناموفق بود؛ جزئیات را در گزارش خطاهای سرور بررسی کنید.', 'handleUpdate', null, [], $db);
-            }
-        }
 
-        $this->json(['ok' => true, 'processed' => $processed], 200);
+            $raw = $rawBody ?? Request::raw();
+            if ($raw === '' || strlen($raw) > 1_048_576) {
+                $outcome = $raw === '' ? 'empty' : 'too_large';
+                $this->json(['ok' => false, 'error' => $raw === '' ? 'empty_body' : 'payload_too_large'], $raw === '' ? 400 : 413);
+                return;
+            }
+            $payload = json_decode($raw, true);
+            if (!is_array($payload)) {
+                $outcome = 'invalid_json';
+                $this->json(['ok' => false, 'error' => 'invalid_json'], 400);
+                return;
+            }
+            if ($trace) {
+                $event = isset($payload['inline_message']) ? 'InlineMessage' : (string) (($payload['update']['type'] ?? null) ?? ($payload['type'] ?? 'unknown'));
+                RubikaDiagnostics::event($event);
+            }
+            $updates = $driver->parseWebhookPayload($payload, $endpoint);
+            if ($updates === []) {
+                $this->json(['ok' => true, 'processed' => 0], 200);
+                return;
+            }
+
+            $handler = new BotHandler($db, $driver);
+            $processed = 0; $failed = false; $duplicates = 0;
+            foreach ($updates as $upd) {
+                if ($trace) RubikaDiagnostics::target($upd->chatId);
+                $dedupe = $registry->beginUpdate($platform, $upd->updateKey);
+                if (!$dedupe['proceed']) { $duplicates++; continue; }
+                try {
+                    $handler->handleNormalized($upd);
+                    $registry->finishUpdate($platform, (int) $dedupe['id'], true);
+                    $processed++;
+                } catch (\Throwable $e) {
+                    $failed = true;
+                    if ($trace) RubikaDiagnostics::reason($e instanceof \PDOException ? 'database_error' : 'processing_error');
+                    $safe = ErrorHandler::redact($e->getMessage());
+                    $registry->finishUpdate($platform, (int) $dedupe['id'], false);
+                    ErrorHandler::write('error', strtoupper($platform) . ' webhook error: ' . $safe);
+                    MessengerRegistry::logError($platform, 'webhook', 'پردازش رویداد دریافتی ناموفق بود؛ جزئیات را در گزارش خطاهای سرور بررسی کنید.', 'handleUpdate', null, [], $db);
+                }
+            }
+            $outcome = $failed ? 'handler_error' : ($processed > 0 ? 'processed' : ($duplicates > 0 ? 'duplicate' : 'ignored'));
+            $this->json(['ok' => true, 'processed' => $processed], 200);
+        } catch (\Throwable $e) {
+            $outcome = 'handler_error';
+            if ($trace) RubikaDiagnostics::reason($e instanceof \PDOException ? 'database_error' : 'processing_error');
+            throw $e;
+        } finally {
+            if ($trace) RubikaDiagnostics::finish($outcome);
+        }
     }
 
     /**

@@ -66,7 +66,7 @@ exec($prefix . escapeshellarg($tmp . '/apply.php') . ' ' . escapeshellarg($root)
 $result = json_decode(implode("\n", $output), true);
 T::ok($exit === 0 && is_array($result) && !empty($result['ok']), 'آپدیتر v1.2 بسته تجمیعی نسخه جدید را نصب کرد: ' . implode(' ', $output));
 T::eq(trim((string) file_get_contents(RB_ROOT . '/VERSION')), trim((string) file_get_contents($root . '/VERSION')), 'نسخه مقصد به نسخه جدید رسید');
-T::eq(['003_two_way_referral_and_bot_profile.php','004_multi_messenger_invite_studio_and_layers.php','005_cross_messenger_channels_and_error_logs.php','006_user_levels.php','007_withdrawal_card_details.php','008_pending_verification_queue.php','009_security_responsible_user.php'], $result['migrations_applied'] ?? [], 'همه Migrationهای میانی اجرا شدند');
+T::eq(['003_two_way_referral_and_bot_profile.php','004_multi_messenger_invite_studio_and_layers.php','005_cross_messenger_channels_and_error_logs.php','006_user_levels.php','007_withdrawal_card_details.php','008_pending_verification_queue.php','009_security_responsible_user.php','010_rubika_diagnostics.php'], $result['migrations_applied'] ?? [], 'همه Migrationهای میانی اجرا شدند');
 T::eq(12345, $result['wallet'] ?? null, 'موجودی کاربر قدیمی حفظ شد');
 T::eq(true, $result['level_table'] ?? false, 'جدول‌های سطح‌بندی ایجاد شدند');
 T::eq(true, $result['card_table'] ?? false, 'جدول اطلاعات اضافی کارت ایجاد شد');

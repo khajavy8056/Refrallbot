@@ -857,10 +857,13 @@ final class MessengerRegistry
             return ['ok' => false, 'error' => 'توکن «' . $meta['name'] . '» ثبت نشده است.'];
         }
 
+        if ($p === MessengerCapabilities::RUBIKA) \RB\Services\RubikaDiagnostics::begin($this->db, 'api_test');
         try {
             $res = $driver->testConnection();
         } catch (\Throwable $e) {
             $res = ['ok' => false, 'error' => MessengerCapabilities::humanizeError($p, ErrorHandler::redact($e->getMessage()))];
+        } finally {
+            if ($p === MessengerCapabilities::RUBIKA) \RB\Services\RubikaDiagnostics::finish(!empty($res['ok']) ? 'ok' : 'error');
         }
 
         if (!empty($res['ok']) && is_array($res['bot'] ?? null)) {
@@ -899,7 +902,8 @@ final class MessengerRegistry
                 'ok' => true,
                 'bot' => $bot,
                 'message' => 'اتصال به «' . $meta['name'] . '» برقرار است — ربات: ' . ($update['bot_name'] ?: '—')
-                    . (!empty($update['bot_username']) ? ' (@' . $update['bot_username'] . ')' : ''),
+                    . (!empty($update['bot_username']) ? ' (@' . $update['bot_username'] . ')' : '')
+                    . ($p === MessengerCapabilities::RUBIKA ? ' — این نتیجه فقط getMe را تأیید می‌کند؛ دریافت وب‌هوک و ارسال پاسخ را در گزارش عیب‌یابی جداگانه بررسی کنید.' : ''),
             ];
         }
 

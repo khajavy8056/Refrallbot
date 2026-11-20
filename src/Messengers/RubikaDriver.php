@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace RB\Messengers;
 
+use RB\Services\RubikaDiagnostics;
+
 /**
  * درایور رسمی بات روبیکا (Rubika Bot API v3 — https://rubika.ir/botapi)
  *
@@ -36,24 +38,31 @@ final class RubikaDriver extends AbstractMessengerDriver
         $url = self::API_BASE . '/' . rawurlencode($this->token) . '/' . $method;
         $res = $this->httpJson($url, $method, $params);
         if (($res['_transport_ok'] ?? true) === false) {
-            return ['ok' => false, 'description' => (string) ($res['_error'] ?? 'خطای ارتباط با سرور روبیکا')];
+            $out = ['ok' => false, 'description' => (string) ($res['_error'] ?? 'خطای ارتباط با سرور روبیکا'), 'raw' => $res];
+            if (in_array($method, ['getMe','getUpdates','getChat'], true)) RubikaDiagnostics::apiResult($out);
+            return $out;
         }
         $status = strtoupper((string) ($res['status'] ?? ''));
-        if ($status === 'OK' || !empty($res['ok'])) {
-            return [
+        $httpCode = (int) ($res['_http_code'] ?? 0);
+        if (($status === 'OK' || ($status === '' && !empty($res['ok']))) && ($httpCode === 0 || ($httpCode >= 200 && $httpCode < 300))) {
+            $out = [
                 'ok' => true,
                 'status' => 'OK',
                 'data' => is_array($res['data'] ?? null) ? $res['data'] : [],
                 'raw' => $res,
             ];
+            if (in_array($method, ['getMe','getUpdates','getChat'], true)) RubikaDiagnostics::apiResult($out);
+            return $out;
         }
         $rawErr = (string) ($res['dev_message'] ?? $res['status_det'] ?? $res['status'] ?? $res['description'] ?? 'خطای API روبیکا');
-        return [
+        $out = [
             'ok' => false,
             'status' => $status,
             'description' => MessengerCapabilities::humanizeError('rubika', $this->scrubSecrets($rawErr), (int) ($res['_http_code'] ?? 0)),
             'raw' => $res,
         ];
+        if (in_array($method, ['getMe','getUpdates','getChat'], true)) RubikaDiagnostics::apiResult($out);
+        return $out;
     }
 
     public function testConnection(): array
@@ -245,10 +254,13 @@ final class RubikaDriver extends AbstractMessengerDriver
         $params['text'] = mb_substr($plain !== '' ? $plain : '—', 0, 4000);
 
         $res = $this->call('sendMessage', $params);
-        $this->recordSendMetric($res['ok'], $res['ok'] ? null : (string) ($res['description'] ?? ''));
+        RubikaDiagnostics::sent($res, (string)$chatId);
+        $confirmed = !empty($res['ok']) && !empty($res['data']['message_id']);
+        if (!empty($res['ok']) && !$confirmed) $res['description'] = 'پاسخ روبیکا فاقد شناسه پیام است؛ ارسال تأیید نشد.';
+        $this->recordSendMetric($confirmed, $confirmed ? null : (string) ($res['description'] ?? ''));
 
         return [
-            'ok' => $res['ok'],
+            'ok' => $confirmed,
             'message_id' => isset($res['data']['message_id']) ? (string) $res['data']['message_id'] : null,
             'description' => (string) ($res['description'] ?? ''),
             'raw' => $res,
@@ -294,6 +306,7 @@ final class RubikaDriver extends AbstractMessengerDriver
         }
 
         $res = $this->call('sendFile', $params);
+        RubikaDiagnostics::sent($res, (string)$chatId);
         $this->recordSendMetric($res['ok'], $res['ok'] ? null : (string) ($res['description'] ?? ''));
 
         return [
@@ -356,10 +369,17 @@ final class RubikaDriver extends AbstractMessengerDriver
         // ثبت هر دو Endpoint رسمی روبیکا (ReceiveUpdate + ReceiveInlineMessage)
         $errors = [];
         foreach (['ReceiveUpdate', 'ReceiveInlineMessage'] as $endpointType) {
-            $r = $this->call('updateBotEndpoints', [
-                'url' => $target,
-                'type' => $endpointType,
-            ]);
+            RubikaDiagnostics::begin($this->db, 'endpoint_setup', $endpointType);
+            unset($r);
+            try {
+                $r = $this->call('updateBotEndpoints', [
+                    'url' => $target,
+                    'type' => $endpointType,
+                ]);
+                RubikaDiagnostics::apiResult($r);
+            } finally {
+                RubikaDiagnostics::finish(!empty($r['ok']) ? 'ok' : 'error');
+            }
             if (!$r['ok']) {
                 $errors[] = $endpointType . ': ' . ($r['description'] ?? 'خطا');
             }
@@ -529,6 +549,13 @@ final class RubikaDriver extends AbstractMessengerDriver
 
         if ($type !== 'NewMessage') {
             return [];
+        }
+
+        // Old reply keypads used position-based IDs (rk_1, rk_2, ...).
+        // Their ordering may have changed, so never guess the old action when
+        // Rubika sends no text: refresh the menu instead.
+        if ($text === '' && preg_match('/^rk_[0-9]+$/D', $buttonId)) {
+            $buttonId = 'legacy:menu';
         }
 
         // اگر کلیک دکمه شیشه‌ای از مسیر NewMessage همراه button_id اختصاصی (دارای :) آمد

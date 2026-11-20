@@ -62,22 +62,37 @@ final class CronService
                     }
                     try {
                         $driver = $registry->driver($plat);
-                        $fetched = $driver->fetchUpdates($pRow['polling_offset'] !== null ? (string) $pRow['polling_offset'] : null, 40);
+                        $trace = $plat === MessengerCapabilities::RUBIKA;
+                        if ($trace) RubikaDiagnostics::begin($db, 'poll_check');
+                        unset($fetched);
+                        try {
+                            $fetched = $driver->fetchUpdates($pRow['polling_offset'] !== null ? (string) $pRow['polling_offset'] : null, 40);
+                        } finally {
+                            if ($trace) RubikaDiagnostics::finish(!empty($fetched['ok']) ? 'ok' : 'error');
+                        }
                         if ($fetched['ok']) {
                             $handler = new BotHandler($db, $driver);
                             $processed = 0;
                             foreach ($fetched['updates'] as $upd) {
-                                $dedupe = $registry->beginUpdate($plat, $upd->updateKey);
-                                if (!$dedupe['proceed']) {
-                                    continue;
+                                if ($trace) {
+                                    RubikaDiagnostics::begin($db, 'polling', $upd->kind);
+                                    RubikaDiagnostics::target($upd->chatId);
                                 }
+                                $outcome = 'handler_error';
                                 try {
-                                    $handler->handleNormalized($upd);
-                                    $registry->finishUpdate($plat, (int) $dedupe['id'], true);
-                                    $processed++;
-                                } catch (\Throwable $ue) {
-                                    $registry->finishUpdate($plat, (int) $dedupe['id'], false);
-                                    ErrorHandler::write('POLL', $plat . ' update error: ' . ErrorHandler::redact($ue->getMessage()));
+                                    $dedupe = $registry->beginUpdate($plat, $upd->updateKey);
+                                    if (!$dedupe['proceed']) { $outcome = 'duplicate'; continue; }
+                                    try {
+                                        $handler->handleNormalized($upd);
+                                        $registry->finishUpdate($plat, (int) $dedupe['id'], true);
+                                        $processed++; $outcome = 'processed';
+                                    } catch (\Throwable $ue) {
+                                        if ($trace) RubikaDiagnostics::reason($ue instanceof \PDOException ? 'database_error' : 'processing_error');
+                                        $registry->finishUpdate($plat, (int) $dedupe['id'], false);
+                                        ErrorHandler::write('POLL', $plat . ' update error: ' . ErrorHandler::redact($ue->getMessage()));
+                                    }
+                                } finally {
+                                    if ($trace) RubikaDiagnostics::finish($outcome);
                                 }
                             }
                             if (($fetched['next_offset'] ?? null) !== ($pRow['polling_offset'] ?? null)) {

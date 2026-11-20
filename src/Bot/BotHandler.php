@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace RB\Bot;
 
 use RB\Messengers\IncomingUpdate;
+use RB\Services\RubikaDiagnostics;
 use RB\Messengers\MessengerCapabilities;
 use RB\Messengers\MessengerDriverInterface;
 use RB\Messengers\MessengerRegistry;
@@ -115,6 +116,7 @@ final class BotHandler
     private function processIncoming(IncomingUpdate $upd): void
     {
         if ($upd->isBot || $upd->externalUserId === '' || $upd->chatId === '') {
+            if ($this->platform === MessengerCapabilities::RUBIKA) RubikaDiagnostics::reason('missing_identity');
             return;
         }
 
@@ -130,6 +132,7 @@ final class BotHandler
         }
 
         if ($upd->chatType !== 'private') {
+            if ($this->platform === MessengerCapabilities::RUBIKA) RubikaDiagnostics::reason('group');
             if ($upd->kind === 'contact') {
                 $this->send($upd->chatId, 'ارسال شماره تماس فقط در چت خصوصی با ربات امکان‌پذیر است.');
             }
@@ -142,6 +145,7 @@ final class BotHandler
             $chatInfo = $this->driver->fetchChatInfo($upd->chatId);
             $realId = trim((string)($chatInfo['user_id'] ?? ''));
             if ($realId === '') {
+                RubikaDiagnostics::reason('identity_lookup_failed');
                 $suffix = $upd->startPayload && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $upd->startPayload) ? ' ' . $upd->startPayload : '';
                 $this->send($upd->chatId, 'برای شروع، لطفاً این دستور را در همین گفتگو ارسال کنید: /start' . $suffix);
                 return;
@@ -157,6 +161,7 @@ final class BotHandler
         // محدودیت نرخ ضد اسپم به تفکیک پیام‌رسان و کاربر
         $rateKey = 'bot:' . $this->platform . ':' . $upd->externalUserId;
         if (RateLimiter::tooMany($rateKey, 30, 60)) {
+            if ($this->platform === MessengerCapabilities::RUBIKA) RubikaDiagnostics::reason('rate_limit');
             if ($upd->messageId !== null && !RateLimiter::tooMany('bot:notice:' . $this->platform . ':' . $upd->externalUserId, 1, 60)) {
                 $this->send($upd->chatId, '⏳ تعداد پیام‌های شما زیاد است. لطفاً یک دقیقه صبر کنید.');
             }
@@ -1458,11 +1463,17 @@ final class BotHandler
 
         $user = $this->users->findByMessenger($this->platform, $upd->externalUserId);
         if ($user === null) {
-            $this->driver->answerCallback($callbackId, 'ابتدا /start را بزنید.', true);
+            if ($this->platform === MessengerCapabilities::RUBIKA) {
+                RubikaDiagnostics::reason('user_unknown');
+                $this->send($chatId, 'برای استفاده از دکمه‌ها ابتدا /start را ارسال کنید.');
+            } else $this->driver->answerCallback($callbackId, 'ابتدا /start را بزنید.', true);
             return;
         }
         if (($user['status'] ?? 'active') === 'blocked') {
-            $this->driver->answerCallback($callbackId, 'حساب شما مسدود است.', true);
+            if ($this->platform === MessengerCapabilities::RUBIKA) {
+                RubikaDiagnostics::reason('blocked');
+                $this->send($chatId, 'حساب شما مسدود است؛ برای پیگیری با پشتیبانی تماس بگیرید.');
+            } else $this->driver->answerCallback($callbackId, 'حساب شما مسدود است.', true);
             return;
         }
 
@@ -1547,7 +1558,8 @@ final class BotHandler
                 $this->driver->answerCallback($callbackId, '🔗 ابتدا حساب ' . $needNames . ' خود را متصل و در کانال عضو شوید.', true);
                 $this->sendMembershipGate($user, $chatId, $gate);
             } else {
-                $this->driver->answerCallback($callbackId, '❌ هنوز عضو همه کانال‌های اجباری نیستید.', true);
+                if ($this->platform === MessengerCapabilities::RUBIKA) $this->send($chatId, '❌ هنوز عضویت در همه کانال‌های اجباری تأیید نشده است.');
+                else $this->driver->answerCallback($callbackId, '❌ هنوز عضو همه کانال‌های اجباری نیستید.', true);
             }
             return;
         }
@@ -1603,6 +1615,14 @@ final class BotHandler
             return;
         }
 
+        if ($data === 'legacy:menu' && $this->platform === MessengerCapabilities::RUBIKA) {
+            $this->clearUserSession($user);
+            if ($this->passGates($user, $chatId, $upd->externalUserId)) {
+                $this->sendMainMenu($user, $chatId, 'منوی شما به‌روزرسانی شد؛ لطفاً گزینه مورد نظر را دوباره انتخاب کنید.');
+            }
+            return;
+        }
+
         if (str_starts_with($data, 'menu:')) {
             if ($this->platform === MessengerCapabilities::RUBIKA) $this->clearUserSession($user);
             $action = substr($data, 5);
@@ -1619,7 +1639,10 @@ final class BotHandler
             return;
         }
 
-        $this->driver->answerCallback($callbackId, '');
+        if ($this->platform === MessengerCapabilities::RUBIKA) {
+            RubikaDiagnostics::reason('unknown_callback');
+            $this->send($chatId, 'این دکمه دیگر قابل استفاده نیست؛ لطفاً /start را ارسال کنید.');
+        } else $this->driver->answerCallback($callbackId, '');
     }
 
     private function handleAdminCallback(string $callbackId, string $data, array $user, int|string $chatId): void

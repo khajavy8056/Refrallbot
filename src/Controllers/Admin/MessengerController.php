@@ -9,6 +9,7 @@ use RB\Messengers\MessengerRegistry;
 use RB\Services\CronService;
 use RB\Services\SettingsService;
 use RB\Services\StatsService;
+use RB\Services\RubikaDiagnostics;
 use RB\Support\Database;
 use RB\Support\Request;
 
@@ -52,6 +53,8 @@ final class MessengerController extends AdminController
             'selected' => $selected,
             'perfByPlatform' => $perfByPlatform,
             'recentErrors' => $recentErrors,
+            'rubikaDiagnostics' => $selected === MessengerCapabilities::RUBIKA ? RubikaDiagnostics::recent($db) : [],
+            'rubikaDiagnosticsAvailable' => $selected === MessengerCapabilities::RUBIKA && $db->tableExists('rubika_diagnostics'),
             'uiMode' => SettingsService::configuredBotUiMode(),
             'platformUiModes' => SettingsService::allPlatformUiModes(),
             'miniappUrl' => SettingsService::miniappBaseUrl(),
