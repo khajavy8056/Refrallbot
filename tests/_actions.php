@@ -205,7 +205,7 @@ T::eq(2, (int) ($newCampaign['required_invites'] ?? 0), 'شرط تعداد دع�
 
 // ---------- ۱۰) تنظیم مالی کاربر و ثبت در دفتر
 $r = act(RB\Controllers\Admin\UserController::class, 'adjustWallet', ['id' => (string) $userId], [
-    'amount' => '120,000', 'type' => 'credit', 'reason' => 'پاداش تبلیغاتی تست',
+    'amount' => '120,000', 'type' => 'credit', 'reason' => 'پاداش تبلیغاتی تست', 'request_id'=>str_repeat('a',32),
 ]);
 $wallet = new WalletService($db);
 $summary = $wallet->summary($userId);
@@ -213,12 +213,14 @@ T::eq(120000, (int) $summary['balance'], 'موجودی کاربر پس از اص
 T::eq(1, (int) $db->value("SELECT COUNT(*) FROM wallet_transactions WHERE user_id = :u AND type = 'adjustment'", ['u' => $userId]), 'تراکنش تعدیل در دفتر ثبت شد');
 T::ok(str_contains((string) $db->value("SELECT description FROM wallet_transactions WHERE user_id = :u AND type = 'adjustment'", ['u' => $userId]), 'پاداش تبلیغاتی'), 'دلیل تعدیل مالی در توضیح تراکنش ثبت شد');
 T::ok((int) $db->value("SELECT COUNT(*) FROM admin_activity_logs WHERE admin_id = :a", ['a' => $adminId]) > 0, 'عملیات مدیر در لاگ فعالیت ثبت شد');
+act(RB\Controllers\Admin\UserController::class, 'adjustWallet', ['id'=>(string)$userId], ['amount'=>'120,000','type'=>'credit','reason'=>'پاداش تبلیغاتی تست','request_id'=>str_repeat('a',32)]);
+T::eq(120000, (int)$wallet->summary($userId)['balance'], 'تکرار فرم شارژ همان درخواست را دوباره اعمال نمی‌کند');
 
 // ---------- ۱۱) اصلاح مالی بدون دلیل رد می‌شود
 $before = $wallet->summary($userId)['balance'];
 $_SERVER['HTTP_REFERER'] = 'https://actions.test/admin/users/' . $userId;
 $r = act(RB\Controllers\Admin\UserController::class, 'adjustWallet', ['id' => (string) $userId], [
-    'amount' => '999000', 'type' => 'credit', 'reason' => 'کم',
+    'amount' => '999000', 'type' => 'credit', 'reason' => 'کم', 'request_id'=>str_repeat('b',32),
 ]);
 T::eq($before, $wallet->summary($userId)['balance'], 'اصلاح مالی با دلیل کوتاه انجام نشد و موجودی تغییر نکرد');
 T::ok(($r['redirect']['to'] ?? null) === '/admin/users/' . $userId, 'پس از رد، کاربر به صفحه کاربر redirect شد');

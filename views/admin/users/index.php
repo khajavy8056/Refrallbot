@@ -17,6 +17,7 @@ $pageUrl = static function (int $p) use ($queryBase) {
     <div>
         <h1 class="mb-0">مدیریت کاربران</h1>
         <p class="text-muted text-sm mb-0"><?= fa_digits(number_format($total)) ?> کاربر در این فهرست</p>
+        <a class="btn btn-secondary btn-sm mt-2" href="<?= url('admin/users/verification') ?>">دعوت‌های نیازمند تأیید (<?= fa_digits((int)($pendingVerificationCount ?? 0)) ?>)</a>
     </div>
 </div>
 

@@ -205,7 +205,7 @@ final class MembershipService
      *   needs_link_platforms?:string[]
      * }
      */
-    public function gate(array $user, ?string $platform = null, ?string $externalUserId = null): array
+    public function gate(array $user, ?string $platform = null, ?string $externalUserId = null, bool $checkWhenOptional = false): array
     {
         $entryPlat = strtolower(trim((string) ($platform ?: ($user['entry_platform'] ?? MessengerCapabilities::TELEGRAM))));
         if (!MessengerCapabilities::isSupported($entryPlat)) {
@@ -218,7 +218,7 @@ final class MembershipService
         }
 
         // ۲) عضویت در کانال‌های اجباری
-        if (!$this->enforcementEnabled()) {
+        if (!$this->enforcementEnabled() && !$checkWhenOptional) {
             return ['passed' => true, 'reason' => null, 'channels' => [], 'errors' => []];
         }
 
@@ -266,6 +266,7 @@ final class MembershipService
 
             // حالت ب: کانال دارای API رسمی getChatMember (تلگرام یا بله) — بومی یا میان‌پیام‌رسانی
             if (!$this->isHostDriverAvailable($hostPlat, $isCross)) {
+                if ($checkWhenOptional) $apiErrors[] = (string) ($channel['title'] ?? '') . ': ابزار بررسی عضویت در دسترس نیست';
                 if ($isCross) {
                     MessengerRegistry::logError(
                         $hostPlat,
@@ -290,6 +291,7 @@ final class MembershipService
             );
 
             if ($targetExtId === '') {
+                if ($checkWhenOptional && !$isCross) $apiErrors[] = (string) ($channel['title'] ?? '') . ': شناسه کاربر برای بررسی وجود ندارد';
                 if ($isCross) {
                     // کاربر از پیام‌رسان دیگری وارد شده و هنوز حساب تلگرام/بله خود را متصل نکرده است → الزام واقعی اتصال + عضویت
                     $evaluatedAny = true;
@@ -405,7 +407,7 @@ final class MembershipService
      *
      * @return array{confirmed_count:int,all_passed:bool,gate:array}
      */
-    public function confirmSelfDeclaredChannels(array $user, string $entryPlatform, ?string $externalUserId = null): array
+    public function confirmSelfDeclaredChannels(array $user, string $entryPlatform, ?string $externalUserId = null, bool $checkWhenOptional = false): array
     {
         $userId = (int) ($user['id'] ?? 0);
         $entry = strtolower(trim($entryPlatform));
@@ -440,16 +442,16 @@ final class MembershipService
         }
 
         $freshUser = $userId > 0 ? ((new UserService($this->db))->find($userId) ?? $user) : $user;
-        $gate = $this->gate($freshUser, $entry, $externalUserId);
+        $gate = $this->gate($freshUser, $entry, $externalUserId, $checkWhenOptional);
 
         // اگر هیچ کانال الزامی باقی نمانده (یا اصلاً کانالی تعریف نشده بود)، channels_verified = 1 ثبت شود
-        if ($gate['passed'] && $userId > 0) {
+        if ($gate['passed'] && empty($gate['errors']) && $userId > 0) {
             $this->db->update('users', ['channels_verified' => 1, 'updated_at' => now()], 'id = :id', ['id' => $userId]);
         }
 
         return [
             'confirmed_count' => $confirmed,
-            'all_passed' => $gate['passed'],
+            'all_passed' => $gate['passed'] && empty($gate['errors']),
             'gate' => $gate,
         ];
     }

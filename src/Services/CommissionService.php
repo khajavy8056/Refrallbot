@@ -242,17 +242,7 @@ final class CommissionService
             $paid = array_values(array_filter($commissions, static fn($c) => ($c['amount'] ?? 0) > 0));
             $effectiveCap = $this->settings->maxPayoutPerEvent;
 
-            if ($this->settings->dailyPayoutCap > 0) {
-                $todayPaidBefore = (int) $this->db->value(
-                    "SELECT COALESCE(SUM(amount), 0) FROM referral_commissions
-                     WHERE status = 'approved' AND event_id <> :e AND created_at >= :t",
-                    ['e' => $eventId, 't' => today_start()]
-                );
-                $remainingDaily = max(0, $this->settings->dailyPayoutCap - $todayPaidBefore);
-                $effectiveCap = $effectiveCap > 0 ? min($effectiveCap, $remainingDaily) : $remainingDaily;
-            }
-
-            if ($effectiveCap > 0 || $this->settings->dailyPayoutCap > 0) {
+            if ($effectiveCap > 0) {
                 $totalNow = array_sum(array_map(static fn($c) => (int) $c['amount'], $paid));
                 if ($totalNow > $effectiveCap) {
                     $this->trimToCap($paid, $effectiveCap);
@@ -344,6 +334,30 @@ final class CommissionService
             if ($hasDirect) {
                 return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'status' => 'already_direct'];
             }
+        }
+
+        // The daily limit is per beneficiary (as stated in the admin panel).
+        // Lock the wallet before inserting the commission so concurrent payouts for
+        // the same user cannot both consume the same remaining daily allowance.
+        if ($this->settings->dailyPayoutCap > 0) {
+            $this->wallet->ensureWallet($beneficiaryId);
+            $walletId = (int) $this->db->value('SELECT id FROM wallets WHERE user_id = :u', ['u' => $beneficiaryId]);
+            $this->db->lockRow('wallets', $walletId);
+            $sql = "SELECT amount FROM referral_commissions WHERE beneficiary_id = :u AND status = 'approved' AND created_at >= :t";
+            // A locking read sees the latest committed data under MySQL's default
+            // REPEATABLE READ, not a snapshot from earlier in the transaction.
+            if (!$this->db->isSqlite()) $sql .= ' FOR UPDATE';
+            $todayPaid = 0;
+            foreach ($this->db->all($sql, ['u' => $beneficiaryId, 't' => today_start()]) as $row) {
+                $todayPaid += (int) $row['amount'];
+            }
+            $beforeDailyCap = $amount;
+            $amount = min($amount, max(0, $this->settings->dailyPayoutCap - $todayPaid));
+            if ($amount <= 0) {
+                return ['beneficiary_id' => $beneficiaryId, 'amount' => 0, 'level' => $level, 'type' => $type, 'status' => 'daily_cap'];
+            }
+            $extraMeta['daily_cap'] = $this->settings->dailyPayoutCap;
+            $extraMeta['daily_cap_applied'] = $amount < $beforeDailyCap;
         }
 
         $calcType = (string) ($extraMeta['calc_type'] ?? ($type === 'level' ? 'percent' : 'fixed'));
@@ -459,57 +473,43 @@ final class CommissionService
         $total = array_sum(array_map(static fn($c) => (int) $c['amount'], $commissions));
         $excess = $total - $cap;
         for ($i = count($commissions) - 1; $i >= 0 && $excess > 0; $i--) {
-            $take = min($excess, (int) $commissions[$i]['amount']);
-            $commissions[$i]['amount'] -= $take;
-            $excess -= $take;
-        }
-        foreach ($commissions as $c) {
-            if (!isset($c['commission_id'])) {
+            $c = &$commissions[$i];
+            $take = min($excess, (int) $c['amount']);
+            if ($take <= 0 || !isset($c['commission_id'], $c['transaction_id'])) {
+                unset($c);
                 continue;
             }
+            $c['amount'] -= $take;
+            $excess -= $take;
+            // These rows were created by this event inside the same transaction and
+            // the wallet lock acquired by credit() is still held. Adjust only this
+            // payment: reconstructing the entire wallet here silently overwrites
+            // pre-existing discrepancies and resurrects reversed earnings.
+            $params = ['a' => (int) $c['amount'], 'id' => (int) $c['commission_id']];
+            $this->db->run('UPDATE referral_commissions SET amount = :a WHERE id = :id', $params);
             $this->db->run(
-                'UPDATE referral_commissions SET amount = :a WHERE id = :id',
-                ['a' => (int) $c['amount'], 'id' => (int) $c['commission_id']]
+                'UPDATE wallet_transactions SET amount = :a, balance_after = balance_after - :delta WHERE id = :id',
+                ['a' => (int) $c['amount'], 'delta' => $take, 'id' => (int) $c['transaction_id']]
             );
             $this->db->run(
-                'UPDATE wallet_transactions SET amount = :a WHERE source_id = :sid AND source_type = :st AND user_id = :u',
-                ['a' => (int) $c['amount'], 'sid' => (int) $c['commission_id'], 'st' => 'referral_commission', 'u' => (int) $c['beneficiary_id']]
+                'UPDATE wallets SET balance = balance - :a, total_in = total_in - :b, updated_at = :n WHERE user_id = :u',
+                ['a' => $take, 'b' => $take, 'n' => now(), 'u' => (int) $c['beneficiary_id']]
             );
-            $this->syncBeneficiaryFromLedger((int) $c['beneficiary_id']);
+            $column = match ((string) $c['type']) {
+                'direct' => 'direct_earned',
+                'welcome' => $this->db->columnExists('users', 'welcome_earned') ? 'welcome_earned' : null,
+                'campaign' => 'campaign_earned',
+                default => 'layer_earned',
+            };
+            $extra = $column !== null ? ", {$column} = {$column} - :extra" : '';
+            $userParams = ['a' => $take, 'b' => $take, 'n' => now(), 'u' => (int) $c['beneficiary_id']];
+            if ($column !== null) $userParams['extra'] = $take;
+            $this->db->run(
+                'UPDATE users SET wallet_balance = wallet_balance - :a, total_earned = total_earned - :b' . $extra . ', updated_at = :n WHERE id = :u',
+                $userParams
+            );
+            unset($c);
         }
-    }
-
-    /**
-     * همگام‌سازی دقیق کیف پول و ستون‌های درآمدی کاربر از روی دفتر کل تراکنش‌ها
-     */
-    private function syncBeneficiaryFromLedger(int $userId): void
-    {
-        $this->wallet->rebuildBalance($userId);
-
-        $totals = $this->db->first(
-            "SELECT
-                COALESCE(SUM(CASE WHEN type IN ('commission_direct','commission_welcome','commission_level','campaign_reward','level_promotion') THEN amount ELSE 0 END), 0)
-                - COALESCE((SELECT SUM(r.amount) FROM wallet_transactions r JOIN wallet_transactions original ON original.id = r.reversal_of_id WHERE r.user_id = :reversal_user AND r.type = 'reversal' AND original.type = 'level_promotion'), 0) AS total_earned,
-                COALESCE(SUM(CASE WHEN type = 'commission_direct' THEN amount ELSE 0 END), 0) AS direct_earned,
-                COALESCE(SUM(CASE WHEN type = 'commission_welcome' THEN amount ELSE 0 END), 0) AS welcome_earned,
-                COALESCE(SUM(CASE WHEN type = 'commission_level' THEN amount ELSE 0 END), 0) AS layer_earned,
-                COALESCE(SUM(CASE WHEN type = 'campaign_reward' THEN amount ELSE 0 END), 0) AS campaign_earned
-             FROM wallet_transactions
-             WHERE user_id = :u AND direction = 'credit' AND status = 'completed'",
-            ['u' => $userId, 'reversal_user' => $userId]
-        ) ?? [];
-
-        $update = [
-            'total_earned' => (int) ($totals['total_earned'] ?? 0),
-            'direct_earned' => (int) ($totals['direct_earned'] ?? 0),
-            'layer_earned' => (int) ($totals['layer_earned'] ?? 0),
-            'campaign_earned' => (int) ($totals['campaign_earned'] ?? 0),
-            'updated_at' => now(),
-        ];
-        if ($this->db->columnExists('users', 'welcome_earned')) {
-            $update['welcome_earned'] = (int) ($totals['welcome_earned'] ?? 0);
-        }
-        $this->db->update('users', $update, 'id = :id', ['id' => $userId]);
     }
 
     /**

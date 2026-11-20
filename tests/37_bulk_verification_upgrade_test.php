@@ -1,0 +1,72 @@
+<?php
+declare(strict_types=1);
+require_once __DIR__.'/bootstrap.php';
+require_once __DIR__.'/lib.php';
+use RB\Services\CommissionSettings;
+use RB\Services\UserService;
+use RB\Services\WalletService;
+use RB\Support\Database;
+use RB\Support\Migrator;
+use RB\Controllers\Admin\UserController;
+
+T::suite('ارتقا، تأیید و رد گروهی دعوت‌ها');
+$db=Database::instance(); $users=new UserService($db);
+$role=$db->insert('admin_roles',['name'=>'Super','slug'=>'superadmin','permissions'=>'["*"]','created_at'=>now(),'updated_at'=>now()]);
+$admin=$db->insert('admins',['name'=>'Admin','username'=>'bulk-test','password_hash'=>password_hash('test-password',PASSWORD_DEFAULT),'role_id'=>$role,'is_active'=>1,'created_at'=>now(),'updated_at'=>now()]);
+$_SESSION['admin_id']=$admin; $_SESSION['admin_last_seen']=time(); $_SESSION['_csrf_token']=bin2hex(random_bytes(32));
+$_SERVER['HTTP_ACCEPT']='application/json'; $_SERVER['HTTP_X_REQUESTED_WITH']='XMLHttpRequest';
+CommissionSettings::saveVersion(['direct_reward'=>1000,'direct_enabled'=>1,'multi_level_enabled'=>0,'max_levels'=>1,'qualify_conditions'=>['phone','approved']]);
+$root=$users->registerFromTelegram(['id'=>83710001,'first_name'=>'Root'])['user'];
+$refs=[]; for($i=0;$i<26;$i++) $refs[]=$users->registerFromTelegram(['id'=>83710002+$i,'first_name'=>'Pending'],$root['referral_code'])['user'];
+foreach ($refs as $r) $db->update('users',['verification_required'=>0, 'phone'=>'+989121234567'],'id = :id',['id'=>(int)$r['id']]);
+$db->update('users',['phone'=>null],'id = :id',['id'=>(int)$refs[24]['id']]);
+// Simulate a v1.6.5 database before upgrade.
+$db->delete('migrations','migration = :m',['m'=>'008_pending_verification_queue.php']);
+$oldVersion=CommissionSettings::current($db,true)->version;
+(new Migrator($db))->run();
+$current=CommissionSettings::current($db,true);
+T::eq(false,in_array('approved',$current->qualifyConditions,true),'پس از ارتقا تأیید مدیر برای دعوت‌های جدید خاموش است');
+T::eq($oldVersion+1,$current->version,'تنظیم تاریخی حفظ و نسخه جدید ساخته شد');
+T::eq(26,(int)$db->value("SELECT COUNT(*) FROM users WHERE verification_required = 1 AND verify_status = 'pending'"),'تمام دعوت‌های قدیمی منتظر به صف منتقل شدند');
+$checklist=$users->qualificationChecklist($users->find((int)$refs[0]['id']), $current);
+$checks=array_column($checklist,'done','key');
+T::eq(false,(bool)($checks['approved'] ?? true),'شرط مدیر برای کاربر قدیمی در راهنما نمایش داده می‌شود');
+T::eq(true,(bool)($checks['phone'] ?? false),'سایر شروط تکمیل‌شده مستقل از تأیید مدیر در راهنما صحیح هستند');
+(new Migrator($db))->run();
+T::eq($oldVersion+1,CommissionSettings::current($db,true)->version,'اجرای دوباره مهاجرت نسخه تکراری نمی‌سازد');
+$new=$users->registerFromTelegram(['id'=>83710999,'first_name'=>'New'],$root['referral_code'])['user'];
+T::eq(0,(int)$new['verification_required'],'کاربر جدید با تنظیم پیش‌فرض در صف دستی قرار نمی‌گیرد');
+$db->update('users',['phone'=>'+989121234567'],'id = :id',['id'=>(int)$new['id']]);
+T::eq(true,$users->maybeQualify($users->find((int)$new['id'])),'دعوت جدید با سایر شرایط بدون تأیید مدیر پرداخت می‌شود');
+// Select one to reject; a stale copy must not cause payout.
+$stale=$users->find((int)$refs[25]['id']);
+$call=static function(array $post): array { $_POST=$post; ob_start(); (new UserController())->bulkVerification(); return json_decode((string)ob_get_clean(),true) ?: []; };
+$r=$call(['decision'=>'rejected','ids'=>[$refs[25]['id']]]);
+T::eq(1,$r['changed'],'رد گروهی کاربر انتخاب‌شده ثبت شد');
+T::eq(false,$users->maybeQualify($stale),'داده قدیمی نمی‌تواند رد را دور بزند');
+T::eq('rejected',$users->find((int)$refs[25]['id'])['verify_status'],'رد ذخیره شده است');
+// Existing event is a conflict, not a second payment or a silent approval.
+$db->insert('referral_events',['event_key'=>'referral_qualified:'.$refs[23]['id'],'type'=>'referral_qualified','user_id'=>(int)$refs[23]['id'],'actor_id'=>(int)$root['id'],'source_user_id'=>(int)$refs[23]['id'],'base_amount'=>1000,'status'=>'processed','payload'=>'{}','created_at'=>now()]);
+$through=(int)$refs[24]['id']; $a=$call(['decision'=>'verified','scope'=>'all','after'=>0,'through'=>$through]);
+T::eq(20,$a['changed'],'انتخاب همه در دسته نخست ۲۰ کاربر را تأیید می‌کند');
+T::eq(false,$a['done'],'دسته‌های بعدی مورد نیاز است');
+$b=$call(['decision'=>'verified','scope'=>'all','after'=>$a['next'],'through'=>$through]);
+T::eq(4,$b['changed'],'دسته دوم شامل موارد باقی‌مانده بدون تعارض است');
+T::eq(3,$b['qualified'],'فرد فاقد شماره تأیید شد ولی پاداشش آزاد نشد');
+T::eq([(int)$refs[23]['id']],$b['conflicts'],'سابقه رویداد قبلی برای بررسی دستی گزارش شد');
+T::eq(true,$b['done'],'پردازش همه صفحات پایان یافت');
+T::eq(24000,(int)$users->find((int)$root['id'])['wallet_balance'],'مجموع واریز فقط برای افراد واجد شرایط و کاربر جدید است');
+$c=$call(['decision'=>'verified','scope'=>'all','after'=>0,'through'=>$through]);
+T::eq(0,$c['changed'],'اجرای مجدد موارد تأییدشده را تکرار نمی‌کند');
+T::eq(24000,(int)$users->find((int)$root['id'])['wallet_balance'],'اجرای مجدد موجودی را تغییر نمی‌دهد');
+T::eq(true,(new WalletService($db))->reconcile((int)$root['id'])['match'],'دفتر و کیف پول منطبق هستند');
+T::eq(25,(int)$db->value("SELECT COUNT(*) FROM admin_activity_logs WHERE action IN ('user.verified','user.verification_rejected')"),'تمام تصمیم‌های موفق در گزارش مدیر ثبت می‌شوند');
+CommissionSettings::saveVersion(['direct_reward'=>4000,'direct_enabled'=>1,'max_levels'=>1,'qualify_conditions'=>['joined','approved']]);
+$newPending=$users->registerFromTelegram(['id'=>83711001,'first_name'=>'New Pending'],$root['referral_code'])['user'];
+T::eq(1,(int)$newPending['verification_required'],'با فعال کردن گزینه، دعوت جدید در صف تأیید است');
+T::eq(null,$newPending['qualified_at'],'دعوت جدید تا تصمیم مدیر پرداخت ندارد');
+$r=$call(['decision'=>'verified','ids'=>[$newPending['id']]]);
+T::eq(1,$r['qualified'],'انتخاب چندتایی از صفحه، شرط مدیر را کامل و پاداش را پرداخت می‌کند');
+T::eq(28000,(int)$users->find((int)$root['id'])['wallet_balance'],'مبلغ فعلی دعوت جدید پرداخت شد');
+
+exit(T::summary());

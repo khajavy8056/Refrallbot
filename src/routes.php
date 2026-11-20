@@ -44,6 +44,8 @@ return static function (Router $router): void {
 
     // کاربران و شبکه
     $router->get('/admin/users', [Admin\UserController::class, 'index'], ['admin']);
+    $router->get('/admin/users/verification', [Admin\UserController::class, 'verificationQueue'], ['admin']);
+    $router->post('/admin/users/verification', [Admin\UserController::class, 'bulkVerification'], ['admin', 'csrf']);
     $router->get('/admin/users/{id}', [Admin\UserController::class, 'show'], ['admin']);
     $router->post('/admin/users/{id}/status', [Admin\UserController::class, 'updateStatus'], ['admin', 'csrf']);
     $router->post('/admin/users/{id}/approve', [Admin\UserController::class, 'approve'], ['admin', 'csrf']);

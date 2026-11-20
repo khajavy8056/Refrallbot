@@ -3,7 +3,7 @@ $name = trim(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')) ?: 
 $statusMap = ['active' => ['فعال', 'success'], 'blocked' => ['مسدود', 'danger'], 'suspicious' => ['مشکوک', 'warning']];
 $st = $statusMap[$user['status']] ?? ['نامشخص', 'muted'];
 $verifyMap = ['pending' => ['در انتظار تأیید', 'warning'], 'verified' => ['تأییدشده', 'success'], 'rejected' => ['ردشده', 'danger']];
-$vf = $verifyMap[$user['verify_status']] ?? ['نامشخص', 'muted'];
+$vf = empty($user['verification_required']) ? ['تأیید مدیر لازم نیست', 'muted'] : ($verifyMap[$user['verify_status']] ?? ['نامشخص', 'muted']);
 $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
 ?>
 <div class="flex items-center justify-between wrap gap-3 mb-3">
@@ -90,7 +90,7 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
     <div class="card" id="status">
         <div class="card-header"><h2 class="card-title">عملیات مدیریتی</h2></div>
         <div class="card-body">
-            <?php if (($user['verify_status'] ?? 'pending') !== 'verified'): ?>
+            <?php if (!empty($user['verification_required']) && ($user['verify_status'] ?? 'pending') === 'pending' && empty($user['qualified_at']) && !empty($user['referred_by'])): ?>
                 <form method="post" action="<?= url('admin/users/' . (int) $user['id'] . '/approve') ?>" class="mb-3">
                     <?= csrf_field() ?>
                     <button class="btn btn-success btn-sm" type="submit" data-confirm="عضویت این کاربر تأیید شود؟ در صورت تکمیل سایر شرایط، پاداش دعوت به معرف و کاربر واریز خواهد شد.">
@@ -120,6 +120,7 @@ $isSuper = (($currentAdmin['role_slug'] ?? '') === 'superadmin');
             <?php if ($isSuper): ?>
             <form method="post" action="<?= url('admin/users/' . (int) $user['id'] . '/wallet') ?>">
                 <?= csrf_field() ?>
+                <input type="hidden" name="request_id" value="<?= e(bin2hex(random_bytes(16))) ?>">
                 <div class="form-label">اصلاح مالی (با ثبت سابقه کامل)</div>
                 <div class="form-row mb-2">
                     <input type="text" name="amount" class="form-control ltr" placeholder="مبلغ به تومان" data-money required>

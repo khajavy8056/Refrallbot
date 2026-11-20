@@ -369,7 +369,7 @@ final class StatsService
 
         $commRows = $db->all(
             "SELECT level, type,
-                    COUNT(*) AS tx_count,
+                    SUM(CASE WHEN status IN ('approved','credited') AND amount > 0 THEN 1 ELSE 0 END) AS tx_count,
                     COALESCE(SUM(CASE WHEN status IN ('approved','credited') THEN amount ELSE 0 END), 0) AS paid_amount,
                     COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) AS pending_amount,
                     COALESCE(SUM(CASE WHEN status = 'rejected' THEN amount ELSE 0 END), 0) AS rejected_amount

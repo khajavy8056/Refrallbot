@@ -60,6 +60,7 @@ $cases = [
     ['/install.php', false],
     ['/admin', true],
     ['/admin/users', true],
+    ['/admin/users/verification', true],
     ['/admin/network', true],
     ['/admin/withdrawals', true],
     ['/admin/commissions', true],

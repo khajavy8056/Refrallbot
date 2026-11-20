@@ -13,6 +13,7 @@ final class SchemaBuilder
     /** @var array<int,array{table:string,column:string,sql:string}> */
     private array $addedColumns = [];
     private string $driver;
+    private array $afterCallbacks = [];
 
     public function __construct(string $driver)
     {
@@ -50,6 +51,11 @@ final class SchemaBuilder
     {
         return $this->addedColumns;
     }
+
+    /** Data work runs only for a newly applied migration, after its DDL. */
+    public function after(callable $callback): void { $this->afterCallbacks[] = $callback; }
+
+    public function runAfter(Database $db): void { foreach ($this->afterCallbacks as $callback) $callback($db); }
 
     /** @return string[] */
     public function statements(): array

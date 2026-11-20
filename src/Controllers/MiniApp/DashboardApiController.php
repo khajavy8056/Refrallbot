@@ -743,7 +743,7 @@ final class DashboardApiController extends Controller
         $selfConfirm = !empty($_POST['self_confirm']);
 
         if ($selfConfirm) {
-            $confirm = $memSvc->confirmSelfDeclaredChannels($user, $platform, $extId !== '' ? $extId : null);
+            $confirm = $memSvc->confirmSelfDeclaredChannels($user, $platform, $extId !== '' ? $extId : null, true);
             if ($confirm['all_passed']) {
                 $fresh = $userSvc->find((int) $user['id']) ?? $user;
                 $qualified = $userSvc->maybeQualify($fresh, false, $platform);
@@ -753,7 +753,17 @@ final class DashboardApiController extends Controller
             }
             $gate = $confirm['gate'];
         } else {
-            $gate = $memSvc->gate($user, $platform, $extId !== '' ? $extId : null);
+            $gate = $memSvc->gate($user, $platform, $extId !== '' ? $extId : null, true);
+        }
+
+        // A contact gate or an API error is not proof of channel membership.
+        if (!empty($gate['errors'])) {
+            $this->fail('بررسی عضویت کانال موقتاً با خطا مواجه شد. لطفاً بعداً دوباره تلاش کنید.');
+            return;
+        }
+        if (!$gate['passed'] && ($gate['reason'] ?? '') !== 'channels') {
+            $this->fail('ابتدا شماره تماس یا سایر مراحل الزامی را تکمیل کنید.');
+            return;
         }
 
         if (!$gate['passed'] && ($gate['reason'] ?? '') === 'channels') {

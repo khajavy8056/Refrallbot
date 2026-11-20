@@ -91,6 +91,9 @@ final class Migrator
                 $this->executeStatement($sql, $name);
             }
 
+            if (method_exists($schema, 'runAfter')) {
+                $schema->runAfter($this->db);
+            }
             $this->ensureMigrationsTable($driver);
             $this->recordMigration($name, $driver);
             $applied[] = $name;

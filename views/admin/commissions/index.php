@@ -12,7 +12,7 @@ $conditions = [
     'profile'  => 'تکمیل پروفایل (نام و نام خانوادگی)',
     'phone'    => 'ثبت شماره تماس',
     'channels' => 'عضویت در کانال‌های اجباری',
-    'approved' => 'تأیید دستی مدیر',
+    'approved' => 'تأیید دستی مدیر (برای دعوت‌های جدید)',
 ];
 $activeConditions = $settings->qualifyConditions ?: ['joined'];
 $levelRows = [];
@@ -163,7 +163,7 @@ foreach (($stats['by_level'] ?? []) as $row) {
                     <label class="form-label">سقف کل پرداخت در هر رویداد دعوت (تومان — ۰ = بدون سقف)</label>
                     <input type="text" name="max_payout_per_event" class="form-control ltr" data-money inputmode="numeric"
                            value="<?= e(number_format($settings->maxPayoutPerEvent)) ?>">
-                    <div class="form-hint">مجموع پاداش لایه ۰ + لایه‌های غیرمستقیم در یک معرفی از این عدد تجاوز نمی‌کند.</div>
+                    <div class="form-hint">مجموع پاداش مستقیم، خوش‌آمدگویی و لایه‌های غیرمستقیم در یک معرفی از این عدد تجاوز نمی‌کند.</div>
                 </div>
                 <div class="form-group">
                     <label class="form-label">سقف پورسانت روزانه هر کاربر (تومان — ۰ = بدون سقف)</label>

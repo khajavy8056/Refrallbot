@@ -41,6 +41,7 @@ final class UserController extends AdminController
             'fromRaw' => $_GET['from'] ?? '',
             'toRaw' => $_GET['to'] ?? '',
             'activeMessengers' => $msgSummary['active'],
+            'pendingVerificationCount' => (int) $db->value("SELECT COUNT(*) FROM users WHERE verification_required = 1 AND verify_status = 'pending' AND referred_by IS NOT NULL AND qualified_at IS NULL"),
             'summary' => [
                 'total' => (int) $db->value('SELECT COUNT(*) FROM users'),
                 'active' => (int) $db->value("SELECT COUNT(*) FROM users WHERE status = 'active'"),
@@ -48,6 +49,57 @@ final class UserController extends AdminController
                 'with_refs' => (int) $db->value('SELECT COUNT(*) FROM users WHERE direct_ref_count > 0'),
             ],
         ]);
+    }
+
+    public function verificationQueue(): void
+    {
+        $db = Database::instance();
+        $page = max(1, min(100000, (int)($_GET['page'] ?? 1)));
+        $where = "verification_required = 1 AND verify_status = 'pending' AND referred_by IS NOT NULL AND qualified_at IS NULL";
+        $this->render('admin/users/verification', [
+            'title'=>'دعوت‌های نیازمند تأیید',
+            'total'=>(int)$db->value('SELECT COUNT(*) FROM users WHERE '.$where),
+            'through'=>(int)$db->value('SELECT COALESCE(MAX(id), 0) FROM users WHERE '.$where),
+            'page'=>$page,
+            'rows'=>$db->all('SELECT id, telegram_id, first_name, last_name, username, status, joined_at, referred_by FROM users WHERE '.$where.' ORDER BY id ASC LIMIT 50 OFFSET '.(($page-1)*50)),
+        ]);
+    }
+
+    public function bulkVerification(): void
+    {
+        $decision = (string)($_POST['decision'] ?? '');
+        if (!in_array($decision, ['verified','rejected'], true)) { $this->fail('عملیات نامعتبر است.', 422); return; }
+        $db = Database::instance();
+        $all = ($_POST['scope'] ?? '') === 'all';
+        if ($all && !$this->wantsJson()) { $this->flash('error', 'انتخاب همه صفحات به جاوااسکریپت فعال نیاز دارد.'); \RB\Support\Request::redirect(url('admin/users/verification')); return; }
+        if ($all) {
+            $after = max(0, (int)($_POST['after'] ?? 0));
+            $through = max(0, (int)($_POST['through'] ?? 0));
+            $rows = $db->all("SELECT id FROM users WHERE verification_required = 1 AND verify_status = 'pending' AND referred_by IS NOT NULL AND qualified_at IS NULL AND id > :a AND id <= :z ORDER BY id LIMIT 20", ['a'=>$after, 'z'=>$through]);
+            $ids = array_map('intval', array_column($rows, 'id'));
+        } else {
+            $raw = $_POST['ids'] ?? [];
+            if (!is_array($raw) || count($raw) > 50) { $this->fail('حداکثر ۵۰ کاربر را در هر نوبت انتخاب کنید.', 422); return; }
+            $ids = array_values(array_unique(array_filter(array_map('intval', $raw), static fn($i)=>$i>0)));
+            if (!$ids) { $this->fail('حداقل یک کاربر انتخاب کنید.', 422); return; }
+        }
+        $result = ['changed'=>0, 'qualified'=>0, 'skipped'=>0, 'conflicts'=>[], 'errors'=>[], 'next'=>$all ? $after : 0, 'done'=>!$all || count($ids)<20];
+        $users = new UserService($db);
+        foreach ($ids as $id) {
+            if ($all) $result['next']=$id;
+            try {
+                $r=$users->decideVerification($id, $decision, current_admin_id());
+                if ($r['changed']) { $result['changed']++; if ($r['qualified']) $result['qualified']++; }
+                elseif ($r['conflict']) $result['conflicts'][]=$id;
+                else $result['skipped']++;
+            } catch (\Throwable $e) {
+                \RB\Support\ErrorHandler::logException($e);
+                $result['errors'][]=$id;
+            }
+        }
+        if ($this->wantsJson()) { $this->ok('عملیات انجام شد.', $result); return; }
+        $this->flash('success', 'تغییر وضعیت: '.$result['changed'].'؛ واجد شرایط: '.$result['qualified'].'؛ موارد نیازمند بررسی: '.count($result['conflicts']).'؛ خطا: '.count($result['errors']));
+        \RB\Support\Request::redirect(url('admin/users/verification'));
     }
 
     public function show(array $params): void
@@ -118,7 +170,9 @@ final class UserController extends AdminController
     {
         $id = (int) $params['id'];
         try {
-            $qualified = (new UserService())->approveVerification($id, current_admin_id());
+            $decision = (new UserService())->decideVerification($id, 'verified', current_admin_id());
+            if (!$decision['changed']) throw new \RuntimeException($decision['conflict'] ? 'سابقه مالی موجود است؛ بررسی دستی لازم است.' : 'این کاربر در صف تأیید نیست.');
+            $qualified = $decision['qualified'];
             $msg = $qualified
                 ? 'عضویت کاربر تأیید شد و پاداش دعوت طبق تنظیمات فعال محاسبه و واریز گردید.'
                 : 'وضعیت احراز عضویت کاربر به «تأییدشده» تغییر یافت.';
@@ -187,9 +241,15 @@ final class UserController extends AdminController
         $amount = Money::parseToman($_POST['amount'] ?? null);
         $type = (string) ($_POST['type'] ?? 'credit');
         $reason = trim((string) ($_POST['reason'] ?? ''));
+        $requestId = (string) ($_POST['request_id'] ?? '');
 
         if ($amount === null || $amount <= 0) {
             $this->flash('error', 'مبلغ اصلاح باید عددی بزرگ‌تر از صفر باشد.');
+            \RB\Support\Request::redirect(url('admin/users/' . $id));
+            return;
+        }
+        if (!in_array($type, ['credit', 'debit'], true) || !preg_match('/^[a-f0-9]{32}$/', $requestId)) {
+            $this->flash('error', 'درخواست اصلاح مالی نامعتبر است؛ صفحه را تازه و دوباره تلاش کنید.');
             \RB\Support\Request::redirect(url('admin/users/' . $id));
             return;
         }
@@ -206,7 +266,9 @@ final class UserController extends AdminController
 
         try {
             $wallet = new WalletService();
-            $key = 'adjustment:' . $id . ':' . time() . ':' . bin2hex(random_bytes(3));
+            $key = 'adjustment:' . $id . ':' . $requestId;
+            $db = Database::instance();
+            $txId = $db->transaction(function () use ($wallet, $key, $type, $id, $amount, $reason) {
             if ($type === 'credit') {
                 $txId = $wallet->credit($id, 'adjustment', $amount, [
                     'description' => 'اصلاح مالی (واریز): ' . $reason,
@@ -224,10 +286,14 @@ final class UserController extends AdminController
                     'meta' => ['reason' => $reason],
                 ], allowNegative: true);
             }
-            AuditService::log('wallet.adjusted', 'user', $id, [
-                'amount' => $amount, 'type' => $type, 'reason' => $reason, 'tx' => $txId,
-            ], current_admin_id());
-            $this->flash('success', 'اصلاح مالی با ثبت سابقه انجام شد.');
+            if ($txId !== null) {
+                AuditService::log('wallet.adjusted', 'user', $id, [
+                    'amount' => $amount, 'type' => $type, 'reason' => $reason, 'tx' => $txId,
+                ], current_admin_id());
+            }
+            return $txId;
+            });
+            $this->flash('success', $txId === null ? 'این درخواست قبلاً ثبت شده است؛ مبلغ دوباره اعمال نشد.' : 'اصلاح مالی با ثبت سابقه انجام شد.');
         } catch (\Throwable $e) {
             $this->flash('error', $e->getMessage());
         }

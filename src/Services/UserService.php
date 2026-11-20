@@ -304,6 +304,11 @@ final class UserService
                     'updated_at' => now(),
                 ];
 
+                if ($referrer !== null && $this->db->columnExists('users', 'verification_required')) {
+                    $conditions = $this->effectiveConditions(CommissionSettings::current($this->db, true), $sourcePlatform);
+                    $insertRow['verification_required'] = in_array('approved', $conditions, true) ? 1 : 0;
+                }
+
                 if ($this->db->columnExists('users', 'entry_platform')) {
                     $insertRow['entry_platform'] = $p;
                 }
@@ -686,6 +691,10 @@ final class UserService
                 ];
                 if ($sourcePlatform !== null && $this->db->columnExists('users', 'referral_source_platform')) {
                     $upd['referral_source_platform'] = $sourcePlatform;
+                }
+                if ($this->db->columnExists('users', 'verification_required')) {
+                    $conds = $this->effectiveConditions(CommissionSettings::current($this->db, true), $sourcePlatform ?: (string)($user['entry_platform'] ?? 'telegram'));
+                    $upd['verification_required'] = in_array('approved', $conds, true) ? 1 : 0;
                 }
                 $this->db->update('users', $upd, 'id = :id', ['id' => $userId]);
 
@@ -1133,6 +1142,8 @@ final class UserService
         $settings ??= CommissionSettings::current($this->db);
         $plat = (string) ($user['entry_platform'] ?? MessengerCapabilities::TELEGRAM);
         $conditions = $this->effectiveConditions($settings, !empty($user['id']) ? $plat : null);
+        if (empty($user['verification_required'])) $conditions = array_values(array_diff($conditions, ['approved']));
+        elseif (!in_array('approved', $conditions, true)) $conditions[] = 'approved';
         $membership = new MembershipService($this->db);
         $activeChannels = $membership->activeChannels($plat);
         $channelNames = array_values(array_filter(array_map(
@@ -1184,7 +1195,11 @@ final class UserService
     {
         try {
         $qualified = $this->db->transaction(function () use ($user, $force, $platform): bool {
-        if (empty($user['referred_by'])) {
+        $userId = (int) ($user['id'] ?? 0);
+        // Re-read under lock so a concurrent rejection cannot be bypassed by
+        // a stale user snapshot held by a bot or another administrator.
+        $user = $userId > 0 ? $this->db->lockRow('users', $userId) : null;
+        if (!$user || empty($user['referred_by'])) {
             return false;
         }
         $userId = (int) $user['id'];
@@ -1205,6 +1220,10 @@ final class UserService
 
         $settings = CommissionSettings::current($this->db, true);
         $conditions = $this->effectiveConditions($settings, $sourcePlatform);
+        // Manual approval is snapshotted when the referral is attached, so
+        // enabling it later cannot silently strand unrelated older invitations.
+        if (empty($user['verification_required'])) $conditions = array_values(array_diff($conditions, ['approved']));
+        elseif (!in_array('approved', $conditions, true)) $conditions[] = 'approved';
         if (!$this->meetsConditions($user, $conditions)) {
             return false;
         }
@@ -1272,30 +1291,38 @@ final class UserService
         return true;
     }
 
+    /** Each decision and any resulting payout commit or roll back together. */
+    public function decideVerification(int $userId, string $decision, ?int $adminId = null): array
+    {
+        if (!in_array($decision, ['verified', 'rejected'], true)) throw new \InvalidArgumentException('تصمیم نامعتبر است.');
+        try {
+            $result = $this->db->transaction(function () use ($userId, $decision, $adminId): array {
+                $user = $this->db->lockRow('users', $userId);
+                if (!$user || empty($user['verification_required']) || ($user['verify_status'] ?? '') !== 'pending' || !empty($user['qualified_at']) || empty($user['referred_by'])) {
+                    return ['changed'=>false, 'qualified'=>false, 'conflict'=>false];
+                }
+                if ($decision === 'verified') {
+                    $event = $this->db->first("SELECT id FROM referral_events WHERE event_key = :k OR (type = 'referral_qualified' AND user_id = :u) LIMIT 1", ['k'=>'referral_qualified:'.$userId, 'u'=>$userId]);
+                    $prior = $this->db->value("SELECT id FROM referral_commissions WHERE source_user_id = :u AND type IN ('direct','level') LIMIT 1", ['u'=>$userId]);
+                    $ledger = $this->db->value("SELECT id FROM wallet_transactions WHERE related_user_id = :u AND type IN ('commission_direct','commission_level') LIMIT 1", ['u'=>$userId]);
+                    if ($event || $prior || $ledger) return ['changed'=>false, 'qualified'=>false, 'conflict'=>true];
+                }
+                $this->db->update('users', ['verify_status'=>$decision, 'updated_at'=>now()], 'id = :id', ['id'=>$userId]);
+                AuditService::log($decision === 'verified' ? 'user.verified' : 'user.verification_rejected', 'user', $userId, ['previous'=>'pending', 'to'=>$decision], $adminId);
+                $qualified = $decision === 'verified' && $this->maybeQualify($this->find($userId));
+                return ['changed'=>true, 'qualified'=>$qualified, 'conflict'=>false];
+            });
+        } catch (\Throwable $e) {
+            if (!$this->db->inTransaction()) Notifier::clearDeferred();
+            throw $e;
+        }
+        if (!$this->db->inTransaction()) Notifier::flushDeferred();
+        return $result;
+    }
+
     public function approveVerification(int $userId, ?int $adminId = null): bool
     {
-        $user = $this->find($userId);
-        if ($user === null) {
-            throw new \InvalidArgumentException('کاربر یافت نشد.');
-        }
-        $this->db->update('users', [
-            'verify_status' => 'verified',
-            'updated_at' => now(),
-        ], 'id = :id', ['id' => $userId]);
-        AuditService::log('user.verified', 'user', $userId, [
-            'previous' => $user['verify_status'] ?? 'pending',
-            'to' => 'verified',
-        ], $adminId);
-
-        $fresh = $this->find($userId);
-        $qualified = false;
-        if ($fresh !== null) {
-            $qualified = $this->maybeQualify($fresh);
-            if (!$this->db->inTransaction()) {
-                Notifier::flushDeferred();
-            }
-        }
-        return $qualified;
+        return $this->decideVerification($userId, 'verified', $adminId)['qualified'];
     }
 
     public function updateProfile(int $userId, string $firstName, string $lastName): bool
