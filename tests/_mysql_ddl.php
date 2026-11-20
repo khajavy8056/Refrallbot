@@ -159,4 +159,10 @@ foreach ($order as $sql) {
 }
 T::eq([], $noDefault, 'همهٔ ستون‌های created_at مقدار DEFAULT دارند (جلوگیری از خطای 1364)');
 
+// Sentinel IDs must be signed in every snapshot/session column on fresh MySQL installs.
+foreach (['users', 'bot_sessions', 'broadcast_targets'] as $table) {
+    $create = array_values(array_filter($order, static fn(string $sql): bool => str_starts_with($sql, 'CREATE TABLE IF NOT EXISTS `' . $table . '`')));
+    T::ok(isset($create[0]) && (bool) preg_match('~`telegram_id`\s+BIGINT\s+NOT NULL~i', $create[0]), $table . '.telegram_id signed BIGINT است');
+}
+
 exit(T::summary());

@@ -72,7 +72,7 @@ return static function (SchemaBuilder $schema): void {
     // ---------------------------------------------------------------- کاربران
     $schema->table('users', function ($t) {
         $t->id();
-        $t->bigint('telegram_id');                  // شناسه یکتای اصلی
+        $t->bigint('telegram_id', false, null, false); // شناسه مثبت تلگرام یا نگهبان منفی پیام‌رسان دیگر
         $t->string('username', 64, true);
         $t->string('first_name', 128, true);
         $t->string('last_name', 128, true);
@@ -362,7 +362,7 @@ return static function (SchemaBuilder $schema): void {
         $t->id();
         $t->bigint('campaign_id')->foreign('campaign_id', 'broadcast_campaigns', 'CASCADE');
         $t->bigint('user_id');
-        $t->bigint('telegram_id');
+        $t->bigint('telegram_id', false, null, false);
         $t->string('status', 20, false, "'pending'");   // pending|sent|failed|blocked
         $t->text('error');
         $t->datetime('sent_at', true);
@@ -482,7 +482,7 @@ return static function (SchemaBuilder $schema): void {
 
     $schema->table('bot_sessions', function ($t) {
         $t->id();
-        $t->bigint('telegram_id');
+        $t->bigint('telegram_id', false, null, false);
         $t->bigint('user_id', true);
         $t->string('step', 60, true);
         $t->text('payload');

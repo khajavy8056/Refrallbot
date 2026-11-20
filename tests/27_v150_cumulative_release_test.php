@@ -172,6 +172,7 @@ T::eq([
     '008_pending_verification_queue.php',
     '009_security_responsible_user.php',
     '010_rubika_diagnostics.php',
+    '011_signed_messenger_sentinel.php',
 ], $appliedUpgrade, 'ارتقای مستقیم از v1.2.0 همه Migrationهای بعدی را به ترتیب اجرا کرد');
 
 // اجرای مجدد برای تضمین Idempotency کامل پس از ارتقا
