@@ -82,7 +82,7 @@ final class SecurityService
             );
             $burstRef = (int) SettingsService::get('risk_referral_burst', '15');
             if ($rapid >= $burstRef) {
-                $flags[] = ['type' => 'referral_burst', 'severity' => 'medium', 'count' => $rapid];
+                $flags[] = ['type' => 'referral_burst', 'severity' => 'medium', 'count' => $rapid, 'referrer_id' => (int) $user['referred_by']];
             }
         }
 

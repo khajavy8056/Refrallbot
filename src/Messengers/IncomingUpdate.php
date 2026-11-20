@@ -45,6 +45,15 @@ final class IncomingUpdate
         ];
     }
 
+    /** Replace an unresolved chat-only identity after getChat confirms the user. */
+    public function withExternalUserId(string $id): self
+    {
+        return new self($this->platform, $this->updateKey, $this->kind, $id, $this->chatId,
+            $this->chatType, $this->messageId, $this->firstName, $this->lastName, $this->username,
+            $this->languageCode, $this->isBot, $this->text, $this->startPayload, $this->callbackId,
+            $this->callbackData, $this->contactPhone, $this->contactUserId, $this->raw);
+    }
+
     public function isPrivateUserEvent(): bool
     {
         return !$this->isBot

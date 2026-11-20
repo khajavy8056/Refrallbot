@@ -23,14 +23,15 @@ $userStatusLabel = ['active' => 'فعال', 'blocked' => 'مسدود', 'suspicio
 </div>
 
 <div class="flex gap-1 wrap mb-3">
-    <?php foreach (['' => 'همه', 'open' => 'بررسی‌نشده', 'reviewed' => 'بررسی‌شده', 'confirmed' => 'تأیید تخلف', 'dismissed' => 'رد‌شده'] as $key => $label): ?>
-        <a href="<?= url('admin/security') . ($key !== '' ? '?status=' . $key : '') ?>"
+    <?php foreach (['open' => 'بررسی‌نشده', 'all' => 'همه', 'reviewed' => 'بررسی‌شده', 'confirmed' => 'تأیید تخلف', 'dismissed' => 'رد‌شده'] as $key => $label): ?>
+        <a href="<?= url('admin/security') . '?status=' . $key ?>"
            class="btn btn-sm <?= $statusFilter === $key ? '' : 'btn-secondary' ?>"><?= e($label) ?></a>
     <?php endforeach; ?>
 </div>
 
 <div class="card mb-3">
     <div class="card-header"><h2 class="card-title">رویدادهای امنیتی</h2></div>
+    <p class="text-muted text-sm" style="padding:0 16px">فقط تأیید رویداد دعوت پرتعداد با معرف ثبت‌شده در زمان رویداد، آن معرف را در صورت فعال بودن مشکوک می‌کند. سایر رویدادها و موجودی‌ها تغییری در حساب معرف ایجاد نمی‌کنند. رویدادهای قدیمی بدون معرف ثبت‌شده نیازمند بررسی دستی‌اند؛ تاریخچه در فیلترهای دیگر موجود است.</p>
     <?php if (empty($events)): ?>
         <div class="empty">
             <div class="empty-icon">🛡</div>
@@ -40,7 +41,7 @@ $userStatusLabel = ['active' => 'فعال', 'blocked' => 'مسدود', 'suspicio
     <?php else: ?>
         <div class="table-wrap">
             <table class="table">
-                <thead><tr><th>#</th><th>نوع رویداد</th><th>شدت</th><th>کاربر</th><th>ریسک</th><th>وضعیت</th><th>تاریخ</th><th></th></tr></thead>
+                <thead><tr><th>#</th><th>نوع رویداد</th><th>شدت</th><th>کاربر رویداد</th><th>معرف مستقیم / مسئول ثبت‌شده</th><th>ریسک</th><th>وضعیت</th><th>تاریخ</th><th></th></tr></thead>
                 <tbody>
                 <?php foreach ($events as $e): ?>
                     <tr>
@@ -59,6 +60,14 @@ $userStatusLabel = ['active' => 'فعال', 'blocked' => 'مسدود', 'suspicio
                                 <span class="text-muted">—</span>
                             <?php endif; ?>
                         </td>
+                        <td data-label="معرف مستقیم / مسئول ثبت‌شده">
+                            <?php $rid = (int)(($e['status'] === 'confirmed' ? ($e['responsible_user_id'] ?? 0) : ($e['referred_by'] ?? 0))); ?>
+                            <?php if ($rid > 0): ?>
+                                <?php $prefix = $e['status'] === 'confirmed' ? 'responsible_' : 'ref_'; ?>
+                                <a href="<?= url('admin/users/' . $rid) ?>"><?= e(trim(($e[$prefix.'first_name'] ?? '') . ' ' . ($e[$prefix.'last_name'] ?? '')) ?: ('کاربر #' . $rid)) ?></a>
+                                <div class="user-cell-meta"><?= $e['status'] === 'confirmed' ? 'مسئول ثبت‌شده' : 'معرف فعلی' ?> · #<?= fa_digits($rid) ?></div>
+                            <?php else: ?><span class="text-muted">بدون معرف مشخص</span><?php endif; ?>
+                        </td>
                         <td class="num" data-label="ریسک"><?= fa_digits((int) ($e['risk_score'] ?? 0)) ?></td>
                         <td data-label="وضعیت"><span class="badge badge-<?= $statusBadge[$e['status']] ?? 'muted' ?>"><?= e(\RB\Controllers\Admin\SecurityController::statusLabel((string) $e['status'])) ?></span></td>
                         <td class="text-xs" data-label="تاریخ"><?= fa_date($e['created_at']) ?></td>
@@ -73,7 +82,14 @@ $userStatusLabel = ['active' => 'فعال', 'blocked' => 'مسدود', 'suspicio
                                     <form method="post" action="<?= url('admin/security/' . $e['id'] . '/review') ?>" data-ajax>
                                         <?= csrf_field() ?>
                                         <input type="hidden" name="status" value="confirmed">
-                                        <button class="btn btn-sm btn-danger" type="submit" data-confirm="تخلف تأیید شود؟">تأیید تخلف</button>
+                                        <input type="hidden" name="expected_referrer" value="<?= (int)($e['referred_by'] ?? 0) ?>">
+                                        <?php $details = json_decode((string) ($e['details'] ?? ''), true); $recordedRef = (int)(is_array($details) ? ($details['referrer_id'] ?? 0) : 0); $referralEvent = $e['type'] === 'referral_burst'; ?>
+                                        <?php if ($referralEvent): ?>
+                                            <button class="btn btn-sm btn-danger" type="submit" <?= !$recordedRef || $recordedRef !== (int)($e['referred_by'] ?? 0) ? 'disabled title="معرف زمان رویداد ثبت نشده یا تغییر کرده؛ بررسی دستی لازم است"' : '' ?> data-confirm="تخلف به نام معرف مستقیم ثبت‌شده در زمان رویداد ثبت و حساب فعال او مشکوک شود؟ موجودی تغییر نمی‌کند.">ثبت تخلف برای معرف</button>
+                                            <?php if (!$recordedRef || $recordedRef !== (int)($e['referred_by'] ?? 0)): ?><span class="text-xs text-muted">معرف زمان رویداد نامشخص یا تغییر کرده؛ بررسی دستی لازم است.</span><?php endif; ?>
+                                        <?php else: ?>
+                                            <button class="btn btn-sm btn-danger" type="submit" data-confirm="رویداد تأیید شود؟ حساب معرف و موجودی تغییر نمی‌کنند.">تأیید رویداد</button>
+                                        <?php endif; ?>
                                     </form>
                                     <form method="post" action="<?= url('admin/security/' . $e['id'] . '/review') ?>" data-ajax>
                                         <?= csrf_field() ?>
@@ -101,11 +117,12 @@ $userStatusLabel = ['active' => 'فعال', 'blocked' => 'مسدود', 'suspicio
     <?php else: ?>
         <div class="table-wrap">
             <table class="table">
-                <thead><tr><th>کاربر</th><th>شناسه تلگرام</th><th>امتیاز ریسک</th><th>وضعیت</th><th>زیرمجموعه</th><th>درآمد</th><th></th></tr></thead>
+                <thead><tr><th>کاربر</th><th>معرف مستقیم</th><th>شناسه تلگرام</th><th>امتیاز ریسک</th><th>وضعیت</th><th>زیرمجموعه</th><th>درآمد</th><th></th></tr></thead>
                 <tbody>
                 <?php foreach ($suspiciousUsers as $u): ?>
                     <tr>
                         <td data-label="کاربر"><?= e(trim($u['first_name'] . ' ' . $u['last_name'])) ?></td>
+                        <td data-label="معرف مستقیم"><?php if (!empty($u['referred_by'])): ?><a href="<?= url('admin/users/' . (int)$u['referred_by']) ?>"><?= e(trim(($u['ref_first_name'] ?? '') . ' ' . ($u['ref_last_name'] ?? '')) ?: 'کاربر #' . $u['referred_by']) ?></a><?php else: ?><span class="text-muted">—</span><?php endif; ?></td>
                         <td class="num" data-label="شناسه"><?= fa_digits((string) $u['telegram_id']) ?></td>
                         <td data-label="ریسک"><span class="badge badge-<?= (int) $u['risk_score'] >= 50 ? 'danger' : 'warning' ?>"><?= fa_digits((int) $u['risk_score']) ?></span></td>
                         <td data-label="وضعیت"><?= e($userStatusLabel[$u['status']] ?? (string) $u['status']) ?></td>

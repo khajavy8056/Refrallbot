@@ -118,9 +118,14 @@ final class BotHandler
             return;
         }
 
-        // رویداد توقف ربات توسط کاربر (مثلاً StoppedBot در روبیکا)
+        // StoppedBot supplies the chat ID, not necessarily the user's GUID.
         if ($upd->kind === 'stopped') {
-            $this->users->markMessengerBlocked($this->platform, $upd->externalUserId, true);
+            $externalId = $upd->externalUserId;
+            if ($this->platform === MessengerCapabilities::RUBIKA && $externalId === $upd->chatId && $upd->chatType === 'private') {
+                $matches = $this->db->all('SELECT external_user_id FROM user_messenger_accounts WHERE platform = :p AND external_chat_id = :c LIMIT 2', ['p'=>'rubika', 'c'=>$upd->chatId]);
+                if (count($matches) === 1) $externalId = (string)$matches[0]['external_user_id'];
+            }
+            $this->users->markMessengerBlocked($this->platform, $externalId, true);
             return;
         }
 
@@ -129,6 +134,19 @@ final class BotHandler
                 $this->send($upd->chatId, 'ارسال شماره تماس فقط در چت خصوصی با ربات امکان‌پذیر است.');
             }
             return;
+        }
+
+        // StartedBot may contain only chat_id. It is NOT the user ID: ask
+        // the documented getChat endpoint rather than creating a phantom account.
+        if ($this->driver instanceof RubikaDriver && $upd->kind === 'started' && $upd->externalUserId === $upd->chatId) {
+            $chatInfo = $this->driver->fetchChatInfo($upd->chatId);
+            $realId = trim((string)($chatInfo['user_id'] ?? ''));
+            if ($realId === '') {
+                $suffix = $upd->startPayload && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $upd->startPayload) ? ' ' . $upd->startPayload : '';
+                $this->send($upd->chatId, 'برای شروع، لطفاً این دستور را در همین گفتگو ارسال کنید: /start' . $suffix);
+                return;
+            }
+            $upd = $upd->withExternalUserId($realId);
         }
 
         if ($upd->kind === 'callback') {
@@ -310,6 +328,10 @@ final class BotHandler
 
     private function cmdStart(IncomingUpdate $upd, ?string $payload): void
     {
+        if ($this->driver instanceof RubikaDriver && !$this->recoverRubikaChatIdentity($upd)) {
+            $this->send($upd->chatId, 'شناسه حساب شما فعلاً قابل بررسی نیست. لطفاً بعداً دوباره /start بزنید یا با پشتیبانی تماس بگیرید.');
+            return;
+        }
         $before = $this->users->findByMessenger($this->platform, $upd->externalUserId);
         $isNew = $before === null;
 
@@ -320,6 +342,7 @@ final class BotHandler
 
         // غنی‌سازی پروفایل در روبیکا با متد رسمی getChat هنگام اولین ورود
         $userPayload = $upd->userPayload();
+        if ($this->driver instanceof RubikaDriver) $userPayload['can_send_message'] = true;
         if ($isNew && $this->driver instanceof RubikaDriver && empty($userPayload['first_name'])) {
             try {
                 $chatInfo = $this->driver->fetchChatInfo($upd->chatId);
@@ -407,6 +430,32 @@ final class BotHandler
         if ($isReferredStart && empty($user['qualified_at'])) {
             $this->sendPendingConditionActions($user, $upd->chatId, $settings);
         }
+    }
+
+    /** Repair an old chat-ID placeholder only after getChat confirms the identity.
+     * Never merge two existing users or move financial records automatically. */
+    private function recoverRubikaChatIdentity(IncomingUpdate $upd): bool
+    {
+        if ($upd->chatId === $upd->externalUserId || !$this->db->tableExists('user_messenger_accounts')) return true;
+        $legacy = $this->db->first("SELECT id, user_id FROM user_messenger_accounts WHERE platform = 'rubika' AND external_user_id = :c AND external_chat_id = :c2 LIMIT 1", ['c'=>$upd->chatId, 'c2'=>$upd->chatId]);
+        if (!$legacy) return true;
+        $existing = $this->db->first("SELECT id, user_id FROM user_messenger_accounts WHERE platform = 'rubika' AND external_user_id = :u LIMIT 1", ['u'=>$upd->externalUserId]);
+        if ($existing) {
+            // Both accounts already exist. Do not guess which financial history
+            // to merge; surface the anomaly to administrators instead.
+            MessengerRegistry::logError('rubika', 'connection', 'دو حساب روبیکا برای یک چت شناسایی شد؛ ادغام دستی نیاز به بررسی مالی دارد.', 'getChat', null, ['legacy_user_id'=>(int)$legacy['user_id'], 'existing_user_id'=>(int)$existing['user_id']], $this->db);
+            return true;
+        }
+        $info = $this->driver->fetchChatInfo($upd->chatId);
+        if (trim((string)($info['user_id'] ?? '')) !== $upd->externalUserId || (!empty($info['chat_id']) && (string)$info['chat_id'] !== $upd->chatId)) return false;
+        return $this->db->transaction(function () use ($legacy, $upd): bool {
+            $locked = $this->db->lockRow('user_messenger_accounts', (int)$legacy['id']);
+            if (!$locked || (string)$locked['external_user_id'] !== $upd->chatId) return false;
+            if ($this->db->value("SELECT id FROM user_messenger_accounts WHERE platform = 'rubika' AND external_user_id = :u LIMIT 1", ['u'=>$upd->externalUserId])) return false;
+            $this->db->update('user_messenger_accounts', ['external_user_id'=>$upd->externalUserId, 'updated_at'=>now()], 'id = :id', ['id'=>(int)$legacy['id']]);
+            \RB\Services\AuditService::log('messenger.rubika_identity_recovered', 'user', (int)$legacy['user_id'], ['method'=>'getChat']);
+            return true;
+        });
     }
 
     private function cmdAdmin(int $telegramId, int|string $chatId): void
@@ -1358,6 +1407,16 @@ final class BotHandler
     private function sendMainMenu(array $user, int|string $chatId, string $text): void
     {
         $rows = MenuService::replyKeyboardRows($user, $this->platform);
+        if ($this->driver instanceof RubikaDriver) {
+            // Rubika may return only aux_data.button_id for chat-keypad clicks.
+            // Stable action IDs avoid depending on echoed button text/order.
+            foreach ($rows as &$row) foreach ($row as &$button) {
+                if (!is_string($button)) continue;
+                $action = MenuService::actionByTitle($button);
+                if ($action !== null) $button = ['text'=>$button, 'id'=>'menu:' . $action];
+            }
+            unset($row, $button);
+        }
         $opts = $rows !== [] ? ['reply_rows' => $rows] : [];
         $this->driver->sendMessage($chatId, $text, $opts);
     }
@@ -1545,6 +1604,7 @@ final class BotHandler
         }
 
         if (str_starts_with($data, 'menu:')) {
+            if ($this->platform === MessengerCapabilities::RUBIKA) $this->clearUserSession($user);
             $action = substr($data, 5);
             $this->driver->answerCallback($callbackId, '');
             if (!$this->passGates($user, $chatId, $upd->externalUserId)) {

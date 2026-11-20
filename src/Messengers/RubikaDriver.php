@@ -133,7 +133,6 @@ final class RubikaDriver extends AbstractMessengerDriver
         return [
             'rows' => $rows,
             'resize_keyboard' => true,
-            'on_time_keyboard' => false,
             'one_time_keyboard' => false,
         ];
     }
@@ -432,14 +431,16 @@ final class RubikaDriver extends AbstractMessengerDriver
                 return [];
             }
 
-            $key = 'inline:' . $chatId . ':' . $msgId . ':' . $buttonId . ':' . substr(hash('sha256', (string) json_encode($im)), 0, 12);
+            // InlineMessage has no click/update ID; message_id identifies the
+            // original message, so a content hash would suppress later clicks.
+            $key = '';
             return [new IncomingUpdate(
                 platform: MessengerCapabilities::RUBIKA,
                 updateKey: $key,
                 kind: 'callback',
                 externalUserId: $senderId,
                 chatId: $chatId,
-                chatType: 'private',
+                chatType: in_array(strtolower(substr($chatId, 0, 2)), ['g0', 'c0'], true) ? 'group' : 'private',
                 messageId: $msgId !== '' ? $msgId : null,
                 text: trim((string) ($im['text'] ?? '')),
                 startPayload: $startId !== '' ? $startId : null,
@@ -464,7 +465,7 @@ final class RubikaDriver extends AbstractMessengerDriver
         if ($type === 'StoppedBot') {
             return [new IncomingUpdate(
                 platform: MessengerCapabilities::RUBIKA,
-                updateKey: 'stop:' . $chatId . ':' . substr(hash('sha256', (string) json_encode($upd)), 0, 12),
+                updateKey: '', // no message/update identifier; repeated starts and stops must not be permanently suppressed
                 kind: 'stopped',
                 externalUserId: $chatId,
                 chatId: $chatId,
@@ -488,7 +489,7 @@ final class RubikaDriver extends AbstractMessengerDriver
 
         $updateKey = $msgId !== ''
             ? ('msg:' . $chatId . ':' . $msgId)
-            : ($type . ':' . $chatId . ':' . substr(hash('sha256', (string) json_encode($upd)), 0, 16));
+            : ($type === 'StartedBot' ? '' : ($type . ':' . $chatId . ':' . substr(hash('sha256', (string) json_encode($upd)), 0, 16)));
 
         // پیام حاوی مخاطب (AskMyPhoneNumber / ContactMessage)
         if (isset($msg['contact_message']) && is_array($msg['contact_message'])) {

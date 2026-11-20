@@ -170,6 +170,7 @@ T::eq([
     '006_user_levels.php',
     '007_withdrawal_card_details.php',
     '008_pending_verification_queue.php',
+    '009_security_responsible_user.php',
 ], $appliedUpgrade, 'ارتقای مستقیم از v1.2.0 همه Migrationهای بعدی را به ترتیب اجرا کرد');
 
 // اجرای مجدد برای تضمین Idempotency کامل پس از ارتقا
