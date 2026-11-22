@@ -9,6 +9,8 @@ return [
     'broadcast_batch_size' => 25,
     'broadcast_delay_ms' => (int) (\RB\Support\Env::get('BROADCAST_DELAY_MS', '60') ?? '60'),
     'broadcast_max_per_run' => 500,
+    'broadcast_max_attempts' => max(1, (int) (\RB\Support\Env::get('BROADCAST_MAX_ATTEMPTS', '3') ?? '3')),
+    'broadcast_cron_budget_seconds' => max(2, (int) (\RB\Support\Env::get('BROADCAST_CRON_BUDGET_SECONDS', '20') ?? '20')),
 
     /* بررسی خودکار واجد شرایط شدن معرفی‌ها */
     'qualify_batch_size' => 200,

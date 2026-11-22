@@ -135,6 +135,7 @@ return static function (Router $router): void {
     $router->post('/admin/broadcast/send', [Admin\BroadcastController::class, 'send'], ['admin', 'csrf']);
     $router->post('/admin/broadcast/test', [Admin\BroadcastController::class, 'test'], ['admin', 'csrf']);
     $router->post('/admin/broadcast/{id}/cancel', [Admin\BroadcastController::class, 'cancel'], ['admin', 'csrf']);
+    $router->post('/admin/broadcast/{id}/retry-failed', [Admin\BroadcastController::class, 'retryFailed'], ['admin', 'csrf']);
     $router->get('/admin/broadcast/{id}', [Admin\BroadcastController::class, 'show'], ['admin']);
 
     // کمپین‌ها

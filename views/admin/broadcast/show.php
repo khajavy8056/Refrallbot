@@ -16,6 +16,12 @@ $percent = min(100, (int) round($done / $total * 100));
     </div>
     <div class="flex gap-1">
         <a href="<?= url('admin/broadcast') ?>" class="btn btn-secondary btn-sm">بازگشت</a>
+        <?php if ((int) $failures > 0 && (string) $campaign['status'] !== 'cancelled'): ?>
+            <form method="post" action="<?= url('admin/broadcast/' . $campaign['id'] . '/retry-failed') ?>" data-ajax>
+                <?= csrf_field() ?>
+                <button class="btn btn-warning btn-sm" type="submit" data-confirm="مخاطبان ناموفق دوباره در صف قرار بگیرند؟">تلاش مجدد ناموفق‌ها (<?= fa_digits((int) $failures) ?>)</button>
+            </form>
+        <?php endif; ?>
         <?php if (in_array($campaign['status'], ['queued', 'sending'], true)): ?>
             <form method="post" action="<?= url('admin/broadcast/' . $campaign['id'] . '/cancel') ?>" data-ajax>
                 <?= csrf_field() ?>
@@ -68,12 +74,14 @@ $percent = min(100, (int) round($done / $total * 100));
         <?php else: ?>
             <div class="table-wrap" style="max-height:420px;overflow:auto">
                 <table class="table">
-                    <thead><tr><th>شناسه تلگرام</th><th>وضعیت</th><th>خطا</th><th>زمان</th></tr></thead>
+                    <thead><tr><th>شناسه تلگرام</th><th>وضعیت</th><th>تلاش</th><th>تکرار بعدی</th><th>خطا</th><th>زمان</th></tr></thead>
                     <tbody>
                     <?php foreach ($targets as $t): ?>
                         <tr>
                             <td class="num ltr" data-label="شناسه"><?= e((string) $t['telegram_id']) ?></td>
                             <td data-label="وضعیت"><span class="badge badge-<?= $targetBadge[$t['status']] ?? 'muted' ?>"><?= e((string) $t['status']) ?></span></td>
+                            <td class="num" data-label="تلاش"><?= fa_digits((int) ($t['attempts'] ?? 0)) ?></td>
+                            <td class="text-xs" data-label="تکرار بعدی"><?= !empty($t['next_attempt_at']) ? e(fa_date((string) $t['next_attempt_at'])) : '—' ?></td>
                             <td class="text-xs" data-label="خطا"><?= e(mb_strimwidth((string) ($t['error'] ?? ''), 0, 40, '…')) ?></td>
                             <td class="text-xs" data-label="زمان"><?= fa_date($t['sent_at']) ?></td>
                         </tr>

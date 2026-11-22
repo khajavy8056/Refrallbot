@@ -47,6 +47,7 @@ final class AuditService
         'broadcast.created' => 'ایجاد پیام همگانی',
         'broadcast.started' => 'شروع ارسال همگانی',
         'broadcast.cancelled' => 'لغو ارسال همگانی',
+        'broadcast.retry_failed' => 'تلاش مجدد پیام همگانی',
         'channel.created' => 'افزودن کانال اجباری',
         'channel.updated' => 'ویرایش کانال اجباری',
         'channel.deleted' => 'حذف کانال اجباری',

@@ -58,7 +58,7 @@ if ($rawVersion === null || $rawVersion === '') {
 $version = UpdateService::normalizeVersion($rawVersion);
 
 if ($outPath === null || trim($outPath) === '') {
-    $outPath = RB_STORAGE . '/updates/dist/refrallbot-update-v' . $version . '.zip';
+    $outPath = $sourceRoot . '/releases/refrallbot-update-v' . $version . '.zip';
 }
 
 $built = UpdateService::buildPackage($sourceRoot, $version, $outPath, $minPhp);

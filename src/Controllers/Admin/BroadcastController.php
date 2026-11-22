@@ -130,8 +130,48 @@ final class BroadcastController extends AdminController
     {
         $id = (int) $params['id'];
         $db = Database::instance();
+        $campaign = $db->first('SELECT id FROM broadcast_campaigns WHERE id = :id', ['id' => $id]);
+        if ($campaign === null) {
+            $this->fail('کمپین یافت نشد.');
+            return;
+        }
         $db->update('broadcast_campaigns', ['status' => 'cancelled', 'updated_at' => now()], 'id = :id', ['id' => $id]);
         AuditService::log('broadcast.cancelled', 'broadcast', $id, [], current_admin_id());
         $this->ok('ارسال کمپین لغو شد.', ['reload' => true]);
+    }
+
+    public function retryFailed(array $params): void
+    {
+        $id = (int) $params['id'];
+        $db = Database::instance();
+        $campaign = $db->first('SELECT id, status FROM broadcast_campaigns WHERE id = :id', ['id' => $id]);
+        if ($campaign === null) {
+            $this->fail('کمپین یافت نشد.');
+            return;
+        }
+        if ((string) $campaign['status'] === 'cancelled') {
+            $this->fail('این کمپین لغو شده است؛ ابتدا یک کمپین جدید ایجاد کنید.');
+            return;
+        }
+        $result = $db->transaction(static function ($db) use ($id, $campaign) {
+            $retried = (new BroadcastService($db))->retryFailed($id);
+            if ($retried > 0 && in_array((string) $campaign['status'], ['sent', 'failed'], true)) {
+                $db->update('broadcast_campaigns', [
+                    'status' => 'queued',
+                    'finished_at' => null,
+                    'updated_at' => now(),
+                ], 'id = :id', ['id' => $id]);
+            } elseif ($retried > 0) {
+                $db->update('broadcast_campaigns', ['updated_at' => now()], 'id = :id', ['id' => $id]);
+            }
+            return $retried;
+        });
+        AuditService::log('broadcast.retry_failed', 'broadcast', $id, ['targets' => (int) $result], current_admin_id());
+        $this->ok(
+            $result > 0
+                ? fa_digits((int) $result) . ' مخاطب ناموفق برای تلاش مجدد به صف بازگردانده شد.'
+                : 'مخاطب ناموفقی برای تلاش مجدد وجود ندارد.',
+            ['reload' => true]
+        );
     }
 }

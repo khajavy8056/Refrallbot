@@ -194,32 +194,50 @@ final class BroadcastService
 
     /**
      * پردازش یک دسته از کمپین‌های همگانی در تمام پیام‌رسان‌ها
-     * @return array{campaigns:int,sent:int,failed:int,blocked:int,error?:string}
+     * @return array{campaigns:int,sent:int,failed:int,blocked:int,scheduled:int,locked?:bool,error?:string}
      */
-    public function processQueue(int $batchSize = 25, int $maxPerRun = 500): array
+    public function processQueue(int $batchSize = 25, int $maxPerRun = 500, ?float $timeBudgetSeconds = null): array
     {
         $batchSize = max(1, min(50, $batchSize));
         $maxPerRun = max($batchSize, $maxPerRun);
         $sent = 0;
         $failed = 0;
         $blocked = 0;
+        $scheduled = 0;
         $campaignsTouched = 0;
+        $deadline = $this->queueDeadline($timeBudgetSeconds);
+
+        $lock = $this->acquireQueueLock();
+        if ($lock === null) {
+            return [
+                'campaigns' => 0,
+                'sent' => 0,
+                'failed' => 0,
+                'blocked' => 0,
+                'scheduled' => 0,
+                'locked' => true,
+                'error' => 'ارسال همگانی هم‌اکنون توسط یک فرایند دیگر در حال اجراست.',
+            ];
+        }
+
+        try {
 
         $registry = new MessengerRegistry($this->db);
         if ($registry->activePlatforms() === [] && !TelegramService::configured()) {
-            return ['campaigns' => 0, 'sent' => 0, 'failed' => 0, 'blocked' => 0, 'error' => 'هیچ پیام‌رسانی متصل نیست'];
+            return ['campaigns' => 0, 'sent' => 0, 'failed' => 0, 'blocked' => 0, 'scheduled' => 0, 'error' => 'هیچ پیام‌رسانی متصل نیست'];
         }
 
+        $currentTime = now();
         $campaigns = $this->db->all(
             "SELECT * FROM broadcast_campaigns
              WHERE status IN ('sending','queued')
                AND (scheduled_at IS NULL OR scheduled_at <= :now)
              ORDER BY id ASC LIMIT 5",
-            ['now' => now()]
+            ['now' => $currentTime]
         );
 
         foreach ($campaigns as $campaign) {
-            if ($sent + $failed >= $maxPerRun) {
+            if ($sent + $failed + $blocked + $scheduled >= $maxPerRun || microtime(true) >= $deadline) {
                 break;
             }
             $campaignsTouched++;
@@ -234,34 +252,66 @@ final class BroadcastService
             }
 
             $targetPlatform = strtolower((string) ($campaign['target_platform'] ?? 'all'));
-            $targets = $this->db->all(
-                "SELECT * FROM broadcast_targets WHERE campaign_id = :c AND status = 'pending' ORDER BY id LIMIT " . $batchSize,
-                ['c' => (int) $campaign['id']]
-            );
+            if ($this->db->columnExists('broadcast_targets', 'next_attempt_at')) {
+                $targets = $this->db->all(
+                    "SELECT * FROM broadcast_targets
+                     WHERE campaign_id = :c
+                       AND status = 'pending'
+                       AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
+                     ORDER BY COALESCE(next_attempt_at, '1970-01-01 00:00:00') ASC, id ASC
+                     LIMIT " . $batchSize,
+                    ['c' => (int) $campaign['id'], 'now' => $currentTime]
+                );
+            } else {
+                // محافظت برای نصب‌هایی که migration صف بازیابی را هنوز اجرا نکرده‌اند
+                $targets = $this->db->all(
+                    "SELECT * FROM broadcast_targets WHERE campaign_id = :c AND status = 'pending' ORDER BY id LIMIT " . $batchSize,
+                    ['c' => (int) $campaign['id']]
+                );
+            }
 
             foreach ($targets as $target) {
-                if ($sent + $failed >= $maxPerRun) {
+                if ($sent + $failed + $blocked + $scheduled >= $maxPerRun || microtime(true) >= $deadline) {
                     break;
                 }
+                $attempt = max(0, (int) ($target['attempts'] ?? 0)) + 1;
+                $attemptAt = now();
                 $result = $this->sendToTarget($registry, $campaign, $target, $targetPlatform);
-                if ($result === 'sent') {
-                    $this->db->update('broadcast_targets', [
-                        'status' => 'sent', 'sent_at' => now(), 'error' => null,
-                    ], 'id = :id', ['id' => (int) $target['id']]);
+                $attemptColumns = $this->db->columnExists('broadcast_targets', 'attempts')
+                    ? ['attempts' => $attempt, 'last_attempt_at' => $attemptAt]
+                    : [];
+
+                if ($result['result'] === 'sent') {
+                    $this->db->update('broadcast_targets', array_merge([
+                        'status' => 'sent', 'sent_at' => $attemptAt, 'error' => null,
+                    ], $attemptColumns, $this->nextAttemptColumns(null)), 'id = :id', ['id' => (int) $target['id']]);
                     $sent++;
-                } elseif ($result === 'blocked') {
-                    $this->db->update('broadcast_targets', [
-                        'status' => 'blocked', 'sent_at' => now(), 'error' => 'کاربر ربات را مسدود کرده است',
-                    ], 'id = :id', ['id' => (int) $target['id']]);
+                } elseif ($result['result'] === 'blocked') {
+                    $this->db->update('broadcast_targets', array_merge([
+                        'status' => 'blocked', 'sent_at' => $attemptAt, 'error' => 'کاربر ربات را مسدود کرده است',
+                    ], $attemptColumns, $this->nextAttemptColumns(null)), 'id = :id', ['id' => (int) $target['id']]);
                     $blocked++;
                 } else {
-                    $this->db->update('broadcast_targets', [
-                        'status' => 'failed', 'sent_at' => now(), 'error' => mb_substr((string) $result, 0, 400),
-                    ], 'id = :id', ['id' => (int) $target['id']]);
-                    $failed++;
+                    $maxAttempts = max(1, (int) Config::get('services.broadcast_max_attempts', 3));
+                    if (!empty($result['retryable']) && $attempt < $maxAttempts) {
+                        $nextAttempt = date('Y-m-d H:i:s', time() + $this->retryDelaySeconds($attempt));
+                        $this->db->update('broadcast_targets', array_merge([
+                            'status' => 'pending',
+                            'sent_at' => null,
+                            'error' => mb_substr((string) $result['error'], 0, 400),
+                        ], $attemptColumns, $this->nextAttemptColumns($nextAttempt)), 'id = :id', ['id' => (int) $target['id']]);
+                        $scheduled++;
+                    } else {
+                        $this->db->update('broadcast_targets', array_merge([
+                            'status' => 'failed',
+                            'sent_at' => $attemptAt,
+                            'error' => mb_substr((string) $result['error'], 0, 400),
+                        ], $attemptColumns, $this->nextAttemptColumns(null)), 'id = :id', ['id' => (int) $target['id']]);
+                        $failed++;
+                    }
                 }
                 $delay = (int) Config::get('services.broadcast_delay_ms', 60);
-                if ($delay > 0) {
+                if ($delay > 0 && microtime(true) < $deadline) {
                     usleep($delay * 1000);
                 }
             }
@@ -293,11 +343,16 @@ final class BroadcastService
             'sent' => $sent,
             'failed' => $failed,
             'blocked' => $blocked,
+            'scheduled' => $scheduled,
         ];
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     /** ارسال ایزوله یک پیام کمپین به حساب پیام‌رسان مخاطب */
-    private function sendToTarget(MessengerRegistry $registry, array $campaign, array $target, string $targetPlatform): string
+    private function sendToTarget(MessengerRegistry $registry, array $campaign, array $target, string $targetPlatform): array
     {
         $userId = (int) ($target['user_id'] ?? 0);
         $telegramId = (int) ($target['telegram_id'] ?? 0);
@@ -332,10 +387,16 @@ final class BroadcastService
             ]];
         }
 
+        $userRow = $userId > 0 ? $this->db->first('SELECT * FROM users WHERE id = :id', ['id' => $userId]) : null;
+        $renderedByPlatform = [];
+
         $lastErr = 'هیچ پیام‌رسان فعالی برای این کاربر در دسترس نیست.';
+        $lastRetryable = false;
+        $blockedAny = false;
         foreach ($accounts as $acc) {
             $p = (string) $acc['platform'];
             $chatId = (string) ($acc['external_chat_id'] ?: $acc['external_user_id']);
+            $text = $renderedByPlatform[$p] ??= $this->renderBroadcastText((string) ($campaign['message_text'] ?? ''), $userRow, $p);
             try {
                 $driver = $registry->driver($p);
                 if (!$driver->isEnabled() && !($p === MessengerCapabilities::TELEGRAM && $driver->isConfigured())) {
@@ -347,21 +408,124 @@ final class BroadcastService
                     $res = $driver->sendMessage($chatId, $text, $options);
                 }
                 if (!empty($res['ok'])) {
-                    return 'sent';
+                    return ['result' => 'sent', 'error' => '', 'retryable' => false];
                 }
                 $desc = (string) ($res['description'] ?? 'خطای ارسال');
                 if (stripos($desc, 'blocked') !== false || stripos($desc, 'مسدود') !== false || stripos($desc, 'deactivated') !== false) {
                     (new UserService($this->db))->markMessengerBlocked($p, (string) $acc['external_user_id'], true);
+                    $blockedAny = true;
                     $lastErr = 'blocked';
+                    $lastRetryable = false;
                     continue;
                 }
                 $lastErr = MessengerCapabilities::label($p) . ': ' . $desc;
+                $lastRetryable = self::isRetryableError($lastErr);
             } catch (\Throwable $e) {
                 $lastErr = MessengerCapabilities::label($p) . ': ' . ErrorHandler::redact($e->getMessage());
+                $lastRetryable = self::isRetryableError($lastErr);
             }
         }
 
-        return $lastErr;
+        // اگر یک خطای گذرا وجود داشته باشد، تلاش مجدد محدود از معلق ماندن صف بهتر است.
+        if ($lastRetryable) {
+            return ['result' => 'failed', 'error' => $lastErr, 'retryable' => true];
+        }
+        if ($blockedAny) {
+            return ['result' => 'blocked', 'error' => 'blocked', 'retryable' => false];
+        }
+        return ['result' => 'failed', 'error' => $lastErr, 'retryable' => false];
+    }
+
+    /** جایگذاری متغیرهای مستندشدهٔ پیام همگانی برای هر مخاطب */
+    private function renderBroadcastText(string $template, ?array $user, string $platform): string
+    {
+        $rawName = $user ? trim((string) (($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? ''))) : '';
+        $username = $user ? trim((string) ($user['username'] ?? '')) : '';
+        $name = $rawName !== '' ? $rawName : ($username !== '' ? ltrim($username, '@') : 'کاربر');
+        $balance = $user ? (int) ($user['wallet_balance'] ?? 0) : 0;
+        $inviteLink = '';
+        if ($user && !empty($user['referral_code'])) {
+            try {
+                $inviteLink = (new MessengerRegistry($this->db))->buildReferralLink(
+                    $platform,
+                    (string) $user['referral_code']
+                );
+            } catch (\Throwable) {
+                $inviteLink = '';
+            }
+        }
+
+        return strtr($template, [
+            '{name}' => e($name),
+            '{username}' => e($username !== '' ? '@' . ltrim($username, '@') : $name),
+            '{balance}' => number_format($balance),
+            '{invite_link}' => e($inviteLink),
+        ]);
+    }
+
+    private static function isRetryableError(string $message): bool
+    {
+        $lower = mb_strtolower($message, 'UTF-8');
+        if (preg_match('~\b(429|5\d\d)\b~', $lower)) {
+            return true;
+        }
+        foreach ([
+            'too many', 'rate limit', 'rate', 'timeout', 'timed out', 'time out',
+            'temporar', 'unavailable', 'network', 'connection', 'connect',
+            'could not resolve', 'dns', 'reset by peer', 'bad gateway', 'gateway',
+            'بیش از حد', 'محدودیت', 'زمان انتظار', 'ارتباط شبکه', 'اتصال شبکه',
+            'موقتی', 'در دسترس نیست', 'عدم دریافت پاسخ', 'سرور',
+        ] as $needle) {
+            if (str_contains($lower, $needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function retryDelaySeconds(int $attempt): int
+    {
+        return min(900, 120 * (2 ** max(0, $attempt - 1)));
+    }
+
+    /** @return array<string,string|null> */
+    private function nextAttemptColumns(?string $nextAttemptAt): array
+    {
+        if (!$this->db->columnExists('broadcast_targets', 'next_attempt_at')) {
+            return [];
+        }
+        return ['next_attempt_at' => $nextAttemptAt];
+    }
+
+    private function queueDeadline(?float $timeBudgetSeconds): float
+    {
+        if ($timeBudgetSeconds !== null && $timeBudgetSeconds > 0) {
+            return microtime(true) + max(1.0, min(120.0, $timeBudgetSeconds));
+        }
+        $maxExecution = (int) ini_get('max_execution_time');
+        if ($maxExecution > 0) {
+            return microtime(true) + max(2.0, min(120.0, (float) $maxExecution - 2.0));
+        }
+        $configured = (int) Config::get('services.broadcast_cron_budget_seconds', 20);
+        return microtime(true) + max(2.0, min(120.0, (float) $configured));
+    }
+
+    /** @return resource|null */
+    private function acquireQueueLock()
+    {
+        $dir = defined('RB_STORAGE') ? (string) RB_STORAGE : dirname(__DIR__, 2) . '/storage';
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return null;
+        }
+        $handle = @fopen($dir . '/broadcast-queue.lock', 'c+');
+        if ($handle === false) {
+            return null;
+        }
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            return null;
+        }
+        return $handle;
     }
 
     public function sendTestToAdmin(int $adminId, string $text): bool
@@ -377,9 +541,14 @@ final class BroadcastService
 
     public function retryFailed(int $campaignId): int
     {
-        return $this->db->run(
-            "UPDATE broadcast_targets SET status = 'pending', error = NULL WHERE campaign_id = :c AND status = 'failed'",
-            ['c' => $campaignId]
-        )->rowCount();
+        $sql = "UPDATE broadcast_targets SET status = 'pending', error = NULL, sent_at = NULL";
+        if ($this->db->columnExists('broadcast_targets', 'attempts')) {
+            $sql .= ", attempts = 0, last_attempt_at = NULL";
+        }
+        if ($this->db->columnExists('broadcast_targets', 'next_attempt_at')) {
+            $sql .= ", next_attempt_at = NULL";
+        }
+        $sql .= " WHERE campaign_id = :c AND status = 'failed'";
+        return $this->db->run($sql, ['c' => $campaignId])->rowCount();
     }
 }

@@ -181,6 +181,12 @@ $msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messenge
                         <td data-label="">
                             <div class="actions">
                                 <a href="<?= url('admin/broadcast/' . $c['id']) ?>" class="btn btn-sm btn-secondary">گزارش</a>
+                                <?php if ((int) ($c['failed_count'] ?? 0) > 0): ?>
+                                    <form method="post" action="<?= url('admin/broadcast/' . $c['id'] . '/retry-failed') ?>" data-ajax>
+                                        <?= csrf_field() ?>
+                                        <button class="btn btn-sm btn-warning" type="submit" data-confirm="مخاطبان ناموفق دوباره در صف قرار بگیرند؟">تلاش مجدد</button>
+                                    </form>
+                                <?php endif; ?>
                                 <?php if (in_array($c['status'], ['queued', 'sending'], true)): ?>
                                     <form method="post" action="<?= url('admin/broadcast/' . $c['id'] . '/cancel') ?>" data-ajax>
                                         <?= csrf_field() ?>

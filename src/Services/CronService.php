@@ -6,6 +6,7 @@ namespace RB\Services;
 use RB\Bot\BotHandler;
 use RB\Messengers\MessengerCapabilities;
 use RB\Messengers\MessengerRegistry;
+use RB\Support\Config;
 use RB\Support\Database;
 use RB\Support\ErrorHandler;
 
@@ -48,7 +49,30 @@ final class CronService
 
         $ok = true;
         try {
-            // ۱) دریافت دوره‌ای آپدیت پیام‌رسان‌هایی که Polling برایشان فعال شده (ایزوله در برابر خطای هر پلتفرم)
+            // ۱) ارسال همگانی چندپیام‌رسانی — قبل از Polling و کارهای سنگین تا صف هرگز جا نماند
+            if (in_array($task, ['broadcast', 'all'], true)) {
+                $service = new BroadcastService($db);
+                $batchSize = (int) Config::get('services.broadcast_batch_size', 25);
+                $maxPerRun = (int) Config::get('services.broadcast_max_per_run', 500);
+                $res = $service->processQueue($batchSize, $maxPerRun);
+                if (!empty($res['locked'])) {
+                    $emit('ارسال همگانی توسط یک فرایند دیگر در حال اجراست؛ این اجرا رد شد.');
+                } elseif (!empty($res['error'])) {
+                    $ok = false;
+                    $emit('ارسال همگانی: ' . ErrorHandler::redact((string) $res['error']));
+                } else {
+                    $sentCount = (int) ($res['sent'] ?? 0);
+                    $failedCount = (int) ($res['failed'] ?? 0);
+                    $blockedCount = (int) ($res['blocked'] ?? 0);
+                    $scheduledCount = (int) ($res['scheduled'] ?? 0);
+                    $emit('ارسال همگانی: ' . $sentCount . ' پیام ارسال شد؛ ناموفق: ' . $failedCount . '؛ مسدود: ' . $blockedCount . '.');
+                    if ($scheduledCount > 0) {
+                        $emit($scheduledCount . ' پیام با خطای گذرا برای تلاش مجدد محدود به صف برگردانده شد.');
+                    }
+                }
+            }
+
+            // ۲) دریافت دوره‌ای آپدیت پیام‌رسان‌هایی که Polling برایشان فعال شده (ایزوله در برابر خطای هر پلتفرم)
             if (in_array($task, ['messengers', 'all'], true) && $db->tableExists('messenger_connections')) {
                 $registry = new MessengerRegistry($db);
                 $registry->ensureSeeded();
@@ -117,29 +141,7 @@ final class CronService
                 }
             }
 
-            // ۲) ارسال همگانی چندپیام‌رسانی
-            if (in_array($task, ['broadcast', 'all'], true)) {
-                $service = new BroadcastService($db);
-                $res = $service->processQueue(25);
-                $sentCount = (int) ($res['sent'] ?? 0);
-                $emit('ارسال همگانی: ' . $sentCount . ' پیام ارسال شد.');
 
-                $failedCampaigns = $db->all(
-                    "SELECT id FROM broadcast_campaigns WHERE status IN ('sending','failed') ORDER BY id DESC LIMIT 5"
-                );
-                foreach ($failedCampaigns as $row) {
-                    $retried = $service->retryFailed((int) $row['id']);
-                    if ($retried > 0) {
-                        $db->update(
-                            'broadcast_campaigns',
-                            ['status' => 'queued', 'updated_at' => now()],
-                            'id = :id',
-                            ['id' => (int) $row['id']]
-                        );
-                        $emit('تلاش مجدد برای ' . $retried . ' پیام ناموفق کمپین #' . $row['id']);
-                    }
-                }
-            }
 
             // ۳) جوایز کمپین‌ها
             if (in_array($task, ['campaigns', 'all'], true)) {
