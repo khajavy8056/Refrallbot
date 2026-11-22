@@ -251,6 +251,54 @@ final class BroadcastService
     }
 
     /**
+     * اجرای فرصت‌طلبانه (Opportunistic) صف در پس‌زمینه با بودجه زمانی اندک
+     * جهت اطمینان از ارسال تدریجی مداوم حتی در صورت عدم تنظیم یا تأخیر کرون هاست
+     */
+    public static function triggerOpportunisticRun(?Database $db = null, float $timeBudgetSeconds = 3.0): void
+    {
+        $db ??= Database::instance();
+        if (!$db->tableExists('broadcast_campaigns') || !$db->tableExists('broadcast_targets')) {
+            return;
+        }
+
+        // بررسی سریع: آیا کمپینی با وضعیت queued یا sending و زمان سررسیدشده وجود دارد؟
+        $hasPending = (int) $db->value(
+            "SELECT 1 FROM broadcast_campaigns
+             WHERE (
+                 status IN ('sending', 'queued')
+                 OR (status = 'failed' AND EXISTS (SELECT 1 FROM broadcast_targets bt WHERE bt.campaign_id = broadcast_campaigns.id AND bt.status = 'pending'))
+             )
+               AND (scheduled_at IS NULL OR scheduled_at <= :now)
+             LIMIT 1",
+            ['now' => now()]
+        );
+        if ($hasPending <= 0) {
+            return;
+        }
+
+        // جلوگیری از اجرای بیش از حد متوالی در وب (فاصله حداقل ۱۰ ثانیه‌ای بین درخواست‌های وب)
+        $dir = defined('RB_STORAGE') ? (string) RB_STORAGE : dirname(__DIR__, 2) . '/storage';
+        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+            return;
+        }
+        $stampFile = $dir . '/broadcast-last-web-run.txt';
+        $now = time();
+        if (is_file($stampFile)) {
+            $lastRun = (int) @file_get_contents($stampFile);
+            if ($now - $lastRun < 10) {
+                return;
+            }
+        }
+        @file_put_contents($stampFile, (string) $now, LOCK_EX);
+
+        try {
+            (new self($db))->processQueue(15, 30, $timeBudgetSeconds);
+        } catch (\Throwable) {
+            // نادیده‌گیری خطا برای حفظ سرعت پاسخ وب
+        }
+    }
+
+    /**
      * همگام‌سازی و بازیابی خودکار کمپین‌های ایجادشده قبل از آپدیت یا معلق‌مانده
      * @return int تعداد کمپین‌های بازیابی‌شده
      */

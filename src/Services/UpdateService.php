@@ -718,6 +718,17 @@ final class UpdateService
                     if (is_dir($migDir)) {
                         $migResult = (new Migrator($this->db, $migDir))->run();
                         $migrationsApplied = (array) ($migResult['applied'] ?? []);
+
+                        // بازیابی خودکار صف ارسال همگانی و شروع ارسال کمپین‌های قبلی بلافاصله پس از ارتقا
+                        try {
+                            if (class_exists(BroadcastService::class)) {
+                                $broadcastService = new BroadcastService($this->db);
+                                $broadcastService->healStaleCampaigns();
+                                $broadcastService->processQueue(25, 50, 10.0);
+                            }
+                        } catch (\Throwable) {
+                            // نادیده‌گیری خطا برای عدم تداخل در فرآیند ارتقا
+                        }
                     }
                 } catch (\Throwable $e) {
                     $restore = $this->restoreFiles(

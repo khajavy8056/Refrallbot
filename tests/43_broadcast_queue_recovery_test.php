@@ -168,4 +168,9 @@ BroadcastService::log('INFO', 'تست لاگ‌برداری اختصاصی پی�
 $logs = BroadcastService::recentLogs(10);
 T::ok(str_contains($logs, 'تست لاگ‌برداری'), 'لاگ اختصاصی پیام همگانی با موفقیت ثبت و خوانده شد');
 
+
+// ---------- اجرای فرصت‌طلبانه در وب (Opportunistic Run)
+BroadcastService::triggerOpportunisticRun($db, 5.0);
+T::ok(true, 'اجرای فرصت‌طلبانه بدون استثنا انجام شد');
+
 exit(T::summary());

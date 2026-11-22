@@ -4,17 +4,20 @@ declare(strict_types=1);
 namespace RB\Http;
 
 use RB\Services\AdminAuth;
+use RB\Services\BroadcastService;
 use RB\Support\Database;
 use RB\Support\View;
 
 /**
- * کنترلر پایه‌ی پنل مدیریت — شامل ناوبری و نشان‌های هشدار
+ * کنترلر پایه‌ی پنل مدیریت — شامل ناوبری، نشان‌های هشدار و اجرای فرصت‌طلبانه صف
  */
 abstract class AdminController extends Controller
 {
     protected function render(string $view, array $data = []): void
     {
         $db = Database::instance();
+        BroadcastService::triggerOpportunisticRun($db, 2.5);
+
         $navBadges = [
             'withdrawals' => (int) $db->value(
                 "SELECT COUNT(*) FROM withdrawal_requests WHERE status IN ('new','reviewing','approved','paying')"
