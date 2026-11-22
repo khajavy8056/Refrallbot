@@ -15,6 +15,7 @@ final class BroadcastController extends AdminController
     {
         $db = Database::instance();
         $msgSummary = \RB\Services\StatsService::segmentedMessengerSummary($db);
+        $logPath = BroadcastService::getLogFilePath();
         $this->render('admin/broadcast/index', [
             'title' => 'ارسال پیام همگانی',
             'campaigns' => $db->all('SELECT * FROM broadcast_campaigns ORDER BY id DESC LIMIT 25'),
@@ -22,6 +23,10 @@ final class BroadcastController extends AdminController
             'counts' => (new BroadcastService($db))->segmentCounts(),
             'activeMessengers' => $msgSummary['active'],
             'messengerTotals' => $msgSummary['totals'],
+            'recentLogs' => BroadcastService::recentLogs(120),
+            'logFilePath' => $logPath,
+            'hasLogFile' => is_file($logPath) && (filesize($logPath) ?: 0) > 0,
+            'webCronToken' => \RB\Services\CronService::webToken(),
         ]);
     }
 
@@ -106,6 +111,72 @@ final class BroadcastController extends AdminController
         } catch (\Throwable $e) {
             $this->fail($e->getMessage());
         }
+    }
+
+    public function processNow(): void
+    {
+        $db = Database::instance();
+        $service = new BroadcastService($db);
+        $res = $service->processQueue(50, 200, 25.0);
+        if (!empty($res['locked'])) {
+            $this->fail('ارسال همگانی هم‌اکنون توسط فرآیند دیگری در حال اجراست.');
+            return;
+        }
+        if (!empty($res['error'])) {
+            $this->fail('خطا در اجرای صف: ' . $res['error']);
+            return;
+        }
+        $sent = (int) ($res['sent'] ?? 0);
+        $failed = (int) ($res['failed'] ?? 0);
+        $blocked = (int) ($res['blocked'] ?? 0);
+        $scheduled = (int) ($res['scheduled'] ?? 0);
+
+        AuditService::log('broadcast.processed_now', 'broadcast', null, $res, current_admin_id());
+
+        $msg = sprintf(
+            'اجرای صف انجام شد: %s پیام ارسال شد، %s ناموفق، %s مسدود%s.',
+            fa_digits($sent),
+            fa_digits($failed),
+            fa_digits($blocked),
+            $scheduled > 0 ? ('، ' . fa_digits($scheduled) . ' زمان‌بندی مجدد') : ''
+        );
+        $this->ok($msg, ['reload' => true, 'result' => $res]);
+    }
+
+    public function recoverStale(): void
+    {
+        $db = Database::instance();
+        $healed = (new BroadcastService($db))->healStaleCampaigns();
+        AuditService::log('broadcast.recovered_stale', 'broadcast', null, ['healed' => $healed], current_admin_id());
+        $this->ok(
+            $healed > 0
+                ? fa_digits($healed) . ' کمپین معلق یا قبلی با موفقیت بررسی و به صف فعال بازگردانده شدند.'
+                : 'تمام کمپین‌ها همگام و مرتب هستند؛ کمپین معلقی یافت نشد.',
+            ['reload' => true]
+        );
+    }
+
+    public function downloadLog(): void
+    {
+        $file = BroadcastService::getLogFilePath();
+        if (!is_file($file) || (filesize($file) ?: 0) === 0) {
+            $this->flash('warning', 'هنوز فایل لاگی برای ارسال همگانی ثبت نشده است.');
+            Request::redirect(url('admin/broadcast'));
+            return;
+        }
+        $filename = 'broadcast-log-' . date('Ymd-His') . '.txt';
+        header('Content-Type: text/plain; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Content-Length: ' . (string) filesize($file));
+        readfile($file);
+        exit(0);
+    }
+
+    public function clearLog(): void
+    {
+        BroadcastService::clearLog();
+        AuditService::log('broadcast.log_cleared', 'broadcast', null, [], current_admin_id());
+        $this->ok('فایل لاگ ارسال همگانی پاک‌سازی شد.', ['reload' => true]);
     }
 
     public function show(array $params): void

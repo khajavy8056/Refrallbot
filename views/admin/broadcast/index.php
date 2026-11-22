@@ -4,26 +4,44 @@ $statusBadge = ['draft' => 'muted', 'queued' => 'info', 'sending' => 'warning',
 $statusLabel = ['draft' => 'پیش‌نویس', 'queued' => 'در صف', 'sending' => 'در حال ارسال',
     'sent' => 'ارسال‌شده', 'failed' => 'ناموفق', 'cancelled' => 'لغو‌شده'];
 $totalTargets = array_sum($counts);
+$activeMsg = (isset($activeMessengers) && is_array($activeMessengers)) ? $activeMessengers : [];
+$msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messengerTotals : [];
 ?>
 <div class="flex items-center justify-between wrap gap-3 mb-3">
     <div>
         <h1 class="mb-0">ارسال پیام همگانی</h1>
-        <p class="text-muted text-sm mb-0">ارسال مرحله‌ای با محدودیت نرخ توسط Cron — مناسب هاست اشتراکی بدون نیاز به Worker</p>
+        <p class="text-muted text-sm mb-0">ارسال مرحله‌ای با محدودیت نرخ توسط Cron و مدیریت هوشمند صف — مناسب هاست اشتراکی</p>
+    </div>
+    <div class="flex gap-2 wrap">
+        <form method="post" action="<?= url('admin/broadcast/process-now') ?>" data-ajax>
+            <?= csrf_field() ?>
+            <button class="btn btn-success" type="submit" data-confirm="صف ارسال هم‌اکنون برای ۵۰ پیام بعدی اجرا شود؟">⚡ اجرای فوری صف ارسال</button>
+        </form>
+        <form method="post" action="<?= url('admin/broadcast/recover') ?>" data-ajax>
+            <?= csrf_field() ?>
+            <button class="btn btn-secondary" type="submit" data-confirm="کمپین‌های معلق یا قدیمی بررسی و به صف بازگردانده شوند؟">🔄 بازیابی کمپین‌های گذشته</button>
+        </form>
+        <a href="<?= url('admin/broadcast/log/download') ?>" class="btn btn-ghost" title="دانلود فایل کامل لاگ">📥 دانلود لاگ ارسال</a>
     </div>
 </div>
 
-<div class="alert alert-info">
+<div class="alert alert-info mb-3">
     <span class="alert-icon">⏱</span>
     <div>
-        ارسال به‌صورت دسته‌ای و با تأخیر انجام می‌شود تا تلگرام محدودیت نگذارد.
-        برای اجرای واقعی، Cron را تنظیم کنید: <span class="ltr mono text-xs">*/2 * * * * php <?= e(RB_ROOT) ?>/bin/cron.php</span>
+        <strong>نحوهٔ اجرای منظم ارسال همگانی:</strong> پیام‌ها به‌صورت دسته‌ای و با تأخیر تصاعدی (Backoff) ارسال می‌شوند تا پلتفرم‌ها محدودیت نگذارند.
+        برای هاست اشتراکی یا سرور لینوکس، کرون‌جاب زیر را فعال کنید:
+        <div class="mt-1 ltr mono text-xs font-semibold" style="direction:ltr;text-align:left">
+            */2 * * * * php <?= e(RB_ROOT) ?>/bin/cron.php broadcast >/dev/null 2>&1
+        </div>
+        <?php if (!empty($webCronToken)): ?>
+            <div class="mt-1 text-xs">
+                همچنین می‌توانید از <strong>کرون وب</strong> استفاده نمایید:
+                <code class="ltr"><?= e(url('cron/run?token=' . $webCronToken . '&task=broadcast')) ?></code>
+            </div>
+        <?php endif; ?>
     </div>
 </div>
 
-<?php
-$activeMsg = (isset($activeMessengers) && is_array($activeMessengers)) ? $activeMessengers : [];
-$msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messengerTotals : [];
-?>
 <div class="stats-grid mb-3" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
     <div class="stat">
         <div class="stat-head"><div class="stat-icon">✉️</div><div class="stat-label">کل پیام‌های ارسالی سیستم</div></div>
@@ -124,7 +142,7 @@ $msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messenge
                 </div>
             </div>
             <div class="card-footer flex gap-2 wrap">
-                <button class="btn" type="submit" data-confirm="کمپین ارسال ایجاد شود؟ ارسال توسط Cron آغاز می‌شود.">🚀 ایجاد و شروع ارسال</button>
+                <button class="btn" type="submit" data-confirm="کمپین ارسال ایجاد شود؟ ارسال به‌صورت خودکار توسط صف و Cron انجام خواهد شد.">🚀 ایجاد و شروع ارسال</button>
                 <button class="btn btn-secondary" type="button" id="preview-btn">👁 پیش‌نمایش و تعداد مخاطب</button>
                 <button class="btn btn-ghost" type="button" id="test-btn">📮 ارسال آزمایشی به مدیر</button>
             </div>
@@ -142,16 +160,35 @@ $msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messenge
     </div>
 </div>
 
+<div class="card mb-3">
+    <div class="card-header flex items-center justify-between wrap gap-2">
+        <div>
+            <h2 class="card-title">📋 لاگ و گزارش عیب‌یابی ارسال همگانی</h2>
+            <span class="card-subtitle">رویدادها و خطاهای لحظه‌ای ارسال پیام‌ها</span>
+        </div>
+        <div class="flex gap-2">
+            <a href="<?= url('admin/broadcast/log/download') ?>" class="btn btn-sm btn-secondary">دانلود لاگ</a>
+            <form method="post" action="<?= url('admin/broadcast/log/clear') ?>" data-ajax>
+                <?= csrf_field() ?>
+                <button class="btn btn-sm btn-ghost" type="submit" data-confirm="فایل لاگ ارسال همگانی پاک‌سازی شود؟">پاک‌سازی</button>
+            </form>
+        </div>
+    </div>
+    <div class="card-body p-0">
+        <pre class="ltr mono text-xs mb-0" style="max-height:260px;overflow:auto;padding:14px;background:#0f172a;color:#f8fafc;direction:ltr;text-align:left;border-radius:0 0 12px 12px;white-space:pre-wrap"><?= e((string) ($recentLogs ?? 'هنوز لاگی ثبت نشده است.')) ?></pre>
+    </div>
+</div>
+
 <div class="card">
-    <div class="card-header"><h2 class="card-title">کمپین‌های اخیر</h2>
-        <span class="card-subtitle">۲۵ کمپین آخر</span></div>
+    <div class="card-header"><h2 class="card-title">کمپین‌های ارسال همگانی</h2>
+        <span class="card-subtitle">۲۵ کمپین آخر به ترتیب اولویت و تاریخ</span></div>
     <?php if (empty($campaigns)): ?>
         <div class="empty"><div class="empty-icon">✉️</div><div class="empty-title">هنوز کمپینی ایجاد نشده</div>
             <div class="empty-text">اولین پیام همگانی خود را از فرم بالا ایجاد کنید.</div></div>
     <?php else: ?>
         <div class="table-wrap">
             <table class="table">
-                <thead><tr><th>عنوان</th><th>پیام‌رسان</th><th>گروه</th><th>وضعیت</th><th>پیشرفت</th><th>موفق</th><th>ناموفق</th><th>بلاک</th><th>تاریخ</th><th></th></tr></thead>
+                <thead><tr><th>شناسه</th><th>عنوان</th><th>پیام‌رسان</th><th>گروه</th><th>وضعیت</th><th>پیشرفت</th><th>موفق</th><th>ناموفق</th><th>بلاک</th><th>تاریخ</th><th></th></tr></thead>
                 <tbody>
                 <?php foreach ($campaigns as $c): ?>
                     <?php
@@ -162,6 +199,7 @@ $msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messenge
                     $cPlatLabel = ($cPlat === '' || $cPlat === 'all') ? '🌐 همه فعال‌ها' : \RB\Messengers\MessengerCapabilities::badge($cPlat);
                     ?>
                     <tr>
+                        <td class="num" data-label="شناسه">#<?= e((string) $c['id']) ?></td>
                         <td data-label="عنوان"><a href="<?= url('admin/broadcast/' . $c['id']) ?>"><?= e(mb_strimwidth((string) $c['title'], 0, 40, '…')) ?></a></td>
                         <td data-label="پیام‌رسان"><span class="badge badge-muted no-dot"><?= e($cPlatLabel) ?></span></td>
                         <td data-label="گروه"><?= e($segments[$c['segment']] ?? (string) $c['segment']) ?></td>

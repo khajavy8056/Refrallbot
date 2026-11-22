@@ -137,4 +137,35 @@ T::ok((int) $final['sent'] > 0, 'پس از تلاش مجدد دستی با API �
 T::ok(count($sentTexts) > 0 && !str_contains(implode("\n", $sentTexts), '{name}'), 'متغیر {name} در پیام ارسالی جایگذاری می‌شود');
 T::ok(count(array_filter($sentTexts, static fn(string $body): bool => str_contains($body, 'بازیابی'))) > 0, 'نام واقعی مخاطب در متن ارسال‌شده وجود دارد');
 
+
+// ---------- بازیابی خودکار کمپین‌های معلق گذشته (Stale Healing)
+$staleCampId = $db->insert('broadcast_campaigns', [
+    'title' => 'کمپین قدیمی معلق',
+    'message_text' => 'متن قدیمی',
+    'status' => 'failed', // به اشتباه در گذشته failed شده
+    'segment' => 'all',
+    'total_targets' => 1,
+    'created_at' => date('Y-m-d H:i:s', time() - 86400),
+    'updated_at' => date('Y-m-d H:i:s', time() - 86400),
+]);
+$db->insert('broadcast_targets', [
+    'campaign_id' => $staleCampId,
+    'user_id' => (int) $created[0]['id'],
+    'telegram_id' => 0, // شناسه در رکورد هدف خالی بوده
+    'status' => 'pending',
+]);
+$healedCount = $service->healStaleCampaigns();
+T::ok($healedCount >= 1, 'کمپین معلق پیشین با اهداف pending شناسایی و بازیابی شد');
+$staleRow = $db->first('SELECT status FROM broadcast_campaigns WHERE id = :id', ['id' => $staleCampId]);
+T::eq('queued', (string) $staleRow['status'], 'وضعیت کمپین معلق به queued بازگردانده شد');
+
+// اجرای صف، کمپین قدیمی بازیابی‌شده با telegram_id خالی را از جدول users ارسال می‌کند
+$healedProcess = $service->processQueue(10, 10);
+T::ok((int) $healedProcess['sent'] >= 1, 'هدف با telegram_id خالی از طریق اطلاعات کاربر با موفقیت ارسال شد');
+
+// ---------- لاگ‌برداری اختصاصی
+BroadcastService::log('INFO', 'تست لاگ‌برداری اختصاصی پیام همگانی');
+$logs = BroadcastService::recentLogs(10);
+T::ok(str_contains($logs, 'تست لاگ‌برداری'), 'لاگ اختصاصی پیام همگانی با موفقیت ثبت و خوانده شد');
+
 exit(T::summary());

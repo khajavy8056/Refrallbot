@@ -134,6 +134,10 @@ return static function (Router $router): void {
     $router->post('/admin/broadcast/preview', [Admin\BroadcastController::class, 'preview'], ['admin', 'csrf']);
     $router->post('/admin/broadcast/send', [Admin\BroadcastController::class, 'send'], ['admin', 'csrf']);
     $router->post('/admin/broadcast/test', [Admin\BroadcastController::class, 'test'], ['admin', 'csrf']);
+    $router->post('/admin/broadcast/process-now', [Admin\BroadcastController::class, 'processNow'], ['admin', 'csrf']);
+    $router->post('/admin/broadcast/recover', [Admin\BroadcastController::class, 'recoverStale'], ['admin', 'csrf']);
+    $router->get('/admin/broadcast/log/download', [Admin\BroadcastController::class, 'downloadLog'], ['admin']);
+    $router->post('/admin/broadcast/log/clear', [Admin\BroadcastController::class, 'clearLog'], ['admin', 'csrf']);
     $router->post('/admin/broadcast/{id}/cancel', [Admin\BroadcastController::class, 'cancel'], ['admin', 'csrf']);
     $router->post('/admin/broadcast/{id}/retry-failed', [Admin\BroadcastController::class, 'retryFailed'], ['admin', 'csrf']);
     $router->get('/admin/broadcast/{id}', [Admin\BroadcastController::class, 'show'], ['admin']);

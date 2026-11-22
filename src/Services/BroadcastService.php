@@ -196,8 +196,120 @@ final class BroadcastService
      * پردازش یک دسته از کمپین‌های همگانی در تمام پیام‌رسان‌ها
      * @return array{campaigns:int,sent:int,failed:int,blocked:int,scheduled:int,locked?:bool,error?:string}
      */
+
+    public static function log(string $level, string $message, array $context = []): void
+    {
+        $dir = defined('RB_STORAGE') ? (string) RB_STORAGE : dirname(__DIR__, 2) . '/storage';
+        $logDir = $dir . '/logs';
+        if (!is_dir($logDir) && !@mkdir($logDir, 0775, true) && !is_dir($logDir)) {
+            return;
+        }
+        $logFile = $logDir . '/broadcast.log';
+        $ctxStr = $context !== [] ? ' ' . json_encode($context, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : '';
+        $line = sprintf(
+            "[%s UTC | %s] [%s] %s%s
+",
+            gmdate('Y-m-d H:i:s'),
+            fa_date(now()),
+            strtoupper($level),
+            $message,
+            $ctxStr
+        );
+        @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
+    }
+
+    public static function getLogFilePath(): string
+    {
+        $dir = defined('RB_STORAGE') ? (string) RB_STORAGE : dirname(__DIR__, 2) . '/storage';
+        return $dir . '/logs/broadcast.log';
+    }
+
+    public static function recentLogs(int $lines = 100): string
+    {
+        $file = self::getLogFilePath();
+        if (!is_file($file)) {
+            return 'هنوز لاگی برای ارسال همگانی ثبت نشده است.';
+        }
+        $content = @file_get_contents($file);
+        if ($content === false || trim($content) === '') {
+            return 'فایل لاگ خالی است.';
+        }
+        $all = explode("
+", trim($content));
+        $slice = array_slice($all, -$lines);
+        return implode("
+", $slice);
+    }
+
+    public static function clearLog(): bool
+    {
+        $file = self::getLogFilePath();
+        if (is_file($file)) {
+            return @file_put_contents($file, '') !== false;
+        }
+        return true;
+    }
+
+    /**
+     * همگام‌سازی و بازیابی خودکار کمپین‌های ایجادشده قبل از آپدیت یا معلق‌مانده
+     * @return int تعداد کمپین‌های بازیابی‌شده
+     */
+    public function healStaleCampaigns(): int
+    {
+        $healed = 0;
+
+        // ۱) کمپین‌هایی که به اشتباه failed یا sent شده‌اند اما هنوز هدف pending دارند
+        $staleWithPending = $this->db->all(
+            "SELECT c.id, c.title, c.status, COUNT(t.id) as pending_cnt
+             FROM broadcast_campaigns c
+             JOIN broadcast_targets t ON t.campaign_id = c.id
+             WHERE t.status = 'pending' AND c.status IN ('failed', 'sent')
+             GROUP BY c.id"
+        );
+        foreach ($staleWithPending as $row) {
+            $this->db->update('broadcast_campaigns', [
+                'status' => 'queued',
+                'finished_at' => null,
+                'updated_at' => now(),
+            ], 'id = :id', ['id' => (int) $row['id']]);
+            self::log('INFO', "کمپین #{$row['id']} («{$row['title']}») به دلیل داشتن {$row['pending_cnt']} مخاطب معلق پیشین، به صف ارسال بازگردانده شد.");
+            $healed++;
+        }
+
+        // ۲) کمپین‌های sending یا queued که هیچ هدف pending ندارند و کارشان تمام شده
+        $staleDone = $this->db->all(
+            "SELECT c.id, c.title
+             FROM broadcast_campaigns c
+             WHERE c.status IN ('sending', 'queued')
+               AND NOT EXISTS (SELECT 1 FROM broadcast_targets t WHERE t.campaign_id = c.id AND t.status = 'pending')"
+        );
+        foreach ($staleDone as $row) {
+            $counts = $this->db->first(
+                "SELECT
+                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS s,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS f,
+                    SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS b
+                 FROM broadcast_targets WHERE campaign_id = :c",
+                ['c' => (int) $row['id']]
+            );
+            $this->db->update('broadcast_campaigns', [
+                'sent_count' => (int) ($counts['s'] ?? 0),
+                'failed_count' => (int) ($counts['f'] ?? 0),
+                'blocked_count' => (int) ($counts['b'] ?? 0),
+                'status' => 'sent',
+                'finished_at' => now(),
+                'updated_at' => now(),
+            ], 'id = :id', ['id' => (int) $row['id']]);
+            self::log('INFO', "کمپین #{$row['id']} («{$row['title']}») بدون مخاطب معلق بود؛ وضعیت آن به پایان‌یافته تغییر یافت.");
+            $healed++;
+        }
+
+        return $healed;
+    }
+
     public function processQueue(int $batchSize = 25, int $maxPerRun = 500, ?float $timeBudgetSeconds = null): array
     {
+        $startMicro = microtime(true);
         $batchSize = max(1, min(50, $batchSize));
         $maxPerRun = max($batchSize, $maxPerRun);
         $sent = 0;
@@ -209,6 +321,7 @@ final class BroadcastService
 
         $lock = $this->acquireQueueLock();
         if ($lock === null) {
+            self::log('WARN', 'پردازش صف ارسال همگانی رد شد: قفل صف توسط فرآیند دیگری در دست اجراست.');
             return [
                 'campaigns' => 0,
                 'sent' => 0,
@@ -222,19 +335,40 @@ final class BroadcastService
 
         try {
 
+        // بازیابی خودکار کمپین‌های معلق یا قدیمی
+        $this->healStaleCampaigns();
+
         $registry = new MessengerRegistry($this->db);
         if ($registry->activePlatforms() === [] && !TelegramService::configured()) {
+            self::log('ERROR', 'پردازش صف متوقف شد: هیچ پیام‌رسانی فعال یا متصل نیست.');
             return ['campaigns' => 0, 'sent' => 0, 'failed' => 0, 'blocked' => 0, 'scheduled' => 0, 'error' => 'هیچ پیام‌رسانی متصل نیست'];
         }
 
         $currentTime = now();
         $campaigns = $this->db->all(
             "SELECT * FROM broadcast_campaigns
-             WHERE status IN ('sending','queued')
+             WHERE (
+                 status IN ('sending','queued')
+                 OR (status = 'failed' AND EXISTS (SELECT 1 FROM broadcast_targets bt WHERE bt.campaign_id = broadcast_campaigns.id AND bt.status = 'pending'))
+             )
                AND (scheduled_at IS NULL OR scheduled_at <= :now)
-             ORDER BY id ASC LIMIT 5",
+             ORDER BY COALESCE(scheduled_at, created_at) ASC, id ASC LIMIT 5",
             ['now' => $currentTime]
         );
+
+        if ($campaigns === []) {
+            self::log('INFO', 'هیچ کمپینی در صف ارسال وجود ندارد.');
+            return [
+                'campaigns' => 0,
+                'sent' => 0,
+                'failed' => 0,
+                'blocked' => 0,
+                'scheduled' => 0,
+            ];
+        }
+
+        $cIds = array_map(static fn(array $c): int => (int) $c['id'], $campaigns);
+        self::log('INFO', "شروع پردازش صف ارسال: " . count($campaigns) . " کمپین در صف [" . implode(', ', $cIds) . "] با دسته {$batchSize} تایی.");
 
         foreach ($campaigns as $campaign) {
             if ($sent + $failed + $blocked + $scheduled >= $maxPerRun || microtime(true) >= $deadline) {
@@ -286,11 +420,13 @@ final class BroadcastService
                         'status' => 'sent', 'sent_at' => $attemptAt, 'error' => null,
                     ], $attemptColumns, $this->nextAttemptColumns(null)), 'id = :id', ['id' => (int) $target['id']]);
                     $sent++;
+                    self::log('INFO', "[کمپین #{$campaign['id']}] هدف #{$target['id']} (کاربر #{$target['user_id']}) با موفقیت ارسال شد.");
                 } elseif ($result['result'] === 'blocked') {
                     $this->db->update('broadcast_targets', array_merge([
                         'status' => 'blocked', 'sent_at' => $attemptAt, 'error' => 'کاربر ربات را مسدود کرده است',
                     ], $attemptColumns, $this->nextAttemptColumns(null)), 'id = :id', ['id' => (int) $target['id']]);
                     $blocked++;
+                    self::log('WARN', "[کمپین #{$campaign['id']}] هدف #{$target['id']} (کاربر #{$target['user_id']}) ربات را مسدود کرده است.");
                 } else {
                     $maxAttempts = max(1, (int) Config::get('services.broadcast_max_attempts', 3));
                     if (!empty($result['retryable']) && $attempt < $maxAttempts) {
@@ -301,6 +437,7 @@ final class BroadcastService
                             'error' => mb_substr((string) $result['error'], 0, 400),
                         ], $attemptColumns, $this->nextAttemptColumns($nextAttempt)), 'id = :id', ['id' => (int) $target['id']]);
                         $scheduled++;
+                        self::log('WARN', "[کمپین #{$campaign['id']}] هدف #{$target['id']} (کاربر #{$target['user_id']}) خطای گذرا دریافت کرد ({$result['error']})؛ تلاش {$attempt}/{$maxAttempts}، تکرار بعدی در {$nextAttempt}.");
                     } else {
                         $this->db->update('broadcast_targets', array_merge([
                             'status' => 'failed',
@@ -308,6 +445,7 @@ final class BroadcastService
                             'error' => mb_substr((string) $result['error'], 0, 400),
                         ], $attemptColumns, $this->nextAttemptColumns(null)), 'id = :id', ['id' => (int) $target['id']]);
                         $failed++;
+                        self::log('ERROR', "[کمپین #{$campaign['id']}] هدف #{$target['id']} (کاربر #{$target['user_id']}) شکست قطعی: {$result['error']}.");
                     }
                 }
                 $delay = (int) Config::get('services.broadcast_delay_ms', 60);
@@ -336,7 +474,16 @@ final class BroadcastService
                 'finished_at' => $remaining > 0 ? null : now(),
                 'updated_at' => now(),
             ], 'id = :id', ['id' => (int) $campaign['id']]);
+
+            if ($remaining === 0) {
+                self::log('SUCCESS', "کمپین #{$campaign['id']} («{$campaign['title']}») به پایان رسید. ارسال‌شده: {$counts['s']}، ناموفق: {$counts['f']}، مسدود: {$counts['b']}.");
+            } else {
+                self::log('INFO', "کمپین #{$campaign['id']} («{$campaign['title']}»): {$remaining} مخاطب معلق دیگر در صف باقی مانده است.");
+            }
         }
+
+        $elapsedMs = (int) round((microtime(true) - $startMicro) * 1000);
+        self::log('INFO', "پایان چرخه ارسال صف: {$sent} ارسال شد، {$failed} ناموفق، {$blocked} مسدود، {$scheduled} زمان‌بندی مجدد. مدت زمان: {$elapsedMs} میلی‌ثانیه.");
 
         return [
             'campaigns' => $campaignsTouched,
@@ -356,6 +503,10 @@ final class BroadcastService
     {
         $userId = (int) ($target['user_id'] ?? 0);
         $telegramId = (int) ($target['telegram_id'] ?? 0);
+        $userRow = $userId > 0 ? $this->db->first('SELECT * FROM users WHERE id = :id', ['id' => $userId]) : null;
+        if ($telegramId <= 0 && $userRow && !empty($userRow['telegram_id'])) {
+            $telegramId = (int) $userRow['telegram_id'];
+        }
         $text = (string) ($campaign['message_text'] ?? '');
         $buttons = !empty($campaign['buttons']) ? json_decode((string) $campaign['buttons'], true) : null;
         $options = ['parse_mode' => 'HTML', 'disable_web_page_preview' => true];
