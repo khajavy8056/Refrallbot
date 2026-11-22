@@ -7,44 +7,45 @@ $totalTargets = array_sum($counts);
 $activeMsg = (isset($activeMessengers) && is_array($activeMessengers)) ? $activeMessengers : [];
 $msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messengerTotals : [];
 ?>
-<div class="flex items-center justify-between wrap gap-3 mb-3">
-    <div>
+<div class="flex items-center justify-between wrap gap-3 mb-3 broadcast-header">
+    <div class="broadcast-title-wrap">
         <h1 class="mb-0">ارسال پیام همگانی</h1>
         <p class="text-muted text-sm mb-0">ارسال مرحله‌ای با محدودیت نرخ توسط Cron و مدیریت هوشمند صف — مناسب هاست اشتراکی</p>
     </div>
-    <div class="flex gap-2 wrap">
-        <form method="post" action="<?= url('admin/broadcast/process-now') ?>" data-ajax>
+    <div class="flex gap-2 wrap broadcast-actions">
+        <form method="post" action="<?= url('admin/broadcast/process-now') ?>" data-ajax class="broadcast-action-item">
             <?= csrf_field() ?>
-            <button class="btn btn-success" type="submit" data-confirm="صف ارسال هم‌اکنون برای ۵۰ پیام بعدی اجرا شود؟">⚡ اجرای فوری صف ارسال</button>
+            <button class="btn btn-success w-full" type="submit" data-confirm="صف ارسال هم‌اکنون برای ۵۰ پیام بعدی اجرا شود؟">⚡ اجرای فوری صف ارسال</button>
         </form>
-        <form method="post" action="<?= url('admin/broadcast/recover') ?>" data-ajax>
+        <form method="post" action="<?= url('admin/broadcast/recover') ?>" data-ajax class="broadcast-action-item">
             <?= csrf_field() ?>
-            <button class="btn btn-secondary" type="submit" data-confirm="کمپین‌های معلق یا قدیمی بررسی و به صف بازگردانده شوند؟">🔄 بازیابی کمپین‌های گذشته</button>
+            <button class="btn btn-secondary w-full" type="submit" data-confirm="کمپین‌های معلق یا قدیمی بررسی و به صف بازگردانده شوند؟">🔄 بازیابی کمپین‌های گذشته</button>
         </form>
-        <a href="<?= url('admin/broadcast/log/download') ?>" class="btn btn-ghost" title="دانلود فایل کامل لاگ">📥 دانلود لاگ ارسال</a>
+        <a href="<?= url('admin/broadcast/log/download') ?>" class="btn btn-ghost broadcast-action-item" title="دانلود فایل کامل لاگ">📥 دانلود لاگ ارسال</a>
     </div>
 </div>
 
 <div class="alert alert-info mb-3">
     <span class="alert-icon">⏱</span>
-    <div>
-        <strong>نحوهٔ اجرای منظم ارسال همگانی:</strong> پیام‌ها به‌صورت دسته‌ای و با تأخیر تصاعدی (Backoff) ارسال می‌شوند تا پلتفرم‌ها محدودیت نگذارند.
-        برای هاست اشتراکی یا سرور لینوکس، کرون‌جاب زیر را فعال کنید:
-        <div class="mt-1 ltr mono text-xs font-semibold" style="direction:ltr;text-align:left">
-            */2 * * * * php <?= e(RB_ROOT) ?>/bin/cron.php broadcast >/dev/null 2>&1
+    <div class="alert-content-wrap">
+        <div><strong>نحوهٔ اجرای منظم ارسال همگانی:</strong> پیام‌ها به‌صورت دسته‌ای و با تأخیر تصاعدی (Backoff) ارسال می‌شوند تا پلتفرم‌ها محدودیت نگذارند. برای هاست اشتراکی یا سرور لینوکس، کرون‌جاب زیر را فعال کنید:</div>
+        <div class="cron-box mt-2">
+            <span class="cron-code ltr mono">*/2 * * * * php <?= e(RB_ROOT) ?>/bin/cron.php broadcast >/dev/null 2>&1</span>
         </div>
         <?php if (!empty($webCronToken)): ?>
-            <div class="mt-1 text-xs">
-                همچنین می‌توانید از <strong>کرون وب</strong> استفاده نمایید:
-                <code class="ltr"><?= e(url('cron/run?token=' . $webCronToken . '&task=broadcast')) ?></code>
+            <div class="cron-web-box mt-2 text-xs">
+                <span>همچنین می‌توانید از <strong>کرون وب</strong> استفاده نمایید:</span>
+                <div class="cron-box mt-1">
+                    <span class="cron-code ltr mono"><?= e(url('cron/run?token=' . $webCronToken . '&task=broadcast')) ?></span>
+                </div>
             </div>
         <?php endif; ?>
     </div>
 </div>
 
-<div class="stats-grid mb-3" style="grid-template-columns:repeat(auto-fill,minmax(190px,1fr))">
+<div class="stats-grid mb-3">
     <div class="stat">
-        <div class="stat-head"><div class="stat-icon">✉️</div><div class="stat-label">کل پیام‌های ارسالی سیستم</div></div>
+        <div class="stat-head"><div class="stat-icon">✉️</div><div class="stat-label">کل پیام‌های سیستم</div></div>
         <div class="stat-value"><?= fa_digits(number_format((int) ($msgTotals['messages_sent'] ?? 0))) ?></div>
         <div class="stat-foot">همگانی: <?= fa_digits(number_format((int) ($msgTotals['broadcasts_sent'] ?? 0))) ?> · ناموفق: <?= fa_digits((int) ($msgTotals['messages_failed'] ?? 0)) ?></div>
     </div>
@@ -141,9 +142,9 @@ $msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messenge
                     <input type="text" name="scheduled_at" class="form-control ltr" dir="ltr" placeholder="2026-01-01 12:00 یا خالی برای ارسال فوری">
                 </div>
             </div>
-            <div class="card-footer flex gap-2 wrap">
+            <div class="card-footer flex gap-2 wrap broadcast-form-footer">
                 <button class="btn" type="submit" data-confirm="کمپین ارسال ایجاد شود؟ ارسال به‌صورت خودکار توسط صف و Cron انجام خواهد شد.">🚀 ایجاد و شروع ارسال</button>
-                <button class="btn btn-secondary" type="button" id="preview-btn">👁 پیش‌نمایش و تعداد مخاطب</button>
+                <button class="btn btn-secondary" type="button" id="preview-btn">👁 پیش‌نمایش و مخاطبان</button>
                 <button class="btn btn-ghost" type="button" id="test-btn">📮 ارسال آزمایشی به مدیر</button>
             </div>
         </form>
@@ -175,7 +176,7 @@ $msgTotals = (isset($messengerTotals) && is_array($messengerTotals)) ? $messenge
         </div>
     </div>
     <div class="card-body p-0">
-        <pre class="ltr mono text-xs mb-0" style="max-height:260px;overflow:auto;padding:14px;background:#0f172a;color:#f8fafc;direction:ltr;text-align:left;border-radius:0 0 12px 12px;white-space:pre-wrap"><?= e((string) ($recentLogs ?? 'هنوز لاگی ثبت نشده است.')) ?></pre>
+        <pre class="ltr mono text-xs mb-0" style="max-height:260px;overflow:auto;padding:14px;background:#0f172a;color:#f8fafc;direction:ltr;text-align:left;border-radius:0 0 12px 12px;white-space:pre-wrap;word-break:break-all"><?= e((string) ($recentLogs ?? 'هنوز لاگی ثبت نشده است.')) ?></pre>
     </div>
 </div>
 

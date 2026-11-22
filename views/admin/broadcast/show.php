@@ -8,37 +8,37 @@ $total = max(1, (int) $campaign['total_targets']);
 $done = (int) $campaign['sent_count'] + (int) $campaign['failed_count'] + (int) $campaign['blocked_count'];
 $percent = min(100, (int) round($done / $total * 100));
 ?>
-<div class="flex items-center justify-between wrap gap-3 mb-3">
-    <div>
+<div class="flex items-center justify-between wrap gap-3 mb-3 broadcast-header">
+    <div class="broadcast-title-wrap">
         <h1 class="mb-0"><?= e((string) $campaign['title']) ?></h1>
         <p class="text-muted text-sm mb-0">ایجاد: <?= fa_date($campaign['created_at']) ?>
             · وضعیت: <span class="badge badge-<?= $statusBadge[$campaign['status']] ?? 'muted' ?>"><?= e($statusLabel[$campaign['status']] ?? (string) $campaign['status']) ?></span></p>
     </div>
-    <div class="flex gap-1">
-        <a href="<?= url('admin/broadcast') ?>" class="btn btn-secondary btn-sm">بازگشت</a>
+    <div class="flex gap-2 wrap broadcast-actions">
+        <a href="<?= url('admin/broadcast') ?>" class="btn btn-secondary btn-sm broadcast-action-item">بازگشت</a>
         <?php if ((int) $failures > 0 && (string) $campaign['status'] !== 'cancelled'): ?>
-            <form method="post" action="<?= url('admin/broadcast/' . $campaign['id'] . '/retry-failed') ?>" data-ajax>
+            <form method="post" action="<?= url('admin/broadcast/' . $campaign['id'] . '/retry-failed') ?>" data-ajax class="broadcast-action-item">
                 <?= csrf_field() ?>
-                <button class="btn btn-warning btn-sm" type="submit" data-confirm="مخاطبان ناموفق دوباره در صف قرار بگیرند؟">تلاش مجدد ناموفق‌ها (<?= fa_digits((int) $failures) ?>)</button>
+                <button class="btn btn-warning btn-sm w-full" type="submit" data-confirm="مخاطبان ناموفق دوباره در صف قرار بگیرند؟">تلاش مجدد ناموفق‌ها (<?= fa_digits((int) $failures) ?>)</button>
             </form>
         <?php endif; ?>
         <?php if (in_array($campaign['status'], ['queued', 'sending'], true)): ?>
-            <form method="post" action="<?= url('admin/broadcast/' . $campaign['id'] . '/cancel') ?>" data-ajax>
+            <form method="post" action="<?= url('admin/broadcast/' . $campaign['id'] . '/cancel') ?>" data-ajax class="broadcast-action-item">
                 <?= csrf_field() ?>
-                <button class="btn btn-danger btn-sm" type="submit" data-confirm="ارسال لغو شود؟">لغو ارسال</button>
+                <button class="btn btn-danger btn-sm w-full" type="submit" data-confirm="ارسال لغو شود؟">لغو ارسال</button>
             </form>
         <?php endif; ?>
     </div>
 </div>
 
-<div class="stats-grid mb-3" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+<div class="stats-grid mb-3">
     <div class="stat"><div class="stat-head"><div class="stat-icon">👥</div><div class="stat-label">کل مخاطبان</div></div>
         <div class="stat-value"><?= fa_digits(number_format((int) $campaign['total_targets'])) ?></div></div>
     <div class="stat success"><div class="stat-head"><div class="stat-icon">✅</div><div class="stat-label">ارسال موفق</div></div>
         <div class="stat-value"><?= fa_digits(number_format((int) $campaign['sent_count'])) ?></div></div>
     <div class="stat danger"><div class="stat-head"><div class="stat-icon">⚠️</div><div class="stat-label">ناموفق</div></div>
         <div class="stat-value"><?= fa_digits(number_format($failures)) ?></div></div>
-    <div class="stat warning"><div class="stat-head"><div class="stat-icon">🚫</div><div class="stat-label">ربات را بلاک کرده‌اند</div></div>
+    <div class="stat warning"><div class="stat-head"><div class="stat-icon">🚫</div><div class="stat-label">بلاک کرده‌اند</div></div>
         <div class="stat-value"><?= fa_digits(number_format((int) $campaign['blocked_count'])) ?></div></div>
 </div>
 
@@ -49,7 +49,7 @@ $percent = min(100, (int) round($done / $total * 100));
         <div style="height:12px;background:var(--surface-3);border-radius:99px;overflow:hidden">
             <div style="height:100%;width:<?= $percent ?>%;background:linear-gradient(90deg,#6366f1,#10b981);transition:width .4s"></div>
         </div>
-        <div class="flex justify-between text-xs text-muted mt-2">
+        <div class="flex justify-between text-xs text-muted mt-2 wrap gap-1">
             <span>شروع: <?= fa_date($campaign['started_at']) ?></span>
             <span>پایان: <?= fa_date($campaign['finished_at']) ?></span>
         </div>
